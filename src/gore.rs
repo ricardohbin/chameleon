@@ -1,7 +1,7 @@
 //! Gore: blood drops, stains on the ground and blood painted on the chameleon.
 //!
 //! Blood is drawn on `camera::COLOR_LAYER`, so it keeps its color in the
-//! grayscale world: the first colors the chameleon gets back are its enemies'.
+//! grayscale world (venom too): the first colors the chameleon gets back are its enemies'.
 //!
 //! Send a `Bleed` message to spray drops. Sticky drops that touch a
 //! `PaintTarget` (a part of the chameleon) become splats on it; drops that
@@ -48,7 +48,7 @@ impl Fluid {
         match self {
             Fluid::Green => Color::srgb(0.42, 0.95, 0.10),
             Fluid::Red => Color::srgb(0.72, 0.02, 0.03),
-            Fluid::Venom => Color::srgb(0.88, 0.90, 0.72),
+            Fluid::Venom => Color::srgb(0.20, 0.56, 0.08),
         }
     }
 
@@ -56,13 +56,13 @@ impl Fluid {
         match self {
             Fluid::Green => Color::srgb(0.13, 0.34, 0.05),
             Fluid::Red => Color::srgb(0.28, 0.02, 0.02),
-            Fluid::Venom => Color::srgb(0.55, 0.56, 0.46),
+            Fluid::Venom => Color::srgb(0.09, 0.24, 0.04),
         }
     }
 
-    /// Blood keeps its color; venom stays in the gray world.
+    /// Every fluid keeps its color in the gray world.
     fn layers(self) -> RenderLayers {
-        if self == Fluid::Venom { RenderLayers::default() } else { camera::color_layer() }
+        camera::color_layer()
     }
 
     fn index(self) -> usize {

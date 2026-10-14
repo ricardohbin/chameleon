@@ -12,6 +12,8 @@ const LOOK_AHEAD: f32 = 80.0;
 const HEIGHT_OFFSET: f32 = 40.0;
 const FOLLOW_RATE: f32 = 4.0;
 const ZOOM: f32 = 0.65;
+/// How much a full `ZoomPunch` zooms in.
+const PUNCH_ZOOM: f32 = 0.2;
 /// 0.0 = grayscale world, 1.0 = full color. Colors are earned as the game
 /// progresses, so this starts at 0 (all color data is kept intact).
 const WORLD_SATURATION: f32 = 0.0;
@@ -29,6 +31,7 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Shake>()
             .init_resource::<HitStop>()
+            .init_resource::<ZoomPunch>()
             .add_systems(Startup, spawn_camera)
             .add_systems(First, apply_hit_stop)
             .add_systems(Update, follow_player.after(player::move_player));
@@ -52,20 +55,55 @@ impl Shake {
     }
 }
 
-/// Freeze-frame on heavy hits: game time crawls for a few real-time milliseconds.
+/// Freeze-frame on heavy hits (game time crawls for a few real-time
+/// milliseconds), optionally followed by slow motion that eases back.
 #[derive(Resource, Default)]
-pub struct HitStop(f32);
+pub struct HitStop {
+    freeze: f32,
+    slow: f32,
+    slow_total: f32,
+}
 
 impl HitStop {
     pub fn add(&mut self, seconds: f32) {
-        self.0 = self.0.max(seconds);
+        self.freeze = self.freeze.max(seconds);
+    }
+
+    /// Slow motion for `seconds` (real time) after the freeze, easing back to normal speed.
+    pub fn slow_motion(&mut self, seconds: f32) {
+        self.slow = seconds;
+        self.slow_total = seconds;
     }
 }
 
 fn apply_hit_stop(real: Res<Time<Real>>, mut stop: ResMut<HitStop>, mut time: ResMut<Time<Virtual>>) {
-    if stop.0 > 0.0 {
-        stop.0 -= real.delta_secs();
-        time.set_relative_speed(if stop.0 > 0.0 { 0.04 } else { 1.0 });
+    if stop.freeze <= 0.0 && stop.slow <= 0.0 {
+        return;
+    }
+    let dt = real.delta_secs();
+    if stop.freeze > 0.0 {
+        stop.freeze -= dt;
+    } else {
+        stop.slow -= dt;
+    }
+    let speed = if stop.freeze > 0.0 {
+        0.04
+    } else if stop.slow > 0.0 {
+        let k = stop.slow / stop.slow_total;
+        1.0 - 0.75 * k.powf(1.5)
+    } else {
+        1.0
+    };
+    time.set_relative_speed(speed);
+}
+
+/// A quick zoom-in (0..1) that relaxes back.
+#[derive(Resource, Default)]
+pub struct ZoomPunch(f32);
+
+impl ZoomPunch {
+    pub fn add(&mut self, amount: f32) {
+        self.0 = (self.0 + amount).min(1.0);
     }
 }
 
@@ -107,7 +145,9 @@ fn spawn_camera(mut commands: Commands) {
 fn follow_player(
     time: Res<Time>,
     mut shake: ResMut<Shake>,
+    mut punch: ResMut<ZoomPunch>,
     camera: Single<(&mut Transform, &mut Follow), (With<MainCamera>, Without<Player>)>,
+    mut projections: Query<&mut Projection>,
     player: Single<(&Transform, &Player)>,
 ) {
     let (mut tf, mut follow) = camera.into_inner();
@@ -127,6 +167,15 @@ fn follow_player(
     tf.translation = (follow.0 + offset).extend(tf.translation.z);
     tf.rotation = Quat::from_rotation_z(noise(t * 13.0 + 3.0) * 0.03 * k);
     shake.trauma = (shake.trauma - dt * 1.1).max(0.0);
+
+    // Both cameras share the zoom.
+    let scale = ZOOM * (1.0 - PUNCH_ZOOM * punch.0 * punch.0 * (3.0 - 2.0 * punch.0));
+    for mut projection in &mut projections {
+        if let Projection::Orthographic(ortho) = &mut *projection {
+            ortho.scale = scale;
+        }
+    }
+    punch.0 = (punch.0 - dt * 0.9).max(0.0);
 }
 
 /// Cheap smooth pseudo-noise in about -1..1.

@@ -405,6 +405,7 @@ fn tail_mesh(curl: f32) -> Mesh {
 pub fn update_anim_state(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     player: Single<(&Player, &mut ChameleonAnim)>,
 ) {
     let dt = time.delta_secs();
@@ -421,7 +422,8 @@ pub fn update_anim_state(
     a.curl = smooth(a.curl, curl_target, 4.0, dt);
 
     // Claw slash.
-    if keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) && a.slash.is_none() && p.stun <= 0.0 && !dead {
+    let attack = keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.just_pressed(MouseButton::Left);
+    if attack && a.slash.is_none() && p.stun <= 0.0 && !dead {
         a.slash = Some(0.0);
         a.slash_id += 1;
     }

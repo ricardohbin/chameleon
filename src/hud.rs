@@ -18,9 +18,28 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud).add_systems(Update, (update_pips, update_boss_bar));
+        app.init_resource::<ScreenFlash>()
+            .add_systems(Startup, spawn_hud)
+            .add_systems(Update, (update_pips, update_boss_bar, update_flash));
     }
 }
+
+/// A full-screen color flash that fades out (in real time, so slow motion doesn't drag it).
+#[derive(Resource, Default)]
+pub struct ScreenFlash {
+    color: Color,
+    alpha: f32,
+}
+
+impl ScreenFlash {
+    pub fn flash(&mut self, color: Color, alpha: f32) {
+        self.color = color;
+        self.alpha = alpha;
+    }
+}
+
+#[derive(Component)]
+struct FlashOverlay;
 
 #[derive(Component)]
 struct Pip(i32);
@@ -35,8 +54,14 @@ struct BossFill;
 struct BossTrail;
 
 fn spawn_hud(mut commands: Commands) {
+    // First, so the rest of the HUD draws over it.
     commands.spawn((
-        Text::new("A/D or Arrows: walk    Space/W/Up: jump    F: slash    F12: screenshot"),
+        FlashOverlay,
+        Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
+        BackgroundColor(Color::NONE),
+    ));
+    commands.spawn((
+        Text::new("A/D or Arrows: walk    Space/W/Up: jump    F/Left click: slash"),
         TextFont { font_size: FontSize::Px(18.0), ..default() },
         TextColor(Color::srgba(0.85, 0.82, 0.78, 0.7)),
         Node { position_type: PositionType::Absolute, top: px(12), left: px(14), ..default() },
@@ -94,6 +119,14 @@ fn spawn_hud(mut commands: Commands) {
     let fill = || Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() };
     commands.spawn((BossTrail, fill(), BackgroundColor(BOSS_TRAIL), ChildOf(track)));
     commands.spawn((BossFill, fill(), BackgroundColor(BOSS_FILL), ChildOf(track)));
+}
+
+fn update_flash(real: Res<Time<Real>>, mut flash: ResMut<ScreenFlash>, mut overlay: Single<&mut BackgroundColor, With<FlashOverlay>>) {
+    if flash.alpha <= 0.0 && overlay.0.alpha() == 0.0 {
+        return;
+    }
+    overlay.0 = flash.color.with_alpha(flash.alpha.max(0.0));
+    flash.alpha -= real.delta_secs() * 1.6;
 }
 
 fn update_pips(player: Single<&Player>, mut pips: Query<(&Pip, &mut BackgroundColor)>) {

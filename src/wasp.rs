@@ -13,7 +13,8 @@ use std::f32::consts::PI;
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
-    camera::{HitStop, Shake},
+    camera::{self, HitStop, Shake, ZoomPunch},
+    hud::ScreenFlash,
     chameleon::{self, ChameleonAnim, ColorEarned},
     gore::{Bleed, Fluid, Paint},
     level::Platform,
@@ -29,7 +30,7 @@ const ARENA_X: f32 = 1500.0;
 /// Size of the boss relative to its drawing.
 const SCALE: f32 = 1.7;
 const HOVER_HEIGHT: f32 = 230.0;
-const HP: i32 = 14;
+const HP: i32 = 1;
 /// Hurtbox radius around the thorax.
 const RADIUS: f32 = 22.0 * SCALE;
 const AGGRO: f32 = 650.0;
@@ -48,20 +49,31 @@ const YELLOW: Color = Color::srgb(0.86, 0.68, 0.14);
 const BLACK: Color = Color::srgb(0.08, 0.07, 0.06);
 const EYE: Color = Color::srgb(0.14, 0.10, 0.10);
 const WING: Color = Color::srgba(0.90, 0.92, 0.95, 0.32);
-const VENOM: Color = Color::srgb(0.88, 0.90, 0.72);
+/// A darker green than its blood. Drawn on the color layer.
+const VENOM: Color = Color::srgb(0.20, 0.56, 0.08);
 
 pub struct WaspPlugin;
 
 impl Plugin for WaspPlugin {
     fn build(&self, app: &mut App) {
         // PostStartup: the level's platforms exist by then.
-        app.init_resource::<BossStatus>().add_systems(PostStartup, spawn_boss).add_systems(
-            Update,
-            (reset_on_respawn, think, slash_wasps, move_venom, dismember, move_gibs, animate)
-                .chain()
-                .after(player::move_player)
-                .after(chameleon::update_anim_state),
-        );
+        app.init_resource::<BossStatus>()
+            .add_systems(PostStartup, spawn_boss)
+            .add_systems(
+                Update,
+                (
+                    reset_on_respawn,
+                    think,
+                    slash_wasps,
+                    move_venom,
+                    dismember,
+                    move_gibs,
+                    animate,
+                )
+                    .chain()
+                    .after(player::move_player)
+                    .after(chameleon::update_anim_state),
+            );
     }
 }
 
@@ -119,7 +131,12 @@ enum State {
     Aim(f32),
     Dive(f32),
     Hurt(f32),
-    Dead { t: f32, angle: f32, spin: f32, landed: bool },
+    Dead {
+        t: f32,
+        angle: f32,
+        spin: f32,
+        landed: bool,
+    },
 }
 
 #[derive(Component)]
@@ -156,8 +173,13 @@ fn spawn_boss(
     mut materials: ResMut<Assets<ColorMaterial>>,
     platforms: Query<(&Platform, &Transform)>,
 ) {
-    let glob = fill(&ellipse_pts(8.0, 6.0, 20), |p| 1.0 - 0.35 * (p - Vec2::new(2.5, 2.0)).length() / 9.0);
-    commands.insert_resource(VenomAssets { mesh: meshes.add(glob), mat: materials.add(VENOM) });
+    let glob = fill(&ellipse_pts(8.0, 6.0, 20), |p| {
+        1.0 - 0.35 * (p - Vec2::new(2.5, 2.0)).length() / 9.0
+    });
+    commands.insert_resource(VenomAssets {
+        mesh: meshes.add(glob),
+        mat: materials.add(VENOM),
+    });
 
     // Hover above the highest ground in the arena.
     let ground = platforms
@@ -165,25 +187,50 @@ fn spawn_boss(
         .filter(|(p, tf)| !p.one_way && (tf.translation.x - ARENA_X).abs() < p.half.x)
         .map(|(p, tf)| tf.translation.y + p.half.y)
         .fold(f32::MIN, f32::max);
-    let home = Vec2::new(ARENA_X, if ground > f32::MIN { ground } else { 0.0 } + HOVER_HEIGHT);
+    let home = Vec2::new(
+        ARENA_X,
+        if ground > f32::MIN { ground } else { 0.0 } + HOVER_HEIGHT,
+    );
     spawn_wasp(&mut commands, &mut meshes, &mut materials, home);
 }
 
-fn spawn_wasp(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, home: Vec2) {
+fn spawn_wasp(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    home: Vec2,
+) {
     let yellow = materials.add(YELLOW);
     let black = materials.add(BLACK);
     let eye = materials.add(EYE);
-    let wing = materials.add(ColorMaterial { color: WING, alpha_mode: AlphaMode2d::Blend, ..default() });
+    let wing = materials.add(ColorMaterial {
+        color: WING,
+        alpha_mode: AlphaMode2d::Blend,
+        ..default()
+    });
     let shine = materials.add(Color::WHITE);
-    let mats = vec![(yellow.clone(), YELLOW), (black.clone(), BLACK), (eye.clone(), EYE)];
+    let mats = vec![
+        (yellow.clone(), YELLOW),
+        (black.clone(), BLACK),
+        (eye.clone(), EYE),
+    ];
 
     let wasp = commands
-        .spawn((Transform::from_translation(home.extend(12.0)), Visibility::default()))
+        .spawn((
+            Transform::from_translation(home.extend(12.0)),
+            Visibility::default(),
+        ))
         .id();
-    let mut b = WaspBuilder { commands, meshes, owner: wasp };
+    let mut b = WaspBuilder {
+        commands,
+        meshes,
+        owner: wasp,
+    };
 
     let rig = b.bone(Vec3::ZERO, wasp, BoneKind::Rig);
-    b.commands.entity(rig).insert(Transform::from_scale(Vec3::new(-SCALE, SCALE, 1.0)));
+    b.commands
+        .entity(rig)
+        .insert(Transform::from_scale(Vec3::new(-SCALE, SCALE, 1.0)));
 
     // Wings: the far one behind everything, the near one on top.
     let wing_mesh = |m: &mut Assets<Mesh>| {
@@ -193,15 +240,38 @@ fn spawn_wasp(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mu
             .collect();
         m.add(fill(&pts, |p| 0.8 + 0.2 * (p.y / 10.0).clamp(-1.0, 1.0)))
     };
-    let back_wing = b.bone(Vec3::new(-1.0, 7.0, -0.4), rig, BoneKind::Wing { front: false });
+    let back_wing = b.bone(
+        Vec3::new(-1.0, 7.0, -0.4),
+        rig,
+        BoneKind::Wing { front: false },
+    );
     let mesh = wing_mesh(b.meshes);
     b.part_handle(mesh, &wing, Vec3::ZERO, back_wing);
 
     // Dangling legs, hooked at the end.
     for (k, x) in [-5.0, 0.0, 5.0].into_iter().enumerate() {
-        let leg = b.bone(Vec3::new(x, -5.0, -0.2), rig, BoneKind::Leg { offset: k as f32 * 1.7 });
-        let path = smooth_open(&[Vec2::ZERO, Vec2::new(-3.0, -8.0), Vec2::new(-1.0, -15.0), Vec2::new(2.0, -18.0)], 5);
-        b.part(stroke(&path, |t| 2.0 - 1.0 * t, 1.0, 1.0, |_| 1.0), &black, Vec3::ZERO, leg);
+        let leg = b.bone(
+            Vec3::new(x, -5.0, -0.2),
+            rig,
+            BoneKind::Leg {
+                offset: k as f32 * 1.7,
+            },
+        );
+        let path = smooth_open(
+            &[
+                Vec2::ZERO,
+                Vec2::new(-3.0, -8.0),
+                Vec2::new(-1.0, -15.0),
+                Vec2::new(2.0, -18.0),
+            ],
+            5,
+        );
+        b.part(
+            stroke(&path, |t| 2.0 - 1.0 * t, 1.0, 1.0, |_| 1.0),
+            &black,
+            Vec3::ZERO,
+            leg,
+        );
     }
 
     // Abdomen: striped, ending in a long stinger.
@@ -220,7 +290,14 @@ fn spawn_wasp(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mu
         ],
         6,
     );
-    b.part(fill(&outline, |p| 0.65 + 0.35 * ((p.y + 8.0) / 15.0).clamp(0.0, 1.0)), &yellow, Vec3::ZERO, abdomen);
+    b.part(
+        fill(&outline, |p| {
+            0.65 + 0.35 * ((p.y + 8.0) / 15.0).clamp(0.0, 1.0)
+        }),
+        &yellow,
+        Vec3::ZERO,
+        abdomen,
+    );
     let span = |x: f32| {
         let near = outline.iter().filter(|p| (p.x - x).abs() < 2.0);
         near.fold((0.0f32, 0.0f32), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)))
@@ -238,43 +315,134 @@ fn spawn_wasp(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mu
             [[a, b, c], [a, c, d]]
         })
         .collect();
-    b.part(triangles(&bands), &black, Vec3::new(0.0, 0.0, 0.05), abdomen);
     b.part(
-        triangles(&[[Vec2::new(-29.0, -1.5), Vec2::new(-28.0, -5.0), Vec2::new(-40.0, -6.5)]]),
+        triangles(&bands),
+        &black,
+        Vec3::new(0.0, 0.0, 0.05),
+        abdomen,
+    );
+    b.part(
+        triangles(&[[
+            Vec2::new(-29.0, -1.5),
+            Vec2::new(-28.0, -5.0),
+            Vec2::new(-40.0, -6.5),
+        ]]),
         &black,
         Vec3::new(0.0, 0.0, -0.05),
         abdomen,
     );
-    b.part(fill(&ellipse_pts(3.0, 2.4, 12), |_| 1.0), &black, Vec3::new(-7.0, -1.0, 0.08), rig);
+    b.part(
+        fill(&ellipse_pts(3.0, 2.4, 12), |_| 1.0),
+        &black,
+        Vec3::new(-7.0, -1.0, 0.08),
+        rig,
+    );
 
     // Thorax with a dark saddle.
-    b.part(fill(&ellipse_pts(10.0, 8.0, 28), |p| 0.7 + 0.3 * ((p.y + 8.0) / 16.0)), &yellow, Vec3::new(0.0, 0.0, 0.1), rig);
-    let saddle = smooth_closed(&[Vec2::new(-7.0, 4.0), Vec2::new(0.0, 8.0), Vec2::new(7.0, 5.0), Vec2::new(0.0, 2.0)], 5);
-    b.part(fill(&saddle, |_| 1.0), &black, Vec3::new(0.0, 0.0, 0.12), rig);
+    b.part(
+        fill(&ellipse_pts(10.0, 8.0, 28), |p| {
+            0.7 + 0.3 * ((p.y + 8.0) / 16.0)
+        }),
+        &yellow,
+        Vec3::new(0.0, 0.0, 0.1),
+        rig,
+    );
+    let saddle = smooth_closed(
+        &[
+            Vec2::new(-7.0, 4.0),
+            Vec2::new(0.0, 8.0),
+            Vec2::new(7.0, 5.0),
+            Vec2::new(0.0, 2.0),
+        ],
+        5,
+    );
+    b.part(
+        fill(&saddle, |_| 1.0),
+        &black,
+        Vec3::new(0.0, 0.0, 0.12),
+        rig,
+    );
 
     // Head: huge compound eye, angry brow, mandibles, antennae.
     let head = b.bone(Vec3::new(10.0, 3.0, 0.2), rig, BoneKind::Head);
-    b.part(fill(&ellipse_pts(7.0, 7.5, 24), |p| 0.7 + 0.3 * ((p.y + 7.5) / 15.0)), &yellow, Vec3::ZERO, head);
-    let eye_pts: Vec<Vec2> = ellipse_pts(3.6, 5.8, 20).into_iter().map(|p| Vec2::from_angle(-0.3).rotate(p)).collect();
-    b.part(fill(&eye_pts, |p| 0.8 + 0.2 * p.y / 6.0), &eye, Vec3::new(1.0, 1.5, 0.05), head);
-    b.part(fill(&ellipse_pts(0.9, 1.3, 8), |_| 1.0), &shine, Vec3::new(2.2, 4.0, 0.06), head);
     b.part(
-        triangles(&[[Vec2::new(-3.5, 8.5), Vec2::new(6.5, 4.0), Vec2::new(-2.0, 5.5)]]),
+        fill(&ellipse_pts(7.0, 7.5, 24), |p| {
+            0.7 + 0.3 * ((p.y + 7.5) / 15.0)
+        }),
+        &yellow,
+        Vec3::ZERO,
+        head,
+    );
+    let eye_pts: Vec<Vec2> = ellipse_pts(3.6, 5.8, 20)
+        .into_iter()
+        .map(|p| Vec2::from_angle(-0.3).rotate(p))
+        .collect();
+    b.part(
+        fill(&eye_pts, |p| 0.8 + 0.2 * p.y / 6.0),
+        &eye,
+        Vec3::new(1.0, 1.5, 0.05),
+        head,
+    );
+    b.part(
+        fill(&ellipse_pts(0.9, 1.3, 8), |_| 1.0),
+        &shine,
+        Vec3::new(2.2, 4.0, 0.06),
+        head,
+    );
+    b.part(
+        triangles(&[[
+            Vec2::new(-3.5, 8.5),
+            Vec2::new(6.5, 4.0),
+            Vec2::new(-2.0, 5.5),
+        ]]),
         &black,
         Vec3::new(0.0, 0.0, 0.07),
         head,
     );
     for side in [1.0, -1.0] {
-        let m = b.bone(Vec3::new(5.0, -4.0, 0.04 * side), head, BoneKind::Mandible { side });
-        let pts = smooth_open(&[Vec2::ZERO, Vec2::new(4.0, -1.5 * side), Vec2::new(6.5, 0.5 * side)], 5);
-        b.part(stroke(&pts, |t| 2.6 * (1.0 - t) + 0.4, 1.0, 1.0, |_| 1.0), &black, Vec3::ZERO, m);
+        let m = b.bone(
+            Vec3::new(5.0, -4.0, 0.04 * side),
+            head,
+            BoneKind::Mandible { side },
+        );
+        let pts = smooth_open(
+            &[
+                Vec2::ZERO,
+                Vec2::new(4.0, -1.5 * side),
+                Vec2::new(6.5, 0.5 * side),
+            ],
+            5,
+        );
+        b.part(
+            stroke(&pts, |t| 2.6 * (1.0 - t) + 0.4, 1.0, 1.0, |_| 1.0),
+            &black,
+            Vec3::ZERO,
+            m,
+        );
     }
     for (dx, z) in [(0.0, -0.05), (2.5, 0.08)] {
-        let ant = smooth_open(&[Vec2::new(dx, 6.0), Vec2::new(dx + 4.0, 14.0), Vec2::new(dx + 11.0, 17.0), Vec2::new(dx + 15.0, 14.0)], 5);
-        b.part(stroke(&ant, |t| 1.4 - 0.6 * t, 1.0, 1.0, |_| 1.0), &black, Vec3::new(0.0, 0.0, z), head);
+        let ant = smooth_open(
+            &[
+                Vec2::new(dx, 6.0),
+                Vec2::new(dx + 4.0, 14.0),
+                Vec2::new(dx + 11.0, 17.0),
+                Vec2::new(dx + 15.0, 14.0),
+            ],
+            5,
+        );
+        b.part(
+            stroke(&ant, |t| 1.4 - 0.6 * t, 1.0, 1.0, |_| 1.0),
+            &black,
+            Vec3::new(0.0, 0.0, z),
+            head,
+        );
     }
 
-    let front_wing = b.bone(Vec3::new(-3.0, 8.0, 0.5), rig, BoneKind::Wing { front: true });
+    let front_wing = b.bone(
+        Vec3::new(-3.0, 8.0, 0.5),
+        rig,
+        BoneKind::Wing { front: true },
+    );
     let mesh = wing_mesh(b.meshes);
     b.part_handle(mesh, &wing, Vec3::ZERO, front_wing);
 
@@ -303,21 +471,41 @@ struct WaspBuilder<'a, 'w, 's> {
 }
 
 impl WaspBuilder<'_, '_, '_> {
-    fn part(&mut self, mesh: Mesh, mat: &Handle<ColorMaterial>, pos: Vec3, parent: Entity) -> Entity {
+    fn part(
+        &mut self,
+        mesh: Mesh,
+        mat: &Handle<ColorMaterial>,
+        pos: Vec3,
+        parent: Entity,
+    ) -> Entity {
         let mesh = self.meshes.add(mesh);
         self.part_handle(mesh, mat, pos, parent)
     }
 
-    fn part_handle(&mut self, mesh: Handle<Mesh>, mat: &Handle<ColorMaterial>, pos: Vec3, parent: Entity) -> Entity {
+    fn part_handle(
+        &mut self,
+        mesh: Handle<Mesh>,
+        mat: &Handle<ColorMaterial>,
+        pos: Vec3,
+        parent: Entity,
+    ) -> Entity {
         self.commands
-            .spawn((Mesh2d(mesh), MeshMaterial2d(mat.clone()), Transform::from_translation(pos), ChildOf(parent)))
+            .spawn((
+                Mesh2d(mesh),
+                MeshMaterial2d(mat.clone()),
+                Transform::from_translation(pos),
+                ChildOf(parent),
+            ))
             .id()
     }
 
     fn bone(&mut self, pos: Vec3, parent: Entity, kind: BoneKind) -> Entity {
         self.commands
             .spawn((
-                Bone { owner: self.owner, kind },
+                Bone {
+                    owner: self.owner,
+                    kind,
+                },
                 Transform::from_translation(pos),
                 Visibility::default(),
                 ChildOf(parent),
@@ -385,13 +573,37 @@ fn think(
         let aggro = alive && to_player.length() < AGGRO;
         let enraged = w.enraged();
         status.health = w.hp.max(0) as f32 / HP as f32;
-        status.engaged = alive && !matches!(w.state, State::Dead { .. }) && to_player.length() < AGGRO * 1.4;
+        status.engaged =
+            alive && !matches!(w.state, State::Dead { .. }) && to_player.length() < AGGRO * 1.4;
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
-        let wobble = Vec2::new((t * 1.3 + w.seed).sin() * 25.0, (t * 2.1 + w.seed).sin() * 14.0);
+        let wobble = Vec2::new(
+            (t * 1.3 + w.seed).sin() * 25.0,
+            (t * 2.1 + w.seed).sin() * 14.0,
+        );
 
         w.state = match w.state {
-            State::Dead { t: dt0, angle, spin, landed } => {
+            State::Dead {
+                t: dt0,
+                angle,
+                spin,
+                landed,
+            } => {
                 let td = dt0 + dt;
+                // Death throes: aftershock bursts while it falls.
+                for at in [0.3, 0.6, 1.0] {
+                    if dt0 < at && td >= at {
+                        bleed.write(Bleed {
+                            pos: tf.translation.truncate(),
+                            dir: Vec2::Y,
+                            spread: PI,
+                            speed: 600.0,
+                            amount: 70,
+                            fluid: Fluid::Green,
+                            sticky: true,
+                        });
+                        shake.add(0.35);
+                    }
+                }
                 let mut landed = landed;
                 if !landed {
                     w.vel.y -= 1400.0 * dt;
@@ -432,22 +644,46 @@ fn think(
                 if tf.translation.y < -900.0 {
                     commands.entity(e).despawn();
                 }
-                let angle = if landed { angle + (PI - angle) * (1.0 - (-8.0 * dt).exp()) } else { angle + spin * dt };
-                State::Dead { t: td, angle, spin, landed }
+                let angle = if landed {
+                    angle + (PI - angle) * (1.0 - (-8.0 * dt).exp())
+                } else {
+                    angle + spin * dt
+                };
+                State::Dead {
+                    t: td,
+                    angle,
+                    spin,
+                    landed,
+                }
             }
             State::Hurt(s) => {
                 w.vel *= 1.0 - 4.0 * dt;
-                if s > 0.35 { State::Hover } else { State::Hurt(s + dt) }
+                if s > 0.35 {
+                    State::Hover
+                } else {
+                    State::Hurt(s + dt)
+                }
             }
             State::Dive(s) => {
                 let dir = to_player.normalize_or(Vec2::NEG_Y);
-                let max = if enraged { DIVE_SPEED * 1.25 } else { DIVE_SPEED };
+                let max = if enraged {
+                    DIVE_SPEED * 1.25
+                } else {
+                    DIVE_SPEED
+                };
                 w.vel = (w.vel + dir * 1400.0 * dt).clamp_length_max(max);
                 w.facing = side;
                 if !alive {
                     State::Hover
                 } else if to_player.length() < RADIUS + 15.0 {
-                    hurt_player(&mut p, ppos, pos, STING_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    hurt_player(
+                        &mut p,
+                        ppos,
+                        pos,
+                        STING_DAMAGE,
+                        &mut bleed,
+                        (&mut shake, &mut stop),
+                    );
                     w.vel = -dir * 300.0;
                     w.cooldown = 1.2;
                     State::Hover
@@ -459,7 +695,11 @@ fn think(
                 }
             }
             State::Hover | State::Aim(_) => {
-                let target = if aggro { ppos + Vec2::new(-side * KEEP_AWAY.x, KEEP_AWAY.y) } else { w.home } + wobble;
+                let target = if aggro {
+                    ppos + Vec2::new(-side * KEEP_AWAY.x, KEEP_AWAY.y)
+                } else {
+                    w.home
+                } + wobble;
                 let speed = if enraged { SPEED * 1.3 } else { SPEED };
                 let mut desired = ((target - pos) * 2.5).clamp_length_max(speed);
                 if matches!(w.state, State::Aim(_)) {
@@ -483,7 +723,11 @@ fn think(
                             spit(&mut commands, &venom, mouth, ppos, a);
                         }
                         w.spits += 1;
-                        w.cooldown = if enraged { w.rng.range(0.8, 1.3) } else { w.rng.range(1.3, 2.1) };
+                        w.cooldown = if enraged {
+                            w.rng.range(0.8, 1.3)
+                        } else {
+                            w.rng.range(1.3, 2.1)
+                        };
                         State::Hover
                     }
                     State::Aim(s) => State::Aim(s + dt),
@@ -511,12 +755,20 @@ fn think(
 
 /// Landing height if moving `from` → `to` crosses the top of a solid platform
 /// (`foot` = distance from the center down to the bottom).
-fn floor<'a>(platforms: impl Iterator<Item = (&'a Platform, &'a Transform)>, from: Vec2, to: Vec2, foot: f32) -> Option<f32> {
+fn floor<'a>(
+    platforms: impl Iterator<Item = (&'a Platform, &'a Transform)>,
+    from: Vec2,
+    to: Vec2,
+    foot: f32,
+) -> Option<f32> {
     platforms
         .filter(|(pl, ptf)| {
             let c = ptf.translation.truncate();
             let top = c.y + pl.half.y;
-            pl.solid && (to.x - c.x).abs() < pl.half.x && to.y - foot <= top && from.y - foot >= top - 6.0
+            pl.solid
+                && (to.x - c.x).abs() < pl.half.x
+                && to.y - foot <= top
+                && from.y - foot >= top - 6.0
         })
         .map(|(pl, ptf)| ptf.translation.y + pl.half.y)
         .reduce(f32::max)
@@ -532,12 +784,15 @@ fn spit(commands: &mut Commands, venom: &VenomAssets, from: Vec2, at: Vec2, angl
         Mesh2d(venom.mesh.clone()),
         MeshMaterial2d(venom.mat.clone()),
         Transform::from_translation(from.extend(15.0)),
+        camera::color_layer(),
     ));
 }
 
 fn slash_wasps(
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
+    mut punch: ResMut<ZoomPunch>,
+    mut flash: ResMut<ScreenFlash>,
     mut bleed: MessageWriter<Bleed>,
     mut paint: MessageWriter<Paint>,
     mut earned: MessageWriter<ColorEarned>,
@@ -550,12 +805,20 @@ fn slash_wasps(
     }
     let ppos = ptf.translation.truncate();
     // The hitbox is the slash wave: a half-disc in front of the chameleon.
-    let center = ppos + Vec2::new(chameleon::SLASH_CENTER.x * p.facing, chameleon::SLASH_CENTER.y);
+    let center = ppos
+        + Vec2::new(
+            chameleon::SLASH_CENTER.x * p.facing,
+            chameleon::SLASH_CENTER.y,
+        );
     for (mut w, tf) in &mut wasps {
         let pos = tf.translation.truncate();
         let in_front = (pos.x - center.x) * p.facing > -RADIUS * 0.5;
         let in_reach = pos.distance(center) < chameleon::SLASH_REACH + RADIUS;
-        if matches!(w.state, State::Dead { .. }) || w.hit_by == anim.slash_id || !in_front || !in_reach {
+        if matches!(w.state, State::Dead { .. })
+            || w.hit_by == anim.slash_id
+            || !in_front
+            || !in_reach
+        {
             continue;
         }
         w.hit_by = anim.slash_id;
@@ -581,18 +844,40 @@ fn slash_wasps(
             amount: 40,
             ..gush(0, 0.0)
         });
-        paint.write(Paint { amount: 5, fluid: Fluid::Green });
+        paint.write(Paint {
+            amount: 5,
+            fluid: Fluid::Green,
+        });
 
         if w.hp <= 0 {
             // Burst open, tear apart, and give up its color.
-            bleed.write(Bleed { dir: Vec2::Y, spread: PI, speed: 800.0, amount: 240, ..gush(0, 0.0) });
-            paint.write(Paint { amount: 10, fluid: Fluid::Green });
+            bleed.write(Bleed {
+                dir: Vec2::Y,
+                spread: PI,
+                speed: 800.0,
+                amount: 240,
+                ..gush(0, 0.0)
+            });
+            paint.write(Paint {
+                amount: 10,
+                fluid: Fluid::Green,
+            });
             earned.write(ColorEarned(BOSS_COLOR));
-            shake.add(0.8);
-            stop.add(0.35);
-            w.vel = dir * 260.0 + Vec2::Y * 280.0;
-            let spin = p.facing * -w.rng.range(5.0, 9.0);
-            w.state = State::Dead { t: 0.0, angle: 0.0, spin, landed: false };
+            // Make the kill land: freeze, then slow motion, zoom punch and a green flash.
+            shake.add(1.0);
+            stop.add(0.4);
+            stop.slow_motion(1.8);
+            punch.add(1.0);
+            flash.flash(BOSS_COLOR, 0.55);
+            // Launched high, spinning hard.
+            w.vel = dir * 420.0 + Vec2::Y * 560.0;
+            let spin = p.facing * -w.rng.range(10.0, 14.0);
+            w.state = State::Dead {
+                t: 0.0,
+                angle: 0.0,
+                spin,
+                landed: false,
+            };
             w.dismember = true;
         } else {
             shake.add(0.2);
@@ -625,13 +910,32 @@ fn move_venom(
         let pos = tf.translation.truncate() + v.vel * dt;
         tf.translation = pos.extend(tf.translation.z);
         tf.rotation = Quat::from_rotation_z(v.vel.to_angle());
-        tf.scale = Vec3::new(1.15 + (t * 30.0).sin() * 0.12, 0.9 - (t * 30.0).sin() * 0.1, 1.0);
+        tf.scale = Vec3::new(
+            1.15 + (t * 30.0).sin() * 0.12,
+            0.9 - (t * 30.0).sin() * 0.1,
+            1.0,
+        );
 
-        let splash = |dir: Vec2, amount| Bleed { pos, dir, spread: 1.2, speed: 220.0, amount, fluid: Fluid::Venom, sticky: false };
+        let splash = |dir: Vec2, amount| Bleed {
+            pos,
+            dir,
+            spread: 1.2,
+            speed: 220.0,
+            amount,
+            fluid: Fluid::Venom,
+            sticky: false,
+        };
         let d = (pos - ppos).abs();
         if p.dead.is_none() && d.x < player::HALF.x + 5.0 && d.y < player::HALF.y + 5.0 {
             let from = pos - v.vel.normalize_or_zero() * 50.0;
-            hurt_player(&mut p, ppos, from, VENOM_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+            hurt_player(
+                &mut p,
+                ppos,
+                from,
+                VENOM_DAMAGE,
+                &mut bleed,
+                (&mut shake, &mut stop),
+            );
             bleed.write(splash(-v.vel, 14));
             commands.entity(e).despawn();
             continue;
@@ -645,7 +949,12 @@ fn move_venom(
             commands.entity(e).despawn();
         } else if (t * 40.0).fract() < 0.3 {
             // A thin trail of drips.
-            bleed.write(Bleed { dir: -v.vel, spread: 0.6, speed: 60.0, ..splash(Vec2::Y, 1) });
+            bleed.write(Bleed {
+                dir: -v.vel,
+                spread: 0.6,
+                speed: 60.0,
+                ..splash(Vec2::Y, 1)
+            });
         }
     }
 }
@@ -685,22 +994,30 @@ fn dismember(
 ) {
     let mut done = Vec::new();
     for (e, bone, gt) in &bones {
-        let Ok(w) = wasps.get(bone.owner) else { continue };
+        let Ok(w) = wasps.get(bone.owner) else {
+            continue;
+        };
         if !w.dismember {
             continue;
         }
         done.push(bone.owner);
         let f = w.facing;
         let (vel, spin, bleeds) = match bone.kind {
-            BoneKind::Wing { front: true } => (Vec2::new(f * 160.0, 460.0), 9.0, false),
-            BoneKind::Wing { front: false } => (Vec2::new(-f * 140.0, 400.0), -7.0, false),
-            BoneKind::Abdomen => (Vec2::new(-f * 240.0, 300.0), f * 5.0, true),
+            BoneKind::Wing { front: true } => (Vec2::new(f * 260.0, 700.0), 13.0, false),
+            BoneKind::Wing { front: false } => (Vec2::new(-f * 230.0, 620.0), -10.0, false),
+            BoneKind::Abdomen => (Vec2::new(-f * 380.0, 460.0), f * 8.0, true),
             _ => continue,
         };
-        commands
-            .entity(e)
-            .remove::<(ChildOf, Bone)>()
-            .insert((gt.compute_transform(), Gib { vel, spin, bleeds, landed: false, t: 0.0 }));
+        commands.entity(e).remove::<(ChildOf, Bone)>().insert((
+            gt.compute_transform(),
+            Gib {
+                vel,
+                spin,
+                bleeds,
+                landed: false,
+                t: 0.0,
+            },
+        ));
     }
     for owner in done {
         if let Ok(mut w) = wasps.get_mut(owner) {
@@ -763,14 +1080,18 @@ fn animate(
             w.flash = (w.flash - dt * 5.0).max(0.0);
             for (handle, base) in &w.mats {
                 if let Some(mut mat) = materials.get_mut(handle) {
-                    mat.color = Oklaba::from(*base).mix(&Color::WHITE.into(), w.flash).into();
+                    mat.color = Oklaba::from(*base)
+                        .mix(&Color::WHITE.into(), w.flash)
+                        .into();
                 }
             }
         }
     }
 
     for (bone, mut tf) in &mut bones {
-        let Ok(w) = wasps.get(bone.owner) else { continue };
+        let Ok(w) = wasps.get(bone.owner) else {
+            continue;
+        };
         let tt = t + w.seed;
         let dead = matches!(w.state, State::Dead { .. });
         let aim = match w.state {
@@ -785,8 +1106,12 @@ fn animate(
                 tf.rotation = match w.state {
                     State::Dead { angle, .. } => Quat::from_rotation_z(angle),
                     // Nose down when diving.
-                    State::Dive(_) => Quat::from_rotation_z((w.vel.y * 0.0015).clamp(-0.6, 0.6) * w.facing),
-                    _ => Quat::from_rotation_z((-w.vel.x * w.facing * 0.0008).clamp(-0.3, 0.3) + jitter),
+                    State::Dive(_) => {
+                        Quat::from_rotation_z((w.vel.y * 0.0015).clamp(-0.6, 0.6) * w.facing)
+                    }
+                    _ => Quat::from_rotation_z(
+                        (-w.vel.x * w.facing * 0.0008).clamp(-0.3, 0.3) + jitter,
+                    ),
                 };
             }
             BoneKind::Wing { front } => {
@@ -810,16 +1135,30 @@ fn animate(
             }
             BoneKind::Head => {
                 // Rears back while aiming, snaps forward to spit.
-                let rear = if aim > 0.0 { 0.35 * aim } else { (tt * 2.0).sin() * 0.05 };
+                let rear = if aim > 0.0 {
+                    0.35 * aim
+                } else {
+                    (tt * 2.0).sin() * 0.05
+                };
                 tf.rotation = Quat::from_rotation_z(rear - if dead { 0.4 } else { 0.0 });
             }
             BoneKind::Mandible { side } => {
-                let open = 0.15 + 0.55 * aim + if matches!(w.state, State::Dive(_)) { 0.5 } else { 0.0 };
+                let open = 0.15
+                    + 0.55 * aim
+                    + if matches!(w.state, State::Dive(_)) {
+                        0.5
+                    } else {
+                        0.0
+                    };
                 let chew = (tt * 18.0).sin().max(0.0) * 0.15;
                 tf.rotation = Quat::from_rotation_z(-side * (open + chew));
             }
             BoneKind::Leg { offset } => {
-                let sway = if dead { 0.9 } else { (tt * 3.0 + offset).sin() * 0.15 - w.vel.x * w.facing * 0.0006 };
+                let sway = if dead {
+                    0.9
+                } else {
+                    (tt * 3.0 + offset).sin() * 0.15 - w.vel.x * w.facing * 0.0006
+                };
                 tf.rotation = Quat::from_rotation_z(sway);
             }
         }
