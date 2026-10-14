@@ -33,6 +33,9 @@ const SEED: u32 = 0xC0FFEE;
 const LEVEL_END: f32 = 7000.0;
 const GROUND_DEPTH: f32 = 1000.0;
 const SLAB_H: f32 = 18.0;
+/// The boss arena: one long flat stretch of ground (bosses spawn here).
+pub const ARENA_X: f32 = 1500.0;
+pub const ARENA_HALF_WIDTH: f32 = 550.0;
 
 pub struct LevelPlugin;
 
@@ -101,10 +104,34 @@ fn spawn_level(
     b.ground(x, 750.0, top);
     x += 750.0;
 
+    let mut arena_done = false;
     while x < LEVEL_END {
         // A gap, sometimes bridged by something unreliable.
         let gap = b.rng.range(90.0, 300.0);
         let next_top = (top + b.rng.range(-110.0, 70.0)).clamp(-240.0, 140.0);
+
+        // The arena: wide, flat, with a couple of ledges to dodge onto.
+        let arena_left = ARENA_X - ARENA_HALF_WIDTH;
+        if !arena_done && x + gap + 650.0 > arena_left {
+            arena_done = true;
+            top = next_top;
+            // Bridge whatever space is left before the arena, keeping gaps jumpable.
+            let space = arena_left - x;
+            if space > 150.0 {
+                // A short jump, then ground leading straight into the arena.
+                b.ground(x + 110.0, space - 110.0, top);
+                x = arena_left;
+            } else if space >= 90.0 {
+                x = arena_left;
+            }
+            // (Closer than that: the arena simply continues this chunk.)
+            b.ground(x, ARENA_HALF_WIDTH * 2.0, top);
+            for dx in [-0.55, 0.55] {
+                b.floating(Vec2::new(ARENA_X + dx * ARENA_HALF_WIDTH, top + 115.0), 120.0);
+            }
+            x += ARENA_HALF_WIDTH * 2.0;
+            continue;
+        }
         let mid = x + gap / 2.0;
         let high = top.max(next_top);
         if gap > 160.0 {

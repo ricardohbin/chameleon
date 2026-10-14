@@ -13,7 +13,9 @@ use crate::{camera, level::Platform, shapes::*};
 
 const GRAVITY: f32 = 1500.0;
 const DROP_LIFE: f32 = 4.0;
-const MAX_SPLATS: usize = 90;
+const MAX_SPLATS: usize = 50;
+/// Share of sticky drops that actually stick (the rest fall through).
+const STICK_CHANCE: f32 = 0.4;
 const MAX_STAINS: usize = 320;
 /// Seconds for fresh blood to dry to its dark tone.
 const DRY_TIME: f32 = 25.0;
@@ -39,16 +41,19 @@ pub enum Fluid {
     /// The chameleon's own.
     Red,
     Venom,
+    /// Cockroach blood: very light yellow.
+    Yellow,
 }
 
 impl Fluid {
-    const ALL: [Fluid; 3] = [Fluid::Green, Fluid::Red, Fluid::Venom];
+    const ALL: [Fluid; 4] = [Fluid::Green, Fluid::Red, Fluid::Venom, Fluid::Yellow];
 
     fn fresh(self) -> Color {
         match self {
             Fluid::Green => Color::srgb(0.42, 0.95, 0.10),
             Fluid::Red => Color::srgb(0.72, 0.02, 0.03),
             Fluid::Venom => Color::srgb(0.20, 0.56, 0.08),
+            Fluid::Yellow => Color::srgb(1.0, 0.96, 0.68),
         }
     }
 
@@ -57,6 +62,7 @@ impl Fluid {
             Fluid::Green => Color::srgb(0.13, 0.34, 0.05),
             Fluid::Red => Color::srgb(0.28, 0.02, 0.02),
             Fluid::Venom => Color::srgb(0.09, 0.24, 0.04),
+            Fluid::Yellow => Color::srgb(0.74, 0.66, 0.36),
         }
     }
 
@@ -98,6 +104,8 @@ pub struct PaintTarget {
     pub radii: Vec2,
     /// The slashing arm (receives `Paint`).
     pub claw: bool,
+    /// A circle (center, radius) kept clean, e.g. the eye.
+    pub clear: Option<(Vec2, f32)>,
 }
 
 #[derive(Component)]
@@ -214,11 +222,16 @@ impl Gore {
         local: Vec2,
         size: f32,
         fluid: Fluid,
-    ) {
+    ) -> bool {
         // Keep it on the part: pull the center inside its ellipse.
         let d = ((local - target.center) / target.radii).length();
         let local = if d > 0.85 { target.center + (local - target.center) * (0.85 / d) } else { local };
         let size = size.min(target.radii.min_element() * 1.1);
+        if let Some((center, radius)) = target.clear {
+            if local.distance(center) < radius + size * 0.5 {
+                return false;
+            }
+        }
         let mat = materials.add(fluid.fresh());
         self.seq += 1;
         let mesh = self.splats[self.rng.below(VARIANTS)].clone();
@@ -233,6 +246,7 @@ impl Gore {
             fluid.layers(),
             ChildOf(parent),
         ));
+        true
     }
 }
 
@@ -245,7 +259,8 @@ fn spray(mut commands: Commands, mut gore: ResMut<Gore>, mut bleeds: MessageRead
             // Mostly fine mist, with the occasional fat glob.
             let size = r.range(0.9, 2.4) * if r.chance(0.1) { 2.0 } else { 1.0 };
             let pos = b.pos + Vec2::new(r.range(-4.0, 4.0), r.range(-4.0, 4.0));
-            gore.spawn_drop(&mut commands, pos, vel, size, b.fluid, b.sticky);
+            let sticky = b.sticky && gore.rng.chance(STICK_CHANCE);
+            gore.spawn_drop(&mut commands, pos, vel, size, b.fluid, sticky);
         }
     }
 }
@@ -311,10 +326,11 @@ fn move_drops(
             if let Some((te, t, gt, local, dist)) = hit {
                 if dist < 1.15 {
                     // Splats grow as they hit, measured in the part's (scaled) space.
-                    let size = d.size * 1.8 / gt.scale().y.abs().max(0.01);
-                    gore.spawn_splat(&mut commands, &mut materials, te, t, local, size, d.fluid);
-                    commands.entity(e).despawn();
-                    continue;
+                    let size = d.size * 1.3 / gt.scale().y.abs().max(0.01);
+                    if gore.spawn_splat(&mut commands, &mut materials, te, t, local, size, d.fluid) {
+                        commands.entity(e).despawn();
+                        continue;
+                    }
                 }
             }
         }

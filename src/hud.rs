@@ -4,13 +4,12 @@
 use bevy::prelude::*;
 
 use crate::{
+    boss::BossStatus,
     player::{self, Player},
-    wasp::{BossStatus, BOSS_NAME},
 };
 
 const PIP_FULL: Color = Color::srgb(0.78, 0.06, 0.05);
 const PIP_EMPTY: Color = Color::srgba(0.2, 0.18, 0.17, 0.7);
-const BOSS_FILL: Color = Color::srgb(0.36, 0.78, 0.18);
 /// The bar's "recent damage" chunk, which drains after the fill.
 const BOSS_TRAIL: Color = Color::srgb(0.92, 0.90, 0.80);
 
@@ -46,6 +45,9 @@ struct Pip(i32);
 
 #[derive(Component)]
 struct BossBar;
+
+#[derive(Component)]
+struct BossName;
 
 #[derive(Component)]
 struct BossFill;
@@ -104,7 +106,8 @@ fn spawn_hud(mut commands: Commands) {
         ))
         .id();
     commands.spawn((
-        Text::new(BOSS_NAME),
+        BossName,
+        Text::new(""),
         TextFont { font_size: FontSize::Px(20.0), ..default() },
         TextColor(Color::srgb(0.88, 0.85, 0.78)),
         ChildOf(bar),
@@ -118,7 +121,7 @@ fn spawn_hud(mut commands: Commands) {
         .id();
     let fill = || Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() };
     commands.spawn((BossTrail, fill(), BackgroundColor(BOSS_TRAIL), ChildOf(track)));
-    commands.spawn((BossFill, fill(), BackgroundColor(BOSS_FILL), ChildOf(track)));
+    commands.spawn((BossFill, fill(), BackgroundColor(Color::WHITE), ChildOf(track)));
 }
 
 fn update_flash(real: Res<Time<Real>>, mut flash: ResMut<ScreenFlash>, mut overlay: Single<&mut BackgroundColor, With<FlashOverlay>>) {
@@ -139,13 +142,19 @@ fn update_boss_bar(
     time: Res<Time>,
     status: Res<BossStatus>,
     mut bar: Single<&mut Visibility, With<BossBar>>,
-    mut fill: Single<&mut Node, (With<BossFill>, Without<BossTrail>)>,
+    mut name: Single<&mut Text, With<BossName>>,
+    mut fill: Single<(&mut Node, &mut BackgroundColor), (With<BossFill>, Without<BossTrail>)>,
     mut trail: Single<&mut Node, (With<BossTrail>, Without<BossFill>)>,
     mut trail_width: Local<f32>,
 ) {
     **bar = if status.engaged { Visibility::Inherited } else { Visibility::Hidden };
     let health = status.health * 100.0;
-    fill.width = percent(health);
+    if name.0 != status.name {
+        name.0 = status.name.into();
+    }
+    // The bar takes the color of the boss (the one the chameleon will earn).
+    fill.0.width = percent(health);
+    fill.1.0 = status.color;
     // The trail lags behind, then drains (it jumps up on a heal).
     *trail_width = if health > *trail_width { health } else { *trail_width - (*trail_width - health) * (1.0 - (-3.0 * time.delta_secs()).exp()) };
     trail.width = percent(*trail_width);

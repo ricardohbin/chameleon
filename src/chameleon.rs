@@ -160,7 +160,12 @@ pub fn spawn_chameleon(
     let body_mesh = fill(&body_outline, |p| 0.55 + 0.45 * ((p.y + 15.0) / 40.0).clamp(0.0, 1.0));
     let body = c.part(body_mesh, &base, Vec3::new(0.0, 2.0, 0.0), rig);
     c.tag(body, Part::Body);
-    c.commands.entity(body).insert(PaintTarget { center: Vec2::new(0.0, 5.0), radii: Vec2::new(36.0, 16.0), claw: false });
+    c.commands.entity(body).insert(PaintTarget {
+        center: Vec2::new(0.0, 5.0),
+        radii: Vec2::new(36.0, 16.0),
+        claw: false,
+        clear: None,
+    });
 
     // Back-swept saw-tooth crest, longest over the middle of the back.
     let center = Vec2::new(0.0, 4.0);
@@ -213,7 +218,13 @@ pub fn spawn_chameleon(
 
     // --- Head: tall blade-like casque, heavy brow, fanged jaw ---
     let head = c.pivot(Vec3::new(38.0, 4.0, 0.2), body, Part::Head);
-    c.commands.entity(head).insert(PaintTarget { center: Vec2::new(12.0, 3.0), radii: Vec2::new(18.0, 10.0), claw: false });
+    c.commands.entity(head).insert(PaintTarget {
+        center: Vec2::new(12.0, 3.0),
+        radii: Vec2::new(18.0, 10.0),
+        claw: false,
+        // Keep the eye readable.
+        clear: Some((Vec2::new(11.0, 4.0), 10.0)),
+    });
     let head_outline = smooth_closed(
         &[
             Vec2::new(-8.0, -2.0),
@@ -367,7 +378,7 @@ impl Builder<'_, '_, '_> {
         let knee = self.pivot(Vec3::new(0.0, -12.0, 0.01), hip, part(Joint::Knee));
         if swipe {
             // The killing arm gets soaked first.
-            let claw = |center, radii| PaintTarget { center, radii, claw: true };
+            let claw = |center, radii| PaintTarget { center, radii, claw: true, clear: None };
             self.commands.entity(hip).insert(claw(Vec2::new(0.0, -6.0), Vec2::new(3.2, 8.0)));
             self.commands.entity(knee).insert(claw(Vec2::new(0.0, -6.0), Vec2::new(2.6, 7.5)));
         }

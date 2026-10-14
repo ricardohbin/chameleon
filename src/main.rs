@@ -1,4 +1,5 @@
 mod atmosphere;
+mod boss;
 mod camera;
 mod chameleon;
 mod dev;
@@ -6,6 +7,7 @@ mod gore;
 mod hud;
 mod level;
 mod player;
+mod roach;
 mod shapes;
 mod unstable;
 mod wasp;
@@ -29,7 +31,9 @@ fn main() {
             player::PlayerPlugin,
             chameleon::ChameleonPlugin,
             gore::GorePlugin,
+            boss::BossPlugin,
             wasp::WaspPlugin,
+            roach::RoachPlugin,
             camera::CameraPlugin,
             dev::DevPlugin,
             hud::HudPlugin,

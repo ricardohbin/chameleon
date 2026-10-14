@@ -6,31 +6,33 @@
 //! twice, then dive at the chameleon. Below half health it gets enraged:
 //! faster, spits fans of three, dives after every spit. On death its wings
 //! and abdomen tear off; the rest falls, leaks, and stays where it lands.
-//! If the chameleon dies, the boss heals back up.
+//! Health, getting hit and the death spectacle live in `boss.rs`.
 
 use std::f32::consts::PI;
 
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
-    camera::{self, HitStop, Shake, ZoomPunch},
-    hud::ScreenFlash,
-    chameleon::{self, ChameleonAnim, ColorEarned},
-    gore::{Bleed, Fluid, Paint},
+    boss::{self, Arena, Boss, BossHit, BossSpec, BossStuff},
+    camera::{self, HitStop, Shake},
+    chameleon,
+    gore::{Bleed, Fluid},
     level::Platform,
-    player::{self, Hurt, Player, Respawned},
+    player::{self, Player, Respawned},
     shapes::*,
 };
 
-pub const BOSS_NAME: &str = "VENOM MOTHER";
-/// The color the chameleon earns by killing it.
-const BOSS_COLOR: Color = Color::srgb(0.36, 0.78, 0.18);
-/// The arena (x); it hovers above the ground there.
-const ARENA_X: f32 = 1500.0;
+static SPEC: BossSpec = BossSpec {
+    name: "VENOM MOTHER",
+    hp: 14,
+    radius: RADIUS,
+    blood: Fluid::Green,
+    color: Color::srgb(0.36, 0.78, 0.18),
+    aggro: AGGRO,
+};
 /// Size of the boss relative to its drawing.
 const SCALE: f32 = 1.7;
 const HOVER_HEIGHT: f32 = 230.0;
-const HP: i32 = 1;
 /// Hurtbox radius around the thorax.
 const RADIUS: f32 = 22.0 * SCALE;
 const AGGRO: f32 = 650.0;
@@ -56,73 +58,28 @@ pub struct WaspPlugin;
 
 impl Plugin for WaspPlugin {
     fn build(&self, app: &mut App) {
-        // PostStartup: the level's platforms exist by then.
-        app.init_resource::<BossStatus>()
-            .add_systems(PostStartup, spawn_boss)
-            .add_systems(
-                Update,
-                (
-                    reset_on_respawn,
-                    think,
-                    slash_wasps,
-                    move_venom,
-                    dismember,
-                    move_gibs,
-                    animate,
-                )
-                    .chain()
-                    .after(player::move_player)
-                    .after(chameleon::update_anim_state),
-            );
+        app.add_systems(Startup, load_venom).add_systems(
+            Update,
+            (reset_on_respawn, on_hit, think, move_venom, dismember, animate)
+                .chain()
+                .after(player::move_player)
+                .after(chameleon::update_anim_state),
+        );
     }
-}
-
-/// What the HUD needs to know about the fight.
-#[derive(Resource, Default)]
-pub struct BossStatus {
-    /// Health, 0..1.
-    pub health: f32,
-    /// The fight is on (show the health bar).
-    pub engaged: bool,
 }
 
 #[derive(Component)]
 struct Wasp {
-    home: Vec2,
     vel: Vec2,
-    hp: i32,
     state: State,
     cooldown: f32,
     spits: u32,
-    /// Last slash that hit us (one hit per slash).
-    hit_by: u32,
-    /// 1 = white flash after a hit, fades to 0.
-    flash: f32,
     facing: f32,
-    /// Per-wasp time offset so they don't move in sync.
+    /// Time offset for its wobble and wingbeats.
     seed: f32,
-    /// Own materials (so one can flash alone) with their base colors.
-    mats: Vec<(Handle<ColorMaterial>, Color)>,
     /// Just died: tear off wings and abdomen this frame.
     dismember: bool,
     rng: Rng,
-}
-
-impl Wasp {
-    /// Below half health: faster and nastier.
-    fn enraged(&self) -> bool {
-        self.hp * 2 <= HP
-    }
-}
-
-/// A torn-off body part.
-#[derive(Component)]
-struct Gib {
-    vel: Vec2,
-    spin: f32,
-    bleeds: bool,
-    landed: bool,
-    t: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -167,39 +124,15 @@ struct VenomAssets {
     mat: Handle<ColorMaterial>,
 }
 
-fn spawn_boss(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    platforms: Query<(&Platform, &Transform)>,
-) {
-    let glob = fill(&ellipse_pts(8.0, 6.0, 20), |p| {
-        1.0 - 0.35 * (p - Vec2::new(2.5, 2.0)).length() / 9.0
-    });
-    commands.insert_resource(VenomAssets {
-        mesh: meshes.add(glob),
-        mat: materials.add(VENOM),
-    });
-
-    // Hover above the highest ground in the arena.
-    let ground = platforms
-        .iter()
-        .filter(|(p, tf)| !p.one_way && (tf.translation.x - ARENA_X).abs() < p.half.x)
-        .map(|(p, tf)| tf.translation.y + p.half.y)
-        .fold(f32::MIN, f32::max);
-    let home = Vec2::new(
-        ARENA_X,
-        if ground > f32::MIN { ground } else { 0.0 } + HOVER_HEIGHT,
-    );
-    spawn_wasp(&mut commands, &mut meshes, &mut materials, home);
+fn load_venom(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
+    let glob = fill(&ellipse_pts(8.0, 6.0, 20), |p| 1.0 - 0.35 * (p - Vec2::new(2.5, 2.0)).length() / 9.0);
+    commands.insert_resource(VenomAssets { mesh: meshes.add(glob), mat: materials.add(VENOM) });
 }
 
-fn spawn_wasp(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<ColorMaterial>,
-    home: Vec2,
-) {
+/// Spawns the wasp hovering over the arena.
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, arena: &Arena) {
+    let home = Vec2::new(arena.center(), arena.floor + HOVER_HEIGHT);
+
     let yellow = materials.add(YELLOW);
     let black = materials.add(BLACK);
     let eye = materials.add(EYE);
@@ -447,21 +380,19 @@ fn spawn_wasp(
     b.part_handle(mesh, &wing, Vec3::ZERO, front_wing);
 
     let mut rng = Rng(0x5EED_1234);
-    commands.entity(wasp).insert(Wasp {
-        home,
-        vel: Vec2::ZERO,
-        hp: HP,
-        state: State::Hover,
-        cooldown: rng.range(0.5, 1.5),
-        spits: 0,
-        hit_by: 0,
-        flash: 0.0,
-        facing: -1.0,
-        seed: rng.range(0.0, 100.0),
-        mats,
-        dismember: false,
-        rng,
-    });
+    commands.entity(wasp).insert((
+        Boss::new(&SPEC, home, mats),
+        Wasp {
+            vel: Vec2::ZERO,
+            state: State::Hover,
+            cooldown: rng.range(0.5, 1.5),
+            spits: 0,
+            facing: -1.0,
+            seed: rng.range(0.0, 100.0),
+            dismember: false,
+            rng,
+        },
+    ));
 }
 
 struct WaspBuilder<'a, 'w, 's> {
@@ -514,51 +445,15 @@ impl WaspBuilder<'_, '_, '_> {
     }
 }
 
-/// Damage the chameleon, knock it back and make it bleed (a lot, if it dies).
-fn hurt_player(
-    p: &mut Player,
-    ppos: Vec2,
-    from: Vec2,
-    damage: i32,
-    bleed: &mut MessageWriter<Bleed>,
-    feel: (&mut Shake, &mut HitStop),
-) {
-    let side = if ppos.x >= from.x { 1.0 } else { -1.0 };
-    let (shake, stop) = feel;
-    let red = |amount, spread, speed| Bleed {
-        pos: ppos,
-        dir: Vec2::new(side, 0.6),
-        spread,
-        speed,
-        amount,
-        fluid: Fluid::Red,
-        sticky: false,
-    };
-    match p.hurt(damage, Vec2::new(side * 380.0, 320.0)) {
-        Hurt::Ignored => {}
-        Hurt::Hurt => {
-            shake.add(0.35);
-            stop.add(0.05);
-            bleed.write(red(18 * damage as u32, 0.8, 380.0));
-        }
-        Hurt::Killed => {
-            shake.add(0.7);
-            stop.add(0.25);
-            bleed.write(red(120, PI, 520.0));
-        }
-    }
-}
-
 fn think(
     mut commands: Commands,
     time: Res<Time>,
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
-    mut status: ResMut<BossStatus>,
     venom: Res<VenomAssets>,
     mut bleed: MessageWriter<Bleed>,
     player: Single<(&mut Player, &Transform), Without<Wasp>>,
-    mut wasps: Query<(Entity, &mut Wasp, &mut Transform)>,
+    mut wasps: Query<(Entity, &mut Wasp, &Boss, &mut Transform)>,
     platforms: Query<(&Platform, &Transform), (Without<Wasp>, Without<Player>)>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
@@ -566,15 +461,12 @@ fn think(
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
 
-    for (e, mut w, mut tf) in &mut wasps {
+    for (e, mut w, boss, mut tf) in &mut wasps {
         let pos = tf.translation.truncate();
         let to_player = ppos - pos;
         let alive = p.dead.is_none();
         let aggro = alive && to_player.length() < AGGRO;
-        let enraged = w.enraged();
-        status.health = w.hp.max(0) as f32 / HP as f32;
-        status.engaged =
-            alive && !matches!(w.state, State::Dead { .. }) && to_player.length() < AGGRO * 1.4;
+        let enraged = boss.enraged();
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
         let wobble = Vec2::new(
             (t * 1.3 + w.seed).sin() * 25.0,
@@ -609,7 +501,7 @@ fn think(
                     w.vel.y -= 1400.0 * dt;
                     let next = pos + w.vel * dt;
                     // Land belly-up on the first solid top below.
-                    if let Some(top) = floor(platforms.iter(), pos, next, 8.0 * SCALE) {
+                    if let Some(top) = boss::floor(platforms.iter(), pos, next, 8.0 * SCALE) {
                         tf.translation.y = top + 8.0 * SCALE;
                         tf.translation.x = next.x;
                         w.vel = Vec2::ZERO;
@@ -676,7 +568,7 @@ fn think(
                 if !alive {
                     State::Hover
                 } else if to_player.length() < RADIUS + 15.0 {
-                    hurt_player(
+                    boss::hurt_player(
                         &mut p,
                         ppos,
                         pos,
@@ -698,7 +590,7 @@ fn think(
                 let target = if aggro {
                     ppos + Vec2::new(-side * KEEP_AWAY.x, KEEP_AWAY.y)
                 } else {
-                    w.home
+                    boss.home
                 } + wobble;
                 let speed = if enraged { SPEED * 1.3 } else { SPEED };
                 let mut desired = ((target - pos) * 2.5).clamp_length_max(speed);
@@ -753,27 +645,6 @@ fn think(
     }
 }
 
-/// Landing height if moving `from` → `to` crosses the top of a solid platform
-/// (`foot` = distance from the center down to the bottom).
-fn floor<'a>(
-    platforms: impl Iterator<Item = (&'a Platform, &'a Transform)>,
-    from: Vec2,
-    to: Vec2,
-    foot: f32,
-) -> Option<f32> {
-    platforms
-        .filter(|(pl, ptf)| {
-            let c = ptf.translation.truncate();
-            let top = c.y + pl.half.y;
-            pl.solid
-                && (to.x - c.x).abs() < pl.half.x
-                && to.y - foot <= top
-                && from.y - foot >= top - 6.0
-        })
-        .map(|(pl, ptf)| ptf.translation.y + pl.half.y)
-        .reduce(f32::max)
-}
-
 fn spit(commands: &mut Commands, venom: &VenomAssets, from: Vec2, at: Vec2, angle: f32) {
     // Aim a little above the target to make up for the venom's drop.
     let flight = (at - from).length() / VENOM_SPEED;
@@ -785,104 +656,22 @@ fn spit(commands: &mut Commands, venom: &VenomAssets, from: Vec2, at: Vec2, angl
         MeshMaterial2d(venom.mat.clone()),
         Transform::from_translation(from.extend(15.0)),
         camera::color_layer(),
+        BossStuff,
     ));
 }
 
-fn slash_wasps(
-    mut shake: ResMut<Shake>,
-    mut stop: ResMut<HitStop>,
-    mut punch: ResMut<ZoomPunch>,
-    mut flash: ResMut<ScreenFlash>,
-    mut bleed: MessageWriter<Bleed>,
-    mut paint: MessageWriter<Paint>,
-    mut earned: MessageWriter<ColorEarned>,
-    player: Single<(&Player, &Transform, &ChameleonAnim)>,
-    mut wasps: Query<(&mut Wasp, &Transform)>,
-) {
-    let (p, ptf, anim) = *player;
-    if !anim.striking() {
-        return;
-    }
-    let ppos = ptf.translation.truncate();
-    // The hitbox is the slash wave: a half-disc in front of the chameleon.
-    let center = ppos
-        + Vec2::new(
-            chameleon::SLASH_CENTER.x * p.facing,
-            chameleon::SLASH_CENTER.y,
-        );
-    for (mut w, tf) in &mut wasps {
-        let pos = tf.translation.truncate();
-        let in_front = (pos.x - center.x) * p.facing > -RADIUS * 0.5;
-        let in_reach = pos.distance(center) < chameleon::SLASH_REACH + RADIUS;
-        if matches!(w.state, State::Dead { .. })
-            || w.hit_by == anim.slash_id
-            || !in_front
-            || !in_reach
-        {
-            continue;
-        }
-        w.hit_by = anim.slash_id;
-        w.hp -= 1;
-        w.flash = 1.0;
-        let dir = Vec2::new(p.facing, 0.3).normalize();
-
-        // The gush: a fan of blood along the cut, and a backsplash right onto the chameleon.
-        let gush = |amount, speed| Bleed {
-            pos,
-            dir: Vec2::new(p.facing, 0.35),
-            spread: 0.8,
-            speed,
-            amount,
-            fluid: Fluid::Green,
-            sticky: true,
-        };
-        bleed.write(gush(60, 650.0));
-        bleed.write(Bleed {
-            dir: ppos + Vec2::Y * 8.0 - pos,
-            spread: 0.4,
-            speed: 420.0,
-            amount: 40,
-            ..gush(0, 0.0)
-        });
-        paint.write(Paint {
-            amount: 5,
-            fluid: Fluid::Green,
-        });
-
-        if w.hp <= 0 {
-            // Burst open, tear apart, and give up its color.
-            bleed.write(Bleed {
-                dir: Vec2::Y,
-                spread: PI,
-                speed: 800.0,
-                amount: 240,
-                ..gush(0, 0.0)
-            });
-            paint.write(Paint {
-                amount: 10,
-                fluid: Fluid::Green,
-            });
-            earned.write(ColorEarned(BOSS_COLOR));
-            // Make the kill land: freeze, then slow motion, zoom punch and a green flash.
-            shake.add(1.0);
-            stop.add(0.4);
-            stop.slow_motion(1.8);
-            punch.add(1.0);
-            flash.flash(BOSS_COLOR, 0.55);
+/// React to the slash (health and blood are handled in `boss.rs`).
+fn on_hit(mut hits: MessageReader<BossHit>, mut wasps: Query<&mut Wasp>) {
+    for hit in hits.read() {
+        let Ok(mut w) = wasps.get_mut(hit.boss) else { continue };
+        if hit.killed {
             // Launched high, spinning hard.
-            w.vel = dir * 420.0 + Vec2::Y * 560.0;
-            let spin = p.facing * -w.rng.range(10.0, 14.0);
-            w.state = State::Dead {
-                t: 0.0,
-                angle: 0.0,
-                spin,
-                landed: false,
-            };
+            w.vel = hit.dir * 420.0 + Vec2::Y * 560.0;
+            let spin = -hit.dir.x.signum() * w.rng.range(10.0, 14.0);
+            w.state = State::Dead { t: 0.0, angle: 0.0, spin, landed: false };
             w.dismember = true;
         } else {
-            shake.add(0.2);
-            stop.add(0.07);
-            w.vel = dir * 450.0;
+            w.vel = hit.dir * 450.0;
             w.state = State::Hurt(0.0);
             w.cooldown = w.cooldown.max(0.6);
         }
@@ -928,7 +717,7 @@ fn move_venom(
         let d = (pos - ppos).abs();
         if p.dead.is_none() && d.x < player::HALF.x + 5.0 && d.y < player::HALF.y + 5.0 {
             let from = pos - v.vel.normalize_or_zero() * 50.0;
-            hurt_player(
+            boss::hurt_player(
                 &mut p,
                 ppos,
                 from,
@@ -959,27 +748,24 @@ fn move_venom(
     }
 }
 
-/// The chameleon came back: the boss (if still alive) heals and starts over.
+/// The chameleon came back: start the fight over (`boss.rs` heals it).
 fn reset_on_respawn(
     mut commands: Commands,
     mut respawned: MessageReader<Respawned>,
-    mut wasps: Query<(&mut Wasp, &mut Transform)>,
+    mut wasps: Query<&mut Wasp>,
     venom: Query<Entity, With<Venom>>,
 ) {
     if respawned.read().count() == 0 {
         return;
     }
-    for (mut w, mut tf) in &mut wasps {
+    for mut w in &mut wasps {
         if matches!(w.state, State::Dead { .. }) {
             continue;
         }
-        w.hp = HP;
         w.state = State::Hover;
         w.vel = Vec2::ZERO;
         w.spits = 0;
         w.cooldown = 1.5;
-        w.flash = 0.01; // restores its colors
-        tf.translation = w.home.extend(tf.translation.z);
     }
     for e in &venom {
         commands.entity(e).despawn();
@@ -987,37 +773,23 @@ fn reset_on_respawn(
 }
 
 /// Tear the wings and abdomen off a freshly killed wasp.
-fn dismember(
-    mut commands: Commands,
-    mut wasps: Query<&mut Wasp>,
-    bones: Query<(Entity, &Bone, &GlobalTransform)>,
-) {
+fn dismember(mut commands: Commands, mut wasps: Query<&mut Wasp>, bones: Query<(Entity, &Bone, &GlobalTransform)>) {
     let mut done = Vec::new();
     for (e, bone, gt) in &bones {
-        let Ok(w) = wasps.get(bone.owner) else {
-            continue;
-        };
+        let Ok(w) = wasps.get(bone.owner) else { continue };
         if !w.dismember {
             continue;
         }
         done.push(bone.owner);
         let f = w.facing;
         let (vel, spin, bleeds) = match bone.kind {
-            BoneKind::Wing { front: true } => (Vec2::new(f * 260.0, 700.0), 13.0, false),
-            BoneKind::Wing { front: false } => (Vec2::new(-f * 230.0, 620.0), -10.0, false),
-            BoneKind::Abdomen => (Vec2::new(-f * 380.0, 460.0), f * 8.0, true),
+            BoneKind::Wing { front: true } => (Vec2::new(f * 260.0, 700.0), 13.0, None),
+            BoneKind::Wing { front: false } => (Vec2::new(-f * 230.0, 620.0), -10.0, None),
+            BoneKind::Abdomen => (Vec2::new(-f * 380.0, 460.0), f * 8.0, Some(Fluid::Green)),
             _ => continue,
         };
-        commands.entity(e).remove::<(ChildOf, Bone)>().insert((
-            gt.compute_transform(),
-            Gib {
-                vel,
-                spin,
-                bleeds,
-                landed: false,
-                t: 0.0,
-            },
-        ));
+        commands.entity(e).remove::<Bone>();
+        boss::tear_off(&mut commands, e, gt, vel, spin, bleeds);
     }
     for owner in done {
         if let Ok(mut w) = wasps.get_mut(owner) {
@@ -1026,68 +798,9 @@ fn dismember(
     }
 }
 
-fn move_gibs(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut bleed: MessageWriter<Bleed>,
-    mut gibs: Query<(Entity, &mut Gib, &mut Transform)>,
-    platforms: Query<(&Platform, &Transform), Without<Gib>>,
-) {
-    let dt = time.delta_secs().min(1.0 / 30.0);
-    for (e, mut g, mut tf) in &mut gibs {
-        g.t += dt;
-        let pos = tf.translation.truncate();
-        if !g.landed {
-            g.vel.y -= 1400.0 * dt;
-            let next = pos + g.vel * dt;
-            if let Some(top) = floor(platforms.iter(), pos, next, 4.0) {
-                tf.translation.y = top + 4.0;
-                g.landed = true;
-            } else {
-                tf.translation.x = next.x;
-                tf.translation.y = next.y;
-                tf.rotate_z(g.spin * dt);
-            }
-        }
-        // The torn end pumps out blood for a while.
-        if g.bleeds && g.t < 3.0 && (g.t * 60.0) as u32 % 3 == 0 {
-            bleed.write(Bleed {
-                pos: tf.translation.truncate(),
-                dir: Vec2::Y,
-                spread: 1.2,
-                speed: if g.landed { 160.0 } else { 90.0 },
-                amount: 1,
-                fluid: Fluid::Green,
-                sticky: true,
-            });
-        }
-        if tf.translation.y < -900.0 {
-            commands.entity(e).despawn();
-        }
-    }
-}
-
-fn animate(
-    time: Res<Time>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut wasps: Query<&mut Wasp>,
-    mut bones: Query<(&Bone, &mut Transform)>,
-) {
+fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut Transform)>) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
-    for mut w in &mut wasps {
-        if w.flash > 0.0 {
-            w.flash = (w.flash - dt * 5.0).max(0.0);
-            for (handle, base) in &w.mats {
-                if let Some(mut mat) = materials.get_mut(handle) {
-                    mat.color = Oklaba::from(*base)
-                        .mix(&Color::WHITE.into(), w.flash)
-                        .into();
-                }
-            }
-        }
-    }
-
     for (bone, mut tf) in &mut bones {
         let Ok(w) = wasps.get(bone.owner) else {
             continue;
