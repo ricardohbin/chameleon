@@ -5,7 +5,7 @@ use std::f32::consts::PI;
 
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
-use crate::{camera::Shake, shapes::*};
+use crate::{camera::{MainCamera, Shake}, shapes::*};
 
 const SKY_TOP: Color = Color::srgb(0.07, 0.07, 0.08);
 const SKY_HORIZON: Color = Color::srgb(0.52, 0.36, 0.27);
@@ -294,7 +294,7 @@ fn spawn_particles(
 
 fn drift_particles(
     time: Res<Time>,
-    camera: Single<&Transform, (With<Camera2d>, Without<Particle>)>,
+    camera: Single<&Transform, (With<MainCamera>, Without<Particle>)>,
     mut particles: Query<(&Particle, &mut Transform)>,
 ) {
     let dt = time.delta_secs();
@@ -406,8 +406,8 @@ fn bolt_mesh_gen(rng: &mut Rng) -> Mesh {
 }
 
 fn parallax(
-    camera: Single<&Transform, With<Camera2d>>,
-    mut layers: Query<(&Parallax, &mut Transform), Without<Camera2d>>,
+    camera: Single<&Transform, With<MainCamera>>,
+    mut layers: Query<(&Parallax, &mut Transform), Without<MainCamera>>,
 ) {
     let cam = camera.translation.truncate();
     for (layer, mut tf) in &mut layers {

@@ -2,7 +2,7 @@
 //!
 //! Everything is built from shaded meshes (see `shapes.rs`) arranged in a
 //! bone-like hierarchy, so it can be animated procedurally:
-//! walk cycle, curling tail, darting eye, tongue shot and camouflage.
+//! walk cycle, curling tail, darting eye, claw slash and camouflage.
 //!
 //! Local coordinates: the chameleon faces +X, origin = player collider center.
 
@@ -11,6 +11,8 @@ use std::f32::consts::PI;
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
+    camera,
+    gore::PaintTarget,
     player::{self, Player},
     shapes::*,
 };
@@ -20,18 +22,24 @@ const DEFAULT_SKIN: Color = Color::srgb(0.86, 0.85, 0.83);
 const MOUTH: Color = Color::srgb(0.05, 0.04, 0.04);
 const BONE: Color = Color::srgb(0.95, 0.93, 0.88);
 const EYE_GLOW: Color = Color::srgb(1.0, 0.96, 0.85);
-const TONGUE: Color = Color::srgb(0.70, 0.60, 0.62);
-const TONGUE_TIP: Color = Color::srgb(0.50, 0.40, 0.43);
-const TONGUE_TIME: f32 = 0.32;
-const TONGUE_REACH: f32 = 130.0;
+const WAVE: Color = Color::srgb(0.95, 0.94, 0.90);
+const SLASH_TIME: f32 = 0.34;
+/// Part of the slash (as a fraction of `SLASH_TIME`) where the claws cut.
+const STRIKE: (f32, f32) = (0.3, 0.52);
+/// Slash wave, in rig units: centered on the swiping shoulder.
+const WAVE_CENTER: Vec2 = Vec2::new(24.0, -2.0);
+const WAVE_RADIUS: f32 = 52.0;
+/// The slash hitbox in world units (x is mirrored by facing): matches the wave.
+pub const SLASH_CENTER: Vec2 = Vec2::new(WAVE_CENTER.x * player::SCALE, WAVE_CENTER.y * player::SCALE);
+pub const SLASH_REACH: f32 = WAVE_RADIUS * player::SCALE * 1.15;
 
 pub struct ChameleonPlugin;
 
 impl Plugin for ChameleonPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<UnlockedColors>().add_systems(
+        app.init_resource::<UnlockedColors>().add_message::<ColorEarned>().add_systems(
             Update,
-            (update_anim_state, pose_parts, animate_tail, camouflage)
+            (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave)
                 .chain()
                 .after(player::move_player),
         );
@@ -43,6 +51,10 @@ impl Plugin for ChameleonPlugin {
 /// (e.g. `unlocked.0.push(level::lost_colors::PINK)` when the player reaches a goal).
 #[derive(Resource, Default)]
 pub struct UnlockedColors(pub Vec<Color>);
+
+/// A beaten boss gives its color: the chameleon's skin turns to it for good.
+#[derive(Message)]
+pub struct ColorEarned(pub Color);
 
 /// Skin materials, re-tinted together by the camouflage system.
 #[derive(Resource)]
@@ -67,9 +79,15 @@ pub struct ChameleonAnim {
     look: Vec2,
     look_target: Vec2,
     look_timer: f32,
-    /// Seconds since the tongue was fired, `None` when retracted.
-    tongue: Option<f32>,
+    /// Seconds since the claw slash started, `None` when not slashing.
+    slash: Option<f32>,
+    /// Increments on every slash, so each one hits a target only once.
+    pub slash_id: u32,
     skin: Oklcha,
+    /// Resting skin color (white until a color is earned).
+    base_skin: Color,
+    /// 0 = alive, 1 = lying dead belly-up.
+    death: f32,
     rng: u32,
 }
 
@@ -79,11 +97,10 @@ enum Part {
     Rig,
     Body,
     Head,
-    Leg { front: bool, offset: f32, joint: Joint },
+    /// `swipe`: the near front leg, which also slashes.
+    Leg { front: bool, offset: f32, joint: Joint, swipe: bool },
     EyeCone,
     Pupil,
-    TongueBody,
-    TongueTip,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +112,10 @@ enum Joint {
 
 #[derive(Component)]
 struct Tail(Handle<Mesh>);
+
+/// The faint crescent left in the air by the claws.
+#[derive(Component)]
+struct SlashWave(Handle<ColorMaterial>);
 
 pub fn spawn_chameleon(
     commands: &mut Commands,
@@ -139,6 +160,7 @@ pub fn spawn_chameleon(
     let body_mesh = fill(&body_outline, |p| 0.55 + 0.45 * ((p.y + 15.0) / 40.0).clamp(0.0, 1.0));
     let body = c.part(body_mesh, &base, Vec3::new(0.0, 2.0, 0.0), rig);
     c.tag(body, Part::Body);
+    c.commands.entity(body).insert(PaintTarget { center: Vec2::new(0.0, 5.0), radii: Vec2::new(36.0, 16.0), claw: false });
 
     // Back-swept saw-tooth crest, longest over the middle of the back.
     let center = Vec2::new(0.0, 4.0);
@@ -184,13 +206,14 @@ pub fn spawn_chameleon(
     c.commands.entity(tail).insert(Tail(tail_handle));
 
     // --- Legs: far side (behind body, in shadow) then near side ---
-    c.leg(Vec3::new(28.0, -4.0, -0.5), true, PI, &shadow, body);
-    c.leg(Vec3::new(-20.0, -4.0, -0.5), false, 0.0, &shadow, body);
-    c.leg(Vec3::new(24.0, -4.0, 0.6), true, 0.0, &base, body);
-    c.leg(Vec3::new(-24.0, -4.0, 0.6), false, PI, &base, body);
+    c.leg(Vec3::new(28.0, -4.0, -0.5), true, PI, false, &shadow, body);
+    c.leg(Vec3::new(-20.0, -4.0, -0.5), false, 0.0, false, &shadow, body);
+    c.leg(Vec3::new(24.0, -4.0, 0.6), true, 0.0, true, &base, body);
+    c.leg(Vec3::new(-24.0, -4.0, 0.6), false, PI, false, &base, body);
 
     // --- Head: tall blade-like casque, heavy brow, fanged jaw ---
     let head = c.pivot(Vec3::new(38.0, 4.0, 0.2), body, Part::Head);
+    c.commands.entity(head).insert(PaintTarget { center: Vec2::new(12.0, 3.0), radii: Vec2::new(18.0, 10.0), claw: false });
     let head_outline = smooth_closed(
         &[
             Vec2::new(-8.0, -2.0),
@@ -266,14 +289,16 @@ pub fn spawn_chameleon(
     let brow = smooth_open(&[Vec2::new(-0.5, 10.5), Vec2::new(10.0, 7.8), Vec2::new(20.5, 3.8)], 6);
     c.part(stroke(&brow, |t| 3.8 - 2.3 * t, 1.0, 1.0, |_| 1.0), &accent, Vec3::new(0.0, 0.0, 0.15), head);
 
-    // Tongue: hidden until fired.
-    let tongue = c.empty(Vec3::new(31.0, -3.0, -0.15), head);
-    let tongue_mat = materials.add(TONGUE);
-    let tip_mat = materials.add(TONGUE_TIP);
-    let body_part = c.part(Rectangle::new(1.0, 3.2).into(), &tongue_mat, Vec3::ZERO, tongue);
-    c.commands.entity(body_part).insert((Part::TongueBody, Visibility::Hidden));
-    let tip = c.part(fill(&ellipse_pts(4.4, 3.8, 20), |p| 1.0 - 0.2 * (p.length() / 4.4)), &tip_mat, Vec3::ZERO, tongue);
-    c.commands.entity(tip).insert((Part::TongueTip, Visibility::Hidden));
+    // Slash wave: a thin crescent around the swiping shoulder, hidden until a slash.
+    let wave_mat = materials.add(ColorMaterial {
+        color: WAVE.with_alpha(0.0),
+        alpha_mode: AlphaMode2d::Blend,
+        ..default()
+    });
+    let arc: Vec<Vec2> = (0..=32).map(|i| Vec2::from_angle(lerp(1.35, -1.45, i as f32 / 32.0)) * WAVE_RADIUS).collect();
+    let wave_mesh = stroke(&arc, |t| 0.4 + 7.0 * (PI * t).sin().powf(0.7) * (0.35 + 0.65 * t), 1.0, 0.55, |_| 1.0);
+    let wave = c.part(wave_mesh, &wave_mat, WAVE_CENTER.extend(0.9), rig);
+    c.commands.entity(wave).insert((SlashWave(wave_mat), Visibility::Hidden));
 
     c.commands.insert_resource(SkinMaterials { base, shadow, light, accent });
     c.commands.entity(player).insert(ChameleonAnim {
@@ -284,8 +309,11 @@ pub fn spawn_chameleon(
         look: Vec2::X,
         look_target: Vec2::X,
         look_timer: 1.0,
-        tongue: None,
+        slash: None,
+        slash_id: 0,
         skin: DEFAULT_SKIN.into(),
+        base_skin: DEFAULT_SKIN,
+        death: 0.0,
         rng: 0x9E37_79B9,
     });
 }
@@ -332,11 +360,17 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Two-segment leg with a zygodactyl (tong-like) foot.
-    fn leg(&mut self, joint: Vec3, front: bool, offset: f32, mat: &Handle<ColorMaterial>, parent: Entity) {
-        let part = |joint| Part::Leg { front, offset, joint };
+    fn leg(&mut self, joint: Vec3, front: bool, offset: f32, swipe: bool, mat: &Handle<ColorMaterial>, parent: Entity) {
+        let part = |joint| Part::Leg { front, offset, joint, swipe };
         let hip = self.pivot(joint, parent, part(Joint::Hip));
         self.part(Capsule2d::new(3.1, 12.0).into(), mat, Vec3::new(0.0, -6.0, 0.0), hip);
         let knee = self.pivot(Vec3::new(0.0, -12.0, 0.01), hip, part(Joint::Knee));
+        if swipe {
+            // The killing arm gets soaked first.
+            let claw = |center, radii| PaintTarget { center, radii, claw: true };
+            self.commands.entity(hip).insert(claw(Vec2::new(0.0, -6.0), Vec2::new(3.2, 8.0)));
+            self.commands.entity(knee).insert(claw(Vec2::new(0.0, -6.0), Vec2::new(2.6, 7.5)));
+        }
         self.part(Capsule2d::new(2.3, 11.0).into(), mat, Vec3::new(0.0, -5.5, 0.0), knee);
         let foot = self.pivot(Vec3::new(0.0, -11.0, 0.01), knee, part(Joint::Foot));
         for side in [1.0, -1.0] {
@@ -368,7 +402,7 @@ fn tail_mesh(curl: f32) -> Mesh {
     })
 }
 
-fn update_anim_state(
+pub fn update_anim_state(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     player: Single<(&Player, &mut ChameleonAnim)>,
@@ -381,18 +415,21 @@ fn update_anim_state(
     a.air = smooth(a.air, if p.grounded { 0.0 } else { 1.0 }, 10.0, dt);
     a.phase += dt * speed * 0.075;
 
-    let curl_target = if !p.grounded { 0.25 } else { 1.0 - 0.55 * a.stride };
+    let dead = p.dead.is_some();
+    a.death = if dead { smooth(a.death, 1.0, 6.0, dt) } else { 0.0 };
+    let curl_target = if dead { 1.0 } else if !p.grounded { 0.25 } else { 1.0 - 0.55 * a.stride };
     a.curl = smooth(a.curl, curl_target, 4.0, dt);
 
-    // Tongue.
-    if keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) && a.tongue.is_none() {
-        a.tongue = Some(0.0);
+    // Claw slash.
+    if keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) && a.slash.is_none() && p.stun <= 0.0 && !dead {
+        a.slash = Some(0.0);
+        a.slash_id += 1;
     }
-    a.tongue = a.tongue.map(|t| t + dt).filter(|&t| t < TONGUE_TIME);
+    a.slash = a.slash.map(|t| t + dt).filter(|&t| t < SLASH_TIME);
 
     // Eye: look ahead while moving, dart around randomly while idle.
     a.look_timer -= dt;
-    if a.tongue.is_some() || speed > 20.0 {
+    if a.slash.is_some() || speed > 20.0 {
         a.look_target = Vec2::new(1.0, (p.vel.y * 0.0006).clamp(-0.6, 0.6)).normalize();
         a.look_timer = 0.8;
     } else if a.look_timer <= 0.0 {
@@ -414,7 +451,8 @@ fn pose_parts(
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     let bob = -(a.phase.sin().abs()) * 1.8 * a.stride;
-    let tongue_len = a.tongue.map_or(0.0, |t| (PI * t / TONGUE_TIME).sin() * TONGUE_REACH);
+    let slash = a.slash.map(|t| slash_pose(t / SLASH_TIME));
+    let lunge = slash.map_or(0.0, |s| s.3);
 
     for (part, mut tf, mut vis) in &mut parts {
         match *part {
@@ -422,38 +460,66 @@ fn pose_parts(
                 // Flip by scaling X through zero: reads as a quick turn.
                 tf.scale.x = smooth(tf.scale.x, p.facing * player::SCALE, 16.0, dt);
                 let tilt = (p.vel.y * 0.00035).clamp(-0.25, 0.25) * a.air;
-                tf.rotation = Quat::from_rotation_z(tilt * p.facing);
+                // Dead: rolls over belly-up.
+                tf.rotation = Quat::from_rotation_z(lerp(tilt, PI, a.death) * p.facing);
+                tf.translation.y = a.death * 6.0;
+                // Blink while invulnerable.
+                let blink = p.invuln > 0.0 && p.dead.is_none() && (t * 30.0).sin() > 0.0;
+                *vis = if blink { Visibility::Hidden } else { Visibility::Inherited };
             }
             Part::Body => {
+                tf.translation.x = lunge * 4.0;
                 tf.translation.y = 2.0 + bob;
-                tf.rotation = Quat::from_rotation_z((a.phase * 2.0).sin() * 0.025 * a.stride);
+                tf.rotation = Quat::from_rotation_z((a.phase * 2.0).sin() * 0.025 * a.stride - lunge * 0.07);
                 tf.scale.y = 1.0 + (t * 2.2).sin() * 0.012; // breathing
             }
             Part::Head => {
                 let nod = (a.phase * 2.0).sin() * 0.05 * a.stride + (t * 1.3).sin() * 0.02;
-                tf.rotation = Quat::from_rotation_z(nod + 0.12 * a.air);
+                tf.rotation = Quat::from_rotation_z(nod + 0.12 * a.air - lunge * 0.08);
             }
-            Part::Leg { front, offset, joint } => {
-                let (hip, knee) = leg_angles(front, offset, a);
+            Part::Leg { front, offset, joint, swipe } => {
+                let (mut hip, mut knee) = leg_angles(front, offset, a);
+                let mut foot = -(hip + knee); // keep the foot flat
+                if let (true, Some((w, s_hip, s_knee, _))) = (swipe, slash) {
+                    hip = lerp(hip, s_hip, w);
+                    knee = lerp(knee, s_knee, w);
+                    foot = lerp(foot, 0.5, w); // claws hooked forward
+                }
+                if a.death > 0.0 {
+                    // Legs up, twitching less and less.
+                    let s = if front { 1.0 } else { -1.0 };
+                    let twitch = (t * 25.0 + offset).sin() * 0.3 * (1.0 - a.death).max(0.1);
+                    hip = lerp(hip, s * 0.5 + twitch, a.death);
+                    knee = lerp(knee, -s * 1.3, a.death);
+                }
                 tf.rotation = Quat::from_rotation_z(match joint {
                     Joint::Hip => hip,
                     Joint::Knee => knee,
-                    Joint::Foot => -(hip + knee), // keep the foot flat
+                    Joint::Foot => foot,
                 });
             }
             Part::EyeCone => tf.translation = (a.look * 2.6).extend(tf.translation.z),
             Part::Pupil => tf.translation = (a.look * 1.0).extend(tf.translation.z),
-            Part::TongueBody => {
-                tf.translation.x = tongue_len / 2.0;
-                tf.scale.x = tongue_len.max(0.001);
-                *vis = visible(tongue_len);
-            }
-            Part::TongueTip => {
-                tf.translation.x = tongue_len;
-                *vis = visible(tongue_len);
-            }
         }
     }
+}
+
+/// Swipe pose at slash progress `u` (0..1): (blend weight, hip, knee, body lunge).
+fn slash_pose(u: f32) -> (f32, f32, f32, f32) {
+    let ease = |x: f32| x * x * (3.0 - 2.0 * x);
+    let w = ease((u / 0.12).min(1.0)) * (1.0 - ease(((u - 0.6) / 0.4).clamp(0.0, 1.0)));
+    let (hip, knee) = if u < STRIKE.0 {
+        // Wind up: claw raised high above the head.
+        let k = ease(u / STRIKE.0);
+        (lerp(0.4, 2.6, k), lerp(-0.6, -1.5, k))
+    } else {
+        // Rip down through the target, then hold the follow-through.
+        let k = ((u - STRIKE.0) / (STRIKE.1 - STRIKE.0)).min(1.0);
+        let k = 1.0 - (1.0 - k).powi(3);
+        (lerp(2.6, 0.05, k), lerp(-1.5, -0.1, k))
+    };
+    let lunge = (PI * ((u - 0.15) / 0.6).clamp(0.0, 1.0)).sin();
+    (w, hip, knee, lunge)
 }
 
 fn leg_angles(front: bool, offset: f32, a: &ChameleonAnim) -> (f32, f32) {
@@ -476,6 +542,25 @@ fn animate_tail(
     }
 }
 
+fn slash_wave(
+    player: Single<&ChameleonAnim>,
+    wave: Single<(&SlashWave, &mut Transform, &mut Visibility)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let (wave, mut tf, mut vis) = wave.into_inner();
+    let k = player.slash.map_or(-1.0, |t| (t / SLASH_TIME - STRIKE.0) / 0.45);
+    if !(0.0..1.0).contains(&k) {
+        *vis = Visibility::Hidden;
+        return;
+    }
+    // Barely there: a quick ripple that widens and fades.
+    *vis = Visibility::Inherited;
+    tf.scale = Vec3::splat(0.9 + 0.25 * k);
+    if let Some(mut mat) = materials.get_mut(&wave.0) {
+        mat.color.set_alpha(0.55 * (1.0 - k).powf(1.3));
+    }
+}
+
 /// Slowly blend the skin towards the color of the surface we stand on.
 fn camouflage(
     time: Res<Time>,
@@ -485,20 +570,42 @@ fn camouflage(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let (p, mut a) = player.into_inner();
-    if p.grounded {
-        // Blend in Oklab: hue interpolation from white (no hue) looks odd in Oklch.
-        let default: Oklaba = DEFAULT_SKIN.into();
-        let target = match p.ground_color {
-            Some(c) if unlocked.0.contains(&c) => default.mix(&c.into(), 0.8),
-            _ => default,
-        };
-        let current: Oklaba = a.skin.into();
-        a.skin = current.mix(&target, 1.0 - (-time.delta_secs() * 2.5).exp()).into();
-    }
+    // Blend in Oklab: hue interpolation from white (no hue) looks odd in Oklch.
+    let base: Oklaba = a.base_skin.into();
+    let target = match p.ground_color {
+        Some(c) if p.grounded && unlocked.0.contains(&c) => base.mix(&c.into(), 0.8),
+        _ => base,
+    };
+    let current: Oklaba = a.skin.into();
+    a.skin = current.mix(&target, 1.0 - (-time.delta_secs() * 1.8).exp()).into();
     let colors = palette(a.skin);
     for (handle, color) in [&skin.base, &skin.shadow, &skin.light, &skin.accent].into_iter().zip(colors) {
         if let Some(mut mat) = materials.get_mut(handle) {
             mat.color = color;
+        }
+    }
+}
+
+/// Takes on an earned color. The world camera is grayscale, so the whole
+/// chameleon moves to the color layer to actually show it.
+fn earn_color(
+    mut commands: Commands,
+    mut earned: MessageReader<ColorEarned>,
+    mut unlocked: ResMut<UnlockedColors>,
+    player: Single<(Entity, &mut ChameleonAnim)>,
+    children: Query<&Children>,
+    meshes: Query<(), With<Mesh2d>>,
+) {
+    let (entity, mut a) = player.into_inner();
+    for ColorEarned(color) in earned.read() {
+        a.base_skin = *color;
+        if !unlocked.0.contains(color) {
+            unlocked.0.push(*color);
+        }
+        for e in children.iter_descendants(entity) {
+            if meshes.contains(e) {
+                commands.entity(e).insert(camera::color_layer());
+            }
         }
     }
 }
@@ -512,6 +619,11 @@ fn palette(c: Oklcha) -> [Color; 4] {
 }
 
 impl ChameleonAnim {
+    /// True while the claws are cutting through the air.
+    pub fn striking(&self) -> bool {
+        self.slash.is_some_and(|t| (STRIKE.0..=STRIKE.1).contains(&(t / SLASH_TIME)))
+    }
+
     /// Tiny xorshift RNG in 0..1, good enough for eye twitches.
     fn rand(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
@@ -519,10 +631,6 @@ impl ChameleonAnim {
         self.rng ^= self.rng << 5;
         (self.rng >> 8) as f32 / (1u32 << 24) as f32
     }
-}
-
-fn visible(len: f32) -> Visibility {
-    if len > 1.0 { Visibility::Inherited } else { Visibility::Hidden }
 }
 
 /// Frame-rate independent exponential smoothing.

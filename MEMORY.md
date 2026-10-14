@@ -6,7 +6,8 @@ A 2D platformer prototype in **Rust + Bevy 0.20**. All art is generated in code 
 
 A small, evil-looking, bone-white **chameleon** wanders a post-war wasteland **searching for the
 colors that war and humans destroyed**. The world starts **grayscale**; colors are meant to be
-**earned back** as the game progresses. Tone: apocalyptic, chaotic, unstable — *not cute*.
+**earned back** as the game progresses. Tone: apocalyptic, chaotic, unstable — *not cute*. It's **gory**: the chameleon slashes enemies
+open and gets painted with their blood (the first color in the gray world is blood).
 
 ## Running
 
@@ -15,7 +16,7 @@ cargo run            # dev build (Bevy deps are optimized, see Cargo.toml profil
 cargo run --release  # fully optimized (first build recompiles Bevy: a few minutes, extra GBs)
 ```
 
-Controls: `A/D` or arrows = walk · `Space/W/Up` = jump (hold for higher) · `F` (or `J`) = tongue ·
+Controls: `A/D` or arrows = walk · `Space/W/Up` = jump (hold for higher) · `F` (or `J`) = claw slash ·
 `F12` = screenshot to `screenshots/`.
 
 ⚠️ `target/` takes ~4–5 GB. The first build once filled the disk (ENOSPC) — keep ~8 GB free.
@@ -26,12 +27,15 @@ Controls: `A/D` or arrows = walk · `Space/W/Up` = jump (hold for higher) · `F`
 |---|---|
 | `main.rs` | App setup, window (1280×720), plugin registration, HUD text. |
 | `shapes.rs` | Vector-art toolkit: Catmull-Rom curves (`smooth_closed/open`), `fill` (triangle fan from centroid), `stroke` (ribbons with width/shade/pattern), `triangles`, `gradient_rect`, `ellipse_pts`, `rock_pts`, `scale_color`, and a seeded xorshift `Rng`. |
-| `chameleon.rs` | The character rig, built from meshes in a bone hierarchy (`Part` enum: Rig, Body, Head, Leg{Hip/Knee/Foot}, EyeCone, Pupil, TongueBody, TongueTip). Procedural animation: walk cycle, body bob/breathing, curling tail (mesh regenerated every frame), darting eye, tongue shot, camouflage. |
-| `player.rs` | Physics/controller: accel, gravity, coyote time, jump buffering, variable jump height, AABB collision, one-way platforms, riding moving platforms (`Platform.delta`), respawn at last stable ground. `SCALE` (0.7) sizes the chameleon and its collider. |
+| `chameleon.rs` | The character rig, built from meshes in a bone hierarchy (`Part` enum: Rig, Body, Head, Leg{Hip/Knee/Foot}, EyeCone, Pupil). Procedural animation: walk cycle, body bob/breathing, curling tail (mesh regenerated every frame), darting eye, claw slash (near front leg, `Leg{swipe}`; `slash_pose`, faint crescent `SlashWave`), hurt blink, camouflage. `ChameleonAnim::striking()` + `slash_id` drive hits. Death pose (rolls belly-up, legs twitch). `ColorEarned` message → `base_skin` becomes that color and every chameleon mesh moves to the color layer. |
+| `gore.rs` | Blood. Messages `Bleed` (spray drops) and `Paint` (splats on the claw). `Fluid` = Green (wasp) / Red (chameleon) / Venom (stays gray). Sticky drops touching a `PaintTarget` (ellipse on body/head/claw bones) become `Splat`s parented to that bone; drops landing on platforms become `Stain`s parented to the platform. Splats drip then dry over 25 s; caps: 90 splats, 320 stains. |
+| `wasp.rs` | Boss **Venom Mother** (giant wasp, `SCALE` 1.7, 14 HP) at `ARENA_X` (1500), spawned in PostStartup above the ground. AI: hover at `KEEP_AWAY` → aim → spit venom (×2) → dive to sting. Enraged below half HP (faster, 3-glob fans, dives after each spit). Death: blood burst, hit-stop, `ColorEarned(BOSS_COLOR)`, wings/abdomen torn off as `Gib`s, corpse lies belly-up. Heals on `Respawned`. `BossStatus` resource feeds the HUD. `slash_wasps` uses `chameleon::SLASH_CENTER/SLASH_REACH` (half-disc in front). |
+| `hud.rs` | Controls hint, red HP pips, boss bar (name + fill + draining trail; shown while `BossStatus.engaged`). | |
+| `player.rs` | Physics/controller: accel, gravity, coyote time, jump buffering, variable jump height, AABB collision, one-way platforms, riding moving platforms (`Platform.delta`), respawn at last stable ground. Health: `hp` (`MAX_HP` 5), `Player::hurt(damage, knock)` → `Hurt::{Ignored,Hurt,Killed}`, `invuln` i-frames, `stun`; falling in the void costs 1 HP. Death: lies there `DEATH_TIME`, then respawns at `SPAWN` and sends `Respawned`. `SCALE` (0.7) sizes the chameleon and its collider. |
 | `level.rs` | Seeded procedural level (`SEED`, `LEVEL_END` = 7000): deep rubble/asphalt ground chunks with gaps, two tiers of floating debris, a wall at the end. Platform visuals: cracks, rebar, strata, debris, lamp posts, barbed wire, lit top rims. `Platform` component. `lost_colors` module keeps the original bright palette for later. |
 | `unstable.rs` | `Motion` component: `Crumble` (shakes 0.6 s → falls → respawns after 3 s), `Swing` (girder on chains), `Sink` (sinks under weight). `Chain` visuals. `Tremor` earthquakes every 9–16 s (screen shake, stronger swings, random slab collapse). |
 | `atmosphere.rs` | Backdrop with `Parallax {origin, factor: Vec2}` (0 = world, 1 = glued to screen, negative = foreground): sky gradient, hazy sun, 3 ruined skylines (windows, twisted beams), pylons/cables/cranes, fog banks, foreground wreckage, smoke plumes over flickering fires (`Puff`, `Fire`), ash + embers (`Particle`, wrap around camera), lightning (flash overlay + regenerated bolt mesh). |
-| `camera.rs` | Smooth follow with look-ahead, zoom 0.65, trauma-based `Shake` resource (`add`, `at_least`), and **global grayscale** via `ColorGrading.post_saturation = WORLD_SATURATION (0.0)`. |
+| `camera.rs` | Smooth follow with look-ahead, zoom 0.65, trauma-based `Shake` resource (`add`, `at_least`), `HitStop` (slows `Time<Virtual>` briefly, timed in real time), snaps on teleports, and **global grayscale** via `ColorGrading.post_saturation = WORLD_SATURATION (0.0)`. `MainCamera` marker; a child overlay camera (order 1, no grading) renders `COLOR_LAYER` (1) — use `camera::color_layer()` for anything that must keep its color. |
 | `dev.rs` | F12 screenshot. |
 
 ## Key design decisions
@@ -51,6 +55,11 @@ Controls: `A/D` or arrows = walk · `Space/W/Up` = jump (hold for higher) · `F`
 - Z layers: sky −100 … skylines −95/−90/−70 … smoke −55 … platforms 0 … player 10 … ash −10/30 …
   bottom fog 35 … foreground wreckage 45 … lightning flash 80.
 
+- **Blood is on the color layer**, so it's drawn over *all* of layer 0 (incl. fog/foreground wreckage).
+  Splats are separate meshes parented to the chameleon's bones; `RenderLayers` is not inherited, set it per entity.
+- The color overlay camera is also `IsDefaultUiCamera`, so the HUD keeps its colors.
+- Use `With<MainCamera>` (not `Camera2d`) in camera queries — there are two 2D cameras.
+
 ## Bevy 0.20 API notes (learned while building)
 
 - `TextFont { font_size: FontSize::Px(18.0), .. }` (not a plain f32).
@@ -59,6 +68,10 @@ Controls: `A/D` or arrows = walk · `Space/W/Up` = jump (hold for higher) · `F`
 - Parenting via `ChildOf(parent)`; `Single<...>` queries; `MessageWriter<AppExit>`.
 - Screenshots: `commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path))`.
 - Mesh2d has no backface culling, so negative scale (flipping) is fine.
+- Messages: `#[derive(Message)]`, `app.add_message::<T>()`, `MessageWriter::write`, `MessageReader::read`.
+- `RenderLayers` from `bevy::camera::visibility`; non-HDR 2D tonemaps/grades in-shader, so a 2nd camera
+  with `ClearColorConfig::None` and no `ColorGrading` keeps colors.
+- `Time<Virtual>::set_relative_speed` is handy for slow-motion screenshots.
 - The default font has no arrow glyphs (←/→ render as boxes).
 
 ## Workflow tip
@@ -73,11 +86,16 @@ To check visuals without playing, temporarily add a `PreUpdate` system (after
 2. Chameleon made white; world turned grayscale via color grading; `UnlockedColors` gate.
 3. Big redesign: smaller/evil chameleon, apocalyptic ruins, dense procedural level, unstable
    platforms, earthquakes, smoke/ash/embers/lightning, screen shake.
+4. Gore: tongue replaced by claw slash; wasp enemy (venom, dive); green blood on a color layer that
+   paints the chameleon, stains the ground and dries.
+5. Boss fight: player HP/death/respawn, Venom Mother boss (phases, gibs, HUD bar), hit-stop, bigger
+   slash wave hitbox; beating the boss turns the chameleon green (first earned color).
 
 ## Ideas / next steps
 
 - Collectible fragments of lost colors (unlock camouflage + raise world saturation).
-- Enemies/hunters (camouflage as stealth), tongue catching things.
+- Arena walls / boss intro; real checkpoints (respawn is always `SPAWN`).
+- More enemies (camouflage as stealth). Maybe blood-earned colors unlock camouflage.
 - Hand-made level sections, checkpoints, a real ending past the final wall.
 - Not yet visually verified in screenshots: lightning bolt, earthquake, a slab mid-fall.
 - Git repo initialized; nothing committed yet.

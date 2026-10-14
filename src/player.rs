@@ -9,6 +9,11 @@ pub const SCALE: f32 = 0.7;
 /// Half extents of the player's collision box (feet are at `-HALF.y`).
 pub const HALF: Vec2 = Vec2::new(30.0 * SCALE, 26.0 * SCALE);
 pub const SPAWN: Vec2 = Vec2::new(-650.0, 0.0);
+pub const MAX_HP: i32 = 5;
+/// Invulnerable (and blinking) for this long after a hit.
+const INVULN: f32 = 1.0;
+/// Seconds lying dead before respawning.
+const DEATH_TIME: f32 = 2.8;
 
 const MAX_SPEED: f32 = 240.0;
 const GROUND_ACCEL: f32 = 2200.0;
@@ -29,7 +34,8 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player)
+        app.add_message::<Respawned>()
+            .add_systems(Startup, spawn_player)
             .add_systems(Update, move_player);
     }
 }
@@ -44,10 +50,46 @@ pub struct Player {
     pub ground: Option<Entity>,
     /// Top color of the platform we last stood on (used for camouflage).
     pub ground_color: Option<Color>,
+    /// Seconds left without control after being hit.
+    pub stun: f32,
+    pub hp: i32,
+    /// Seconds left of post-hit invulnerability.
+    pub invuln: f32,
+    /// Seconds since death, `None` while alive.
+    pub dead: Option<f32>,
     /// Last position on stable ground, used to respawn.
     safe_spot: Vec2,
     coyote: f32,
     jump_buffer: f32,
+}
+
+/// Sent when the chameleon comes back after dying (enemies reset).
+#[derive(Message)]
+pub struct Respawned;
+
+pub enum Hurt {
+    Ignored,
+    Hurt,
+    Killed,
+}
+
+impl Player {
+    /// Take `damage` and get knocked back with velocity `knock`.
+    pub fn hurt(&mut self, damage: i32, knock: Vec2) -> Hurt {
+        if self.dead.is_some() || self.invuln > 0.0 {
+            return Hurt::Ignored;
+        }
+        self.hp = (self.hp - damage).max(0);
+        self.vel = knock;
+        self.stun = 0.45;
+        self.invuln = INVULN;
+        if self.hp == 0 {
+            self.dead = Some(0.0);
+            Hurt::Killed
+        } else {
+            Hurt::Hurt
+        }
+    }
 }
 
 fn spawn_player(
@@ -57,7 +99,7 @@ fn spawn_player(
 ) {
     let player = commands
         .spawn((
-            Player { facing: 1.0, safe_spot: SPAWN, ..default() },
+            Player { facing: 1.0, safe_spot: SPAWN, hp: MAX_HP, ..default() },
             Transform::from_translation(SPAWN.extend(10.0)),
             Visibility::default(),
         ))
@@ -69,6 +111,7 @@ pub fn move_player(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut shake: ResMut<Shake>,
+    mut respawned: MessageWriter<Respawned>,
     mut player: Single<(&mut Player, &mut Transform)>,
     platforms: Query<(Entity, &Platform, &Transform), Without<Player>>,
 ) {
@@ -83,17 +126,23 @@ pub fn move_player(
     if keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
         dir += 1.0;
     }
+    p.stun = (p.stun - dt).max(0.0);
+    p.invuln = (p.invuln - dt).max(0.0);
+    let dead = p.dead.is_some();
+    if p.stun > 0.0 || dead {
+        dir = 0.0;
+    }
     if dir != 0.0 {
         p.facing = dir;
     }
-    let accel = if p.grounded { GROUND_ACCEL } else { AIR_ACCEL };
+    let accel = if dead { GROUND_ACCEL } else if p.stun > 0.0 { AIR_ACCEL * 0.15 } else if p.grounded { GROUND_ACCEL } else { AIR_ACCEL };
     p.vel.x = move_towards(p.vel.x, dir * MAX_SPEED, accel * dt);
 
     // --- Jumping (with coyote time, buffering and variable height) ---
     let jump_keys = [KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp];
     p.coyote = if p.grounded { COYOTE_TIME } else { p.coyote - dt };
     p.jump_buffer = if keys.any_just_pressed(jump_keys) { JUMP_BUFFER } else { p.jump_buffer - dt };
-    if p.jump_buffer > 0.0 && p.coyote > 0.0 {
+    if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead {
         p.vel.y = JUMP_SPEED;
         p.jump_buffer = 0.0;
         p.coyote = 0.0;
@@ -159,11 +208,36 @@ pub fn move_player(
         shake.add(0.3);
     }
 
-    // Fell into the abyss: back to the last safe ground.
-    if pos.y < VOID_Y {
-        pos = p.safe_spot + Vec2::Y * 30.0;
-        p.vel = Vec2::ZERO;
+    // Fell into the abyss: it costs a life, then back to the last safe ground.
+    if pos.y < VOID_Y && !dead {
+        p.invuln = 0.0;
+        if let Hurt::Killed = p.hurt(1, Vec2::ZERO) {
+            p.vel = Vec2::ZERO;
+        } else {
+            pos = p.safe_spot + Vec2::Y * 30.0;
+            p.vel = Vec2::ZERO;
+            p.stun = 0.0;
+        }
         shake.add(0.4);
+    }
+    if pos.y < VOID_Y {
+        // Dead in the void: wait there, out of sight.
+        pos.y = VOID_Y;
+        p.vel = Vec2::ZERO;
+    }
+
+    // Dead: lie there a while, then start over.
+    if let Some(t) = p.dead {
+        p.dead = Some(t + dt);
+        if t + dt > DEATH_TIME {
+            p.dead = None;
+            p.hp = MAX_HP;
+            p.vel = Vec2::ZERO;
+            p.invuln = INVULN;
+            p.safe_spot = SPAWN;
+            pos = SPAWN;
+            respawned.write(Respawned);
+        }
     }
 
     tf.translation.x = pos.x;

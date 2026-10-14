@@ -64,6 +64,20 @@ pub fn fill(outline: &[Vec2], shade: impl Fn(Vec2) -> f32) -> Mesh {
     build(&pos, colors, indices)
 }
 
+/// Several star-shaped outlines in one mesh (e.g. a splat and its droplets).
+pub fn blobs(outlines: &[Vec<Vec2>], shade: impl Fn(Vec2) -> f32) -> Mesh {
+    let (mut pos, mut indices) = (Vec::new(), Vec::new());
+    for outline in outlines {
+        let base = pos.len() as u32;
+        let n = outline.len() as u32;
+        pos.push(outline.iter().copied().sum::<Vec2>() / n as f32);
+        pos.extend_from_slice(outline);
+        indices.extend((0..n).flat_map(|i| [base, base + 1 + i, base + 1 + (i + 1) % n]));
+    }
+    let colors = pos.iter().map(|&p| gray(shade(p))).collect();
+    build(&pos, colors, indices)
+}
+
 /// A ribbon along `path`. `width(t)` gives the width at t in 0..=1.
 /// `shade_left` / `shade_right` shade the two edges (left = `tangent.perp()`).
 /// `pattern(t)` multiplies the shade along the length (stripes, bands...).

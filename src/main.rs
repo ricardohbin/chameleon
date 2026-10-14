@@ -2,10 +2,13 @@ mod atmosphere;
 mod camera;
 mod chameleon;
 mod dev;
+mod gore;
+mod hud;
 mod level;
 mod player;
 mod shapes;
 mod unstable;
+mod wasp;
 
 use bevy::prelude::*;
 
@@ -25,18 +28,11 @@ fn main() {
             unstable::UnstablePlugin,
             player::PlayerPlugin,
             chameleon::ChameleonPlugin,
+            gore::GorePlugin,
+            wasp::WaspPlugin,
             camera::CameraPlugin,
             dev::DevPlugin,
+            hud::HudPlugin,
         ))
-        .add_systems(Startup, spawn_hud)
         .run();
-}
-
-fn spawn_hud(mut commands: Commands) {
-    commands.spawn((
-        Text::new("A/D or Arrows: walk    Space/W/Up: jump    F: tongue    F12: screenshot"),
-        TextFont { font_size: FontSize::Px(18.0), ..default() },
-        TextColor(Color::srgba(0.85, 0.82, 0.78, 0.7)),
-        Node { position_type: PositionType::Absolute, top: px(12), left: px(14), ..default() },
-    ));
 }
