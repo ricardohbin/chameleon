@@ -198,7 +198,7 @@ fn tour(
     for f in &terrain.features {
         stops.push((slug(&f.name), f.rect.center(), 1.0));
     }
-    for (kind, at) in level::pin_spots() {
+    for (kind, at) in level::pin_spots(&terrain) {
         stops.push((format!("pin-{kind}"), at + Vec2::Y * 60.0, 1.0));
     }
     let b = terrain.bounds;

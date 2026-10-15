@@ -41,7 +41,7 @@ impl Plugin for HudPlugin {
             })
             .after(level::restart))
             .add_systems(PreUpdate, pause.after(level::restart))
-            .add_systems(Update, (update_pips, update_boss_bar, update_flash, update_hint, announce, crosshair));
+            .add_systems(Update, (update_pips, update_swim_bar, update_boss_bar, update_flash, update_hint, announce, crosshair));
     }
 }
 
@@ -89,6 +89,13 @@ struct PipShadow(i32);
 /// Inside an empty pip: how much of it has filled.
 #[derive(Component)]
 struct PipFill(i32);
+
+/// Swimming strength: a thin bar under the pips, shown in the water and while it refills.
+#[derive(Component)]
+struct SwimBar;
+
+#[derive(Component)]
+struct SwimFill;
 
 #[derive(Component)]
 struct BossBar;
@@ -206,6 +213,22 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         commands.spawn((PipFill(i), layer(0), BackgroundColor(PIP_FILLING), ChildOf(pip)));
     }
 
+    // Swimming strength.
+    let swim = commands
+        .spawn((
+            SwimBar,
+            Node { position_type: PositionType::Absolute, top: px(72), left: px(16), width: px(104), height: px(6), ..default() },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.7)),
+            Visibility::Hidden,
+        ))
+        .id();
+    commands.spawn((
+        SwimFill,
+        Node { width: percent(100), height: percent(100), ..default() },
+        BackgroundColor(Color::srgb(0.55, 0.82, 0.95)),
+        ChildOf(swim),
+    ));
+
     // Boss bar: name over a long bar at the bottom, hidden until the fight.
     let bar = commands
         .spawn((
@@ -239,6 +262,19 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let fill = || Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() };
     commands.spawn((BossTrail, fill(), BackgroundColor(BOSS_TRAIL), ChildOf(track)));
     commands.spawn((BossFill, fill(), BackgroundColor(Color::WHITE), ChildOf(track)));
+}
+
+fn update_swim_bar(
+    player: Single<&Player>,
+    mut bar: Single<&mut Visibility, With<SwimBar>>,
+    mut fill: Single<(&mut Node, &mut BackgroundColor), With<SwimFill>>,
+) {
+    **bar = if player.wet > 0.0 || player.swim < 0.999 { Visibility::Inherited } else { Visibility::Hidden };
+    let (node, color) = &mut *fill;
+    node.width = percent(player.swim.clamp(0.0, 1.0) * 100.0);
+    // Pale blue while fresh; red once the head will go under.
+    let tired = Color::srgb(0.85, 0.15, 0.1);
+    color.0 = Color::srgb(0.55, 0.82, 0.95).mix(&tired, ((1.0 - player.swim - 0.35) / 0.65).clamp(0.0, 1.0));
 }
 
 /// The controls: powers only once earned.

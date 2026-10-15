@@ -357,10 +357,10 @@ pub fn floor<'a>(
     platforms
         .filter(|(pl, ptf)| {
             let c = ptf.translation.truncate();
-            let top = c.y + pl.half.y;
-            pl.solid && (to.x - c.x).abs() < pl.half.x && to.y - foot <= top && from.y - foot >= top - 6.0
+            let top = pl.top_at(c, to.x);
+            pl.solid && (to.x - c.x).abs() < pl.run() && to.y - foot <= top && from.y - foot >= top - 6.0 - pl.tilt.tan().abs() * 10.0
         })
-        .map(|(pl, ptf)| ptf.translation.y + pl.half.y)
+        .map(|(pl, ptf)| pl.top_at(ptf.translation.truncate(), to.x))
         .chain(ground)
         .reduce(f32::max)
 }

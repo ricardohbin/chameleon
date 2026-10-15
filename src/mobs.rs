@@ -409,10 +409,12 @@ pub struct Mob {
     cooldown: f32,
     /// Swarms: angle around the chameleon.
     orbit: f32,
+    /// 0..1: how stuck in cobwebs (`webs.rs`), set every frame; slows its time.
+    pub webbed: f32,
     /// Last slash that hit it (one hit per slash).
     hit_by: u32,
     /// 1 = white flash after a hit, fades to 0.
-    flash: f32,
+    pub flash: f32,
     /// Its own materials (to flash) with their base colors.
     mats: Vec<(Handle<ColorMaterial>, Color)>,
     rng: Rng,
@@ -440,6 +442,7 @@ impl Mob {
             wander: (0.0, rng.range(0.2, 1.5)),
             cooldown: rng.range(0.5, 2.0),
             orbit: rng.range(0.0, 2.0 * PI),
+            webbed: 0.0,
             hit_by: 0,
             flash: 0.0,
             mats,
@@ -526,7 +529,9 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
             }
         })
         .collect();
-    let banned = |p: Vec2| p.distance(terrain.spawn) < SPAWN_CLEAR || zones.iter().any(|z| z.contains(p));
+    // Nothing lives (or flies) in the water.
+    let flooded = |p: Vec2| terrain.features.iter().any(|f| crate::water::Kind::is_water(&f.name) && f.rect.contains(p));
+    let banned = |p: Vec2| p.distance(terrain.spawn) < SPAWN_CLEAR || zones.iter().any(|z| z.contains(p)) || flooded(p);
 
     let mut placed: Vec<(MobKind, Vec2)> = Vec::new();
     for area in &terrain.areas {
@@ -810,6 +815,8 @@ fn think(
         let m = &mut *m;
         let spec = m.spec;
         let pos = tf.translation.truncate();
+        // Stuck in a web: everything about it goes slower.
+        let dt = dt * (1.0 - 0.8 * m.webbed).max(0.1);
 
         if let State::Dead { t: td, landed } = m.state {
             // The corpse: falls, lands belly-up, leaks for a while.

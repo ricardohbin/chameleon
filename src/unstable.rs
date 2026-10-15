@@ -1,16 +1,18 @@
-//! Unstable terrain: crumbling slabs, swinging girders, sinking plates
-//! and periodic earthquakes that shake everything loose.
+//! Unstable terrain: crumbling slabs (found on the terrain by `level::loose`),
+//! swinging girders, sinking plates and periodic earthquakes that shake
+//! everything loose.
 
 use bevy::prelude::*;
 
 use crate::{
     camera::Shake,
     level::{self, Platform, Restart},
-    player::{self, Player},
-    shapes::Rng,
+    player::{self, Player, HALF},
+    shapes::{fill, rock_pts, scale_color, Rng},
+    terrain::Terrain,
+    terrain_art::TerrainPart,
 };
 
-const CRUMBLE_DELAY: f32 = 0.6;
 const RESPAWN_DELAY: f32 = 3.0;
 const SINK_DEPTH: f32 = 70.0;
 
@@ -28,20 +30,22 @@ impl Plugin for UnstablePlugin {
                 })
                 .after(level::restart),
             )
-            .add_systems(Update, (move_platforms, update_chains).chain().before(player::move_player));
+            .add_systems(Update, (move_platforms, update_chains).chain().before(player::move_player))
+            .add_systems(Update, (show_remnants, fall_chunks));
     }
 }
 
 #[derive(Component)]
 pub enum Motion {
-    Crumble { origin: Option<Vec2>, state: CrumbleState },
+    Crumble { origin: Option<Vec2>, state: CrumbleState, delay: f32 },
     Swing { anchor: Vec2, len: f32, amp: f32, speed: f32, phase: f32 },
     Sink { origin: Vec2, offset: f32 },
 }
 
 impl Motion {
-    pub fn crumble() -> Self {
-        Motion::Crumble { origin: None, state: CrumbleState::Idle }
+    /// Breaks `delay` seconds after the chameleon steps on it.
+    pub fn crumble_in(delay: f32) -> Self {
+        Motion::Crumble { origin: None, state: CrumbleState::Idle, delay }
     }
 }
 
@@ -62,6 +66,22 @@ pub struct Chain {
     pub attach: Vec2,
 }
 
+/// What a collapsed platform leaves on the ground it was fixed to (broken
+/// concrete, rebar, bent steel...): shown once the platform is falling or gone.
+#[derive(Component)]
+pub struct Remnant {
+    pub owner: Entity,
+}
+
+/// A piece of a platform breaking away.
+#[derive(Component)]
+struct Chunk {
+    vel: Vec2,
+    spin: f32,
+    age: f32,
+    landed: bool,
+}
+
 /// Earthquakes: every so often the ground rumbles and slabs start to break.
 #[derive(Resource)]
 struct Tremor {
@@ -80,6 +100,9 @@ fn move_platforms(
     time: Res<Time>,
     mut tremor: ResMut<Tremor>,
     mut shake: ResMut<Shake>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     player: Single<(&Player, &Transform)>,
     mut platforms: Query<(Entity, &mut Platform, &mut Motion, &mut Transform, &mut Visibility), Without<Player>>,
 ) {
@@ -101,11 +124,12 @@ fn move_platforms(
 
     for (e, mut plat, mut motion, mut tf, mut vis) in &mut platforms {
         let old = tf.translation.truncate();
-        let standing = p.ground == Some(e);
+        // Standing *on* it: feet on its top with the body over it (brushing its edge is not enough).
+        let standing = p.ground == Some(e) && (ptf.translation.x - old.x).abs() < plat.half.x + HALF.x * 0.3;
         let mut new = old;
 
         match &mut *motion {
-            Motion::Crumble { origin, state } => {
+            Motion::Crumble { origin, state, delay } => {
                 let origin = *origin.get_or_insert(old);
                 *state = match *state {
                     CrumbleState::Idle => {
@@ -120,9 +144,10 @@ fn move_platforms(
                         let s = s + dt;
                         let a = 0.8 + s * 4.0;
                         new = origin + Vec2::new(rng.range(-a, a), rng.range(-a, a) * 0.4);
-                        if s > CRUMBLE_DELAY {
+                        if s > *delay {
                             plat.solid = false;
                             shake.add(0.12);
+                            shed(&mut commands, &mut meshes, &mut materials, rng, old, plat.half, plat.color);
                             CrumbleState::Falling { t: 0.0, vel: 0.0 }
                         } else {
                             CrumbleState::Shaking(s)
@@ -142,7 +167,7 @@ fn move_platforms(
                     }
                     CrumbleState::Gone(g) if g > RESPAWN_DELAY => {
                         new = origin;
-                        tf.rotation = Quat::IDENTITY;
+                        tf.rotation = Quat::from_rotation_z(plat.tilt);
                         plat.solid = true;
                         *vis = Visibility::Inherited;
                         CrumbleState::Idle
@@ -170,6 +195,70 @@ fn move_platforms(
         // A teleport back to the origin isn't motion the player should follow.
         plat.delta = if plat.solid { new - old } else { Vec2::ZERO };
         tf.translation = new.extend(tf.translation.z);
+    }
+}
+
+/// Bits of the platform breaking off as it gives way.
+fn shed(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    rng: &mut Rng,
+    at: Vec2,
+    half: Vec2,
+    color: Color,
+) {
+    let n = (half.x / 5.0).clamp(4.0, 10.0) as i32;
+    for _ in 0..n {
+        let size = rng.range(2.5, 6.5);
+        let mesh = meshes.add(fill(&rock_pts(rng, size, 6), |p| 0.7 + 0.3 * (p.y / size)));
+        let mat = materials.add(scale_color(color, rng.range(0.55, 1.0)));
+        let pos = at + Vec2::new(rng.range(-half.x, half.x), rng.range(-half.y, half.y));
+        let vel = Vec2::new(rng.range(-80.0, 80.0), rng.range(30.0, 190.0));
+        commands.spawn((
+            Mesh2d(mesh),
+            MeshMaterial2d(mat),
+            Transform::from_translation(pos.extend(0.3)),
+            Chunk { vel, spin: rng.range(-9.0, 9.0), age: 0.0, landed: false },
+            TerrainPart,
+        ));
+    }
+}
+
+fn fall_chunks(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    mut commands: Commands,
+    mut chunks: Query<(Entity, &mut Chunk, &mut Transform)>,
+) {
+    let dt = time.delta_secs().min(1.0 / 30.0);
+    for (e, mut c, mut tf) in &mut chunks {
+        c.age += dt;
+        if !c.landed {
+            c.vel.y -= 1600.0 * dt;
+            tf.translation += (c.vel * dt).extend(0.0);
+            tf.rotate_z(c.spin * dt);
+            if c.vel.y < 0.0 && terrain.solid_at(tf.translation.truncate() - Vec2::Y * 2.0) {
+                c.landed = true;
+            }
+        }
+        if c.age > if c.landed { 3.0 } else { 2.2 } {
+            commands.entity(e).try_despawn();
+        }
+    }
+}
+
+/// The broken contact points show once the platform is coming down, and hide again when it re-forms.
+fn show_remnants(motions: Query<&Motion>, mut remnants: Query<(&Remnant, &mut Visibility)>) {
+    for (r, mut vis) in &mut remnants {
+        let broken = matches!(
+            motions.get(r.owner),
+            Ok(Motion::Crumble { state: CrumbleState::Falling { .. } | CrumbleState::Gone(_), .. })
+        );
+        let want = if broken { Visibility::Inherited } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
+        }
     }
 }
 

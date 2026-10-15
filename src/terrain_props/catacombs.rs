@@ -62,11 +62,133 @@ fn ground(p: &mut Props, cell: IVec2, x: f32) -> bool {
             G::Gate => gate(p, at),
             G::Cross => cross(p, at),
         }
+        // Webs draped over whatever stands there, thicker toward the heart of the region.
+        let k = heart(p, at);
+        if p.rng.chance(0.08 + 0.7 * k) {
+            let top = (head * 0.8).min(30.0);
+            let e = p.root(at - Vec2::Y * S, 1.0, 0.0);
+            let r = p.rng.range(0.7, 1.0) * top * (1.0 + 0.4 * k);
+            let (x, span) = (p.rng.range(-3.0, 3.0), p.rng.range(1.6, 2.4));
+            web_fan(p, e, Vec2::new(x, top), -std::f32::consts::FRAC_PI_2, span, r, k);
+            if k > 0.5 && p.rng.chance(0.5) {
+                let x = p.rng.range(-4.0, 4.0);
+                spider(p, e, Vec2::new(x, top + 1.0), 0.0);
+            }
+        }
         p.tilt = 0.0;
         p.depth = BACK;
         return true;
     }
     false
+}
+
+/// How deep into its region `at` is, 0 at the borders to 1 at the center
+/// (the webs thicken toward it).
+pub(super) fn heart(p: &Props, at: Vec2) -> f32 {
+    let Some(a) = p.t.area_at(at) else { return 0.0 };
+    let d = (at - a.rect.center()) / a.rect.half_size().max(Vec2::splat(1.0));
+    let k = (1.0 - d.length() / 1.1).clamp(0.0, 1.0);
+    k * k * (3.0 - 2.0 * k)
+}
+
+/// A thin line as two triangles.
+pub(super) fn thread(tris: &mut Vec<[Vec2; 3]>, a: Vec2, b: Vec2, w: f32) {
+    let n = (b - a).normalize_or(Vec2::X).perp() * w * 0.5;
+    tris.push([a + n, a - n, b + n]);
+    tris.push([a - n, b - n, b + n]);
+}
+
+/// A sagging thread from `a` to `b`.
+pub(super) fn sagging(tris: &mut Vec<[Vec2; 3]>, a: Vec2, b: Vec2, sag: f32, w: f32) {
+    let mid = (a + b) * 0.5 - Vec2::Y * sag;
+    let pts = smooth_open(&[a, mid, b], 3);
+    for s in pts.windows(2) {
+        thread(tris, s[0], s[1], w);
+    }
+}
+
+/// An orb web anchored at `apex`, its spokes spread `span` radians around the
+/// direction `dir`, `r` long; torn here and there. `k` = how thick and
+/// intricate it is (more spokes and rings).
+fn web_fan(p: &mut Props, e: Entity, apex: Vec2, dir: f32, span: f32, r: f32, k: f32) {
+    let mut tris = Vec::new();
+    let n = 4 + p.rng.below(2) + (k * 3.0) as usize;
+    let rings = 2 + p.rng.below(2) + (k * 3.0) as usize;
+    let spokes: Vec<Vec2> = (0..n)
+        .map(|i| {
+            let a = dir - span * 0.5 + span * (i as f32 + p.rng.range(-0.15, 0.15)) / (n - 1) as f32;
+            apex + Vec2::from_angle(a) * r * p.rng.range(0.8, 1.0)
+        })
+        .collect();
+    for &s in &spokes {
+        thread(&mut tris, apex, s, 0.55);
+    }
+    // Frame threads along the border, then the spiral rings between spokes.
+    for w in spokes.windows(2) {
+        if p.rng.chance(0.85) {
+            sagging(&mut tris, w[0], w[1], r * 0.07, 0.45);
+        }
+        for j in 1..rings {
+            if p.rng.chance(0.8) {
+                let f = j as f32 / rings as f32;
+                sagging(&mut tris, apex + (w[0] - apex) * f, apex + (w[1] - apex) * f, r * 0.05 * f, 0.4);
+            }
+        }
+    }
+    p.part(e, triangles(&tris), M::Web, 0.05);
+    // Sticky: slows whoever walks into it (`webs.rs`).
+    p.commands.entity(e).insert(crate::webs::Web { center: apex + Vec2::from_angle(dir) * r * 0.5, radius: r * 0.6 });
+}
+
+/// Threads hanging from a ceiling, some with bundles of silk or a dust-grey
+/// cocoon wrapped on them.
+fn drape(p: &mut Props, e: Entity, k: f32) {
+    let mut tris = Vec::new();
+    for _ in 0..2 + p.rng.below(2) + (k * 4.0) as usize {
+        let a = Vec2::new(p.rng.range(-14.0, 14.0), 1.0);
+        let len = p.rng.range(8.0, 22.0 + 20.0 * k);
+        let b = a + Vec2::new(p.rng.range(-4.0, 4.0), -len);
+        sagging(&mut tris, a, b, 0.0, 0.5);
+        // Silk beads along the strand.
+        for i in 1..=p.rng.below(3) {
+            let c = a.lerp(b, i as f32 / 3.5);
+            thread(&mut tris, c + Vec2::new(0.0, 0.8), c - Vec2::new(0.0, 0.8), 1.4);
+        }
+    }
+    p.part(e, triangles(&tris), M::Web, 0.05);
+    if p.rng.chance(0.15 + 0.6 * k) {
+        let x = p.rng.range(-8.0, 8.0);
+        let len = p.rng.range(10.0, 18.0);
+        let (rx, ry) = (p.rng.range(2.4, 3.6), p.rng.range(5.0, 8.0));
+        let mut line = Vec::new();
+        thread(&mut line, Vec2::new(x, 1.0), Vec2::new(x, -len), 0.5);
+        p.part(e, triangles(&line), M::Web, 0.05);
+        let body = ellipse_at(Vec2::new(x, -len - ry), rx, ry, 12);
+        p.part(e, fill(&body, |q| 0.7 + 0.3 * ((q.x - x) / rx * 0.5 + 0.5)), M::Enamel, 0.06);
+        // Bindings crossing the cocoon.
+        let mut wrap = Vec::new();
+        for i in 1..4 {
+            let y = -len - ry * (0.35 + 0.4 * i as f32);
+            thread(&mut wrap, Vec2::new(x - rx, y), Vec2::new(x + rx, y + 1.0), 0.5);
+        }
+        p.part(e, triangles(&wrap), M::Soot, 0.07);
+    }
+}
+
+/// A spider waiting on a web, `at` its center.
+pub(super) fn spider(p: &mut Props, e: Entity, at: Vec2, z: f32) {
+    let body = ellipse_at(at, 1.4, 1.2, 8);
+    p.part(e, fill(&body, |_| 1.0), M::Soot, 0.08 + z);
+    let mut legs = Vec::new();
+    for s in [-1.0, 1.0] {
+        for i in 0..4 {
+            let a = 0.5 + 0.35 * i as f32;
+            let knee = at + Vec2::new(s * a.cos() * 2.6, a.sin() * 2.2);
+            thread(&mut legs, at, knee, 0.4);
+            thread(&mut legs, knee, knee + Vec2::new(s * 1.8, -2.6), 0.4);
+        }
+    }
+    p.part(e, triangles(&legs), M::Soot, 0.08 + z);
 }
 
 /// Where the ground ends at a drop (`flip` = the open side).
@@ -97,11 +219,37 @@ fn edge(p: &mut Props, at: Vec2, flip: f32) -> bool {
     if p.rng.chance(0.35) {
         p.roots(e, Vec2::new(-2.0, -4.0), 0.0);
     }
+    // Silk strung from the lip down into the drop.
+    let k = heart(p, at);
+    if p.rng.chance(0.1 + 0.6 * k) {
+        let r = p.rng.range(12.0, 20.0) * (1.0 + 0.4 * k);
+        let (tilt, span) = (p.rng.range(-0.3, 0.2), p.rng.range(1.2, 1.8));
+        web_fan(p, e, Vec2::new(-2.0, 0.0), -1.0 + tilt, span, r, k);
+    }
     true
 }
 
 /// A straight vertical face (`flip` = the open side).
 fn wall(p: &mut Props, at: Vec2, flip: f32) -> bool {
+    let placed = wall_face(p, at, flip);
+    let k = heart(p, at);
+    if p.rng.chance(0.12 + 0.75 * k) {
+        // A web spun out from the wall, hanging toward the floor.
+        let up = p.rng.range(2.0, 12.0) * S;
+        let e = p.root(at + Vec2::new(0.0, up), flip, 0.0);
+        let r = p.rng.range(14.0, 22.0) * (1.0 + 0.5 * k);
+        let dir = p.rng.range(-0.7, 0.1);
+        let span = p.rng.range(1.5, 2.1);
+        web_fan(p, e, Vec2::new(-1.0, 0.0), dir, span, r, k);
+        if k > 0.45 && p.rng.chance(0.4) {
+            let d = Vec2::from_angle(dir) * r * 0.55;
+            spider(p, e, d, 0.0);
+        }
+    }
+    placed
+}
+
+fn wall_face(p: &mut Props, at: Vec2, flip: f32) -> bool {
     let inset = |w: f32| at + Vec2::new(-flip * (w * S + PX * 2.0), 0.0);
     let roll = p.rng.next();
     if roll < 0.55 {
@@ -147,6 +295,21 @@ fn ceiling(p: &mut Props, at: Vec2) -> bool {
         lantern(p, e, Vec2::new(x, -len - 1.0));
     }
     water(p, e);
+    // Cobwebs in the vault, the densest toward the heart of the region.
+    let k = heart(p, at);
+    if p.rng.chance(0.15 + 0.75 * k) {
+        let x = p.rng.range(-6.0, 6.0);
+        let r = p.rng.range(14.0, 24.0) * (1.0 + 0.6 * k);
+        let span = p.rng.range(1.8, 2.7);
+        let tilt = p.rng.range(-0.3, 0.3);
+        web_fan(p, e, Vec2::new(x, 1.0), -std::f32::consts::FRAC_PI_2 + tilt, span, r, k);
+        if k > 0.4 && p.rng.chance(0.35) {
+            spider(p, e, Vec2::new(x, 1.0 - r * 0.45), 0.0);
+        }
+    }
+    if p.rng.chance(0.1 + 0.7 * k) {
+        drape(p, e, k);
+    }
     true
 }
 

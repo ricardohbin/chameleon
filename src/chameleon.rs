@@ -43,6 +43,8 @@ const SPIT_TIME: f32 = 0.2;
 /// much of the mouse's angle it follows: the eyes do the rest.
 const HEAD_PITCH: (f32, f32) = (-0.8, 0.9);
 const HEAD_FOLLOW: f32 = 0.75;
+/// A blink takes this long, lid down and up.
+const BLINK_TIME: f32 = 0.16;
 
 /// A rig point (rig units, facing +X) in the world, for a chameleon at `ppos` facing `facing`.
 fn rig_to_world(ppos: Vec2, facing: f32, at: Vec2) -> Vec2 {
@@ -113,6 +115,14 @@ pub struct ChameleonAnim {
     look: Vec2,
     look_target: Vec2,
     look_timer: f32,
+    /// Counts down to the next blink; below zero the lid is mid-blink.
+    blink: f32,
+    /// A twitchy glance off the mouse: its offset and the time left on it.
+    tic: Vec2,
+    tic_time: f32,
+    tic_timer: f32,
+    /// Time left of the head being locked on the mouse (after a ranged attack).
+    focus: f32,
     /// Seconds since the claw slash started, `None` when not slashing.
     slash: Option<f32>,
     /// Where the current slash goes (unit, world space): the aim when it started.
@@ -147,6 +157,8 @@ enum Part {
     Leg { front: bool, offset: f32, joint: Joint, swipe: bool },
     EyeCone,
     Pupil,
+    /// Closes over the eye (scaled on Y) to blink.
+    Blink,
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +355,9 @@ pub fn spawn_chameleon(
     let lid_tf = Transform::from_xyz(0.0, 1.6, 0.04).with_rotation(Quat::from_rotation_z(-0.35));
     let lid_e = c.part(fill(&lid, |p| 0.65 + 0.35 * (p.y / 8.6)), &base, Vec3::ZERO, eye);
     c.commands.entity(lid_e).insert(lid_tf);
+    // The blink: a disc of skin squeezing shut over the iris, top down.
+    let blink = c.pivot(Vec3::new(0.0, 0.0, 0.045), eye, Part::Blink);
+    c.part(fill(&ellipse_pts(8.0, 8.0, 24), |_| 0.8), &base, Vec3::ZERO, blink);
     let brow = smooth_open(&[Vec2::new(-0.5, 10.5), Vec2::new(10.0, 7.8), Vec2::new(20.5, 3.8)], 6);
     c.part(stroke(&brow, |t| 3.8 - 2.3 * t, 1.0, 1.0, |_| 1.0), &accent, Vec3::new(0.0, 0.0, 0.15), head);
 
@@ -366,6 +381,11 @@ pub fn spawn_chameleon(
         look: Vec2::X,
         look_target: Vec2::X,
         look_timer: 1.0,
+        blink: 2.0,
+        tic: Vec2::ZERO,
+        tic_time: 0.0,
+        tic_timer: 1.5,
+        focus: 0.0,
         slash: None,
         slash_aim: Vec2::X,
         spat: None,
@@ -426,8 +446,12 @@ impl Builder<'_, '_, '_> {
     fn leg(&mut self, joint: Vec3, front: bool, offset: f32, swipe: bool, mat: &Handle<ColorMaterial>, parent: Entity) {
         let part = |joint| Part::Leg { front, offset, joint, swipe };
         let hip = self.pivot(joint, parent, part(Joint::Hip));
-        self.part(Capsule2d::new(3.1, 12.0).into(), mat, Vec3::new(0.0, -6.0, 0.0), hip);
-        let knee = self.pivot(Vec3::new(0.0, -12.0, 0.01), hip, part(Joint::Knee));
+        // The swiping arm is split in depth: the shoulder socket tucks behind the
+        // head (z 0.2), while forearm and claw reach in front of it, so a high
+        // slash crosses the face but a turned-back head doesn't poke through the socket.
+        let (upper_z, knee_z) = if swipe { (-0.5, 0.51) } else { (0.0, 0.01) };
+        self.part(Capsule2d::new(3.1, 12.0).into(), mat, Vec3::new(0.0, -6.0, upper_z), hip);
+        let knee = self.pivot(Vec3::new(0.0, -12.0, knee_z), hip, part(Joint::Knee));
         if swipe {
             // The killing arm gets soaked first.
             let claw = |center, radii| PaintTarget { center, radii, claw: true, clear: None };
@@ -475,10 +499,12 @@ pub fn update_anim_state(
     let (p, mut a) = player.into_inner();
     let speed = p.vel.x.abs();
 
-    a.stride = smooth(a.stride, (speed / 260.0).min(1.0), 8.0, dt);
-    a.air = smooth(a.air, if p.grounded { 0.0 } else { 1.0 }, 10.0, dt);
+    // Swimming: the legs paddle (the walk cycle at its own pace), more when tired.
+    let paddle = if p.swimming && p.dead.is_none() { 0.35 + 0.65 * (p.vel.length() / 170.0).min(1.0) } else { 0.0 };
+    a.stride = smooth(a.stride, if paddle > 0.0 { paddle } else { (speed / 260.0).min(1.0) }, 8.0, dt);
+    a.air = smooth(a.air, if p.grounded || paddle > 0.0 { if paddle > 0.0 { 0.35 } else { 0.0 } } else { 1.0 }, 10.0, dt);
     // Walking backwards (facing the mouse) plays the walk cycle backwards.
-    a.phase += dt * p.vel.x * p.facing * 0.075;
+    a.phase += if paddle > 0.0 { dt * 9.0 * (0.6 + 0.4 * paddle) } else { dt * p.vel.x * p.facing * 0.075 };
 
     let dead = p.dead.is_some();
     a.death = if dead { smooth(a.death, 1.0, 6.0, dt) } else { 0.0 };
@@ -507,15 +533,45 @@ pub fn update_anim_state(
         _ if aim.x > 0.2 => 1.0,
         _ => a.head_side.signum(),
     };
-    let pitch = if aiming { Vec2::new(aim.x * side, aim.y).to_angle().clamp(HEAD_PITCH.0, HEAD_PITCH.1) * HEAD_FOLLOW } else { 0.0 };
-    a.head_side = smooth(a.head_side, side, 14.0, dt);
-    a.head_pitch = smooth(a.head_pitch, pitch, 10.0, dt);
+    // Only a ranged attack pins the head on the mouse (snapping to it); the
+    // rest of the time it follows loosely and wobbles, the eye leads.
+    a.focus = (a.focus - dt).max(0.0);
+    let locked = a.focus > 0.0;
+    let mouse_pitch = Vec2::new(aim.x * side, aim.y).to_angle().clamp(HEAD_PITCH.0, HEAD_PITCH.1);
+    let t = time.elapsed_secs();
+    let wobble = (t * 1.7).sin() * 0.07 + (t * 2.9 + 1.0).sin() * 0.05;
+    let pitch = match () {
+        _ if !aiming => 0.0,
+        _ if locked => mouse_pitch,
+        _ => mouse_pitch * HEAD_FOLLOW * 0.45 + wobble,
+    };
+    a.head_side = smooth(a.head_side, side, if locked { 20.0 } else { 5.0 }, dt);
+    a.head_pitch = smooth(a.head_pitch, pitch, if locked { 30.0 } else { 2.5 }, dt);
+
+    // Blink every few seconds (sometimes twice in a row).
+    a.blink -= dt;
+    if a.blink < -BLINK_TIME {
+        a.blink = if a.rand() < 0.2 { 0.0 } else { 1.5 + 3.5 * a.rand() };
+    }
+    // Wander: now and then the eye drifts off the mouse on its own.
+    a.tic_timer -= dt;
+    if a.tic_timer <= 0.0 {
+        if a.tic_time > 0.0 {
+            a.tic_time = 0.0;
+            a.tic_timer = 0.5 + 2.0 * a.rand();
+        } else {
+            a.tic = Vec2::from_angle(a.rand() * PI * 2.0) * (0.8 + 0.8 * a.rand());
+            a.tic_time = 0.15 + 0.9 * a.rand();
+            a.tic_timer = a.tic_time;
+        }
+    }
 
     // Eye: right on the mouse, from where the head points. Before the mouse
     // ever shows up: look ahead while moving, dart around randomly while idle.
     a.look_timer -= dt;
     if aiming {
-        a.look_target = Vec2::from_angle(-a.head_pitch).rotate(Vec2::new(aim.x * side, aim.y));
+        let on_mouse = Vec2::from_angle(-a.head_pitch).rotate(Vec2::new(aim.x * side, aim.y));
+        a.look_target = if a.tic_time > 0.0 && !locked { (on_mouse + a.tic).clamp_length_max(1.0) } else { on_mouse };
     } else if a.slash.is_some() || speed > 20.0 {
         a.look_target = Vec2::new(1.0, (p.vel.y * 0.0006).clamp(-0.6, 0.6)).normalize();
         a.look_timer = 0.8;
@@ -526,7 +582,7 @@ pub fn update_anim_state(
     }
     // Chameleon eyes snap quickly between targets.
     let target = a.look_target;
-    a.look = a.look.lerp(target, 1.0 - (-dt * 18.0).exp());
+    a.look = a.look.lerp(target, 1.0 - (-dt * 30.0).exp());
 }
 
 fn pose_parts(
@@ -599,6 +655,13 @@ fn pose_parts(
             }
             Part::EyeCone => tf.translation = (a.look * 2.6).extend(tf.translation.z),
             Part::Pupil => tf.translation = (a.look * 1.0).extend(tf.translation.z),
+            Part::Blink => {
+                let shut = if a.blink < 0.0 { (PI * -a.blink / BLINK_TIME).sin() } else { 0.0 };
+                let shut = shut.max(a.death);
+                // Squeeze from the top: the disc shrinks toward its bottom edge.
+                tf.scale.y = shut.max(0.001);
+                tf.translation.y = -8.0 * (1.0 - shut);
+            }
         }
     }
 }
@@ -764,6 +827,7 @@ impl ChameleonAnim {
     /// Jerk the head forward: venom was just spat.
     pub fn spit(&mut self) {
         self.spat = Some(0.0);
+        self.focus = 0.7;
     }
 
     /// Turn the slash that just started into a bite.

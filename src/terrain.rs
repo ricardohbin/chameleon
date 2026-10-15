@@ -108,6 +108,8 @@ pub struct Feature {
     pub slide: bool,
     /// "fall apart" / "falls apart": junk breaks off as you slide down it.
     pub crumbles: bool,
+    /// "track" / "rail" / "electrif": a live third rail runs along the floor (`electric.rs`).
+    pub electrified: bool,
 }
 
 /// Cloned to paint the art and place props on other threads.
@@ -194,7 +196,8 @@ impl Terrain {
             let slide = n.contains("slid") || n.contains("slipp") || n.contains("one way down");
             if n.trim_start().starts_with("feature:") {
                 let crumbles = n.contains("fall apart") || n.contains("falls apart") || n.contains("crumbl");
-                t.features.push(Feature { name: s.name, rect, slide, crumbles });
+                let electrified = n.contains("track") || n.contains("rail") || n.contains("electrif");
+                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified });
             } else {
                 t.areas.push(Area { style: Style::from_name(&s.name), name: s.name, rect, slide });
             }

@@ -20,6 +20,7 @@ use std::{
 
 use bevy::{
     prelude::*,
+    sprite_render::AlphaMode2d,
     tasks::{futures::check_ready, AsyncComputeTaskPool, Task},
 };
 
@@ -41,6 +42,7 @@ mod bunker;
 mod cave;
 mod vines;
 mod moss;
+mod curtains;
 
 /// How a region places its props (the older styles are matched inline below).
 struct Hooks {
@@ -90,9 +92,18 @@ enum M {
     Wood,
     Bronze,
     Plastic,
+    /// Cobweb silk: see-through (`WEB_ALPHA`).
+    Web,
+    /// Silk of the curtains across corridors (`curtains.rs`): denser than `Web`.
+    Silk,
 }
 
-const COLORS: [[f32; 3]; 12] = [
+/// Opacity of the cobweb silk.
+const WEB_ALPHA: f32 = 0.15;
+/// Opacity of the silk of the corridor curtains.
+const SILK_ALPHA: f32 = 0.25;
+
+const COLORS: [[f32; 3]; 14] = [
     [0.40, 0.38, 0.36],
     [0.70, 0.67, 0.62],
     [0.09, 0.09, 0.10],
@@ -105,6 +116,8 @@ const COLORS: [[f32; 3]; 12] = [
     [0.36, 0.28, 0.20],
     [0.36, 0.32, 0.24],
     [0.40, 0.40, 0.41],
+    [0.78, 0.76, 0.72],
+    [0.86, 0.85, 0.82],
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,11 +160,26 @@ pub struct PropJob {
     hints: Vec<Vec2>,
     yellow: Vec<Vec2>,
     vents: Vec<Vec2>,
+    curtains: Vec<Vec2>,
     mats: Vec<Handle<ColorMaterial>>,
 }
 
 pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
-    let mats = COLORS.iter().map(|&[r, g, b]| materials.add(Color::srgb(r, g, b))).collect();
+    let mats = COLORS
+        .iter()
+        .enumerate()
+        .map(|(i, &[r, g, b])| {
+            let alpha = match i {
+                i if i == M::Web as usize => Some(WEB_ALPHA),
+                i if i == M::Silk as usize => Some(SILK_ALPHA),
+                _ => None,
+            };
+            match alpha {
+                Some(a) => materials.add(ColorMaterial { color: Color::srgba(r, g, b, a), alpha_mode: AlphaMode2d::Blend, ..default() }),
+                None => materials.add(Color::srgb(r, g, b)),
+            }
+        })
+        .collect();
     let t = Arc::new(terrain.clone());
     let found = t.clone();
     let finding = AsyncComputeTaskPool::get().spawn(async move {
@@ -159,7 +187,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         sites.sort_by_key(|s| s.key);
         (sites, facade_spots(&found))
     });
-    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), mats };
+    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), mats };
     commands.spawn((job, TerrainPart));
 }
 
@@ -190,6 +218,7 @@ pub fn place_props(
             hints: std::mem::take(&mut job.hints),
             yellow: std::mem::take(&mut job.yellow),
             vents: std::mem::take(&mut job.vents),
+            curtains: std::mem::take(&mut job.curtains),
             tilt: 0.0,
             depth: BACK,
         };
@@ -204,7 +233,7 @@ pub fn place_props(
             }
             job.next += 1;
         }
-        (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents);
+        (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents, job.curtains) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents, p.curtains);
         if job.next >= total {
             commands.entity(e).try_despawn();
         }
@@ -346,6 +375,8 @@ struct Props<'a, 'w, 's> {
     yellow: Vec<Vec2>,
     /// Sulfur vents (`moss::vent`).
     vents: Vec<Vec2>,
+    /// Web curtains across corridors (`curtains`).
+    curtains: Vec<Vec2>,
     /// Ground slope under the prop being drawn (added to its root's angle).
     tilt: f32,
     /// Depth of the prop being drawn.
@@ -412,6 +443,9 @@ impl Props<'_, '_, '_> {
         let green_zone = t.wasp.and_then(|w| t.area_at(w)).is_some_and(|a| a.rect.contains(at));
         if !green_zone {
             moss::hint(self, s, at, style, moss::Tone::Green);
+        }
+        if s.kind == Kind::Ground {
+            curtains::corridor(self, s, at, style);
         }
         moss::vent(self, s, at, style);
         moss::hint(self, s, at, style, moss::Tone::Yellow);

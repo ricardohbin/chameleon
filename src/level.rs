@@ -7,6 +7,8 @@
 //! no asset files. Debug builds read the .aseprite from disk instead, rebuild
 //! the level live whenever it is saved, and warn while it differs from the bake.
 
+mod loose;
+
 use bevy::prelude::*;
 
 use crate::{
@@ -35,27 +37,19 @@ pub const CONCRETE: Color = Color::srgb(0.40, 0.38, 0.36);
 const RUST: Color = Color::srgb(0.44, 0.27, 0.18);
 const STEEL: Color = Color::srgb(0.40, 0.42, 0.45);
 const SOOT: Color = Color::srgb(0.09, 0.09, 0.10);
-
-const SLAB_H: f32 = 18.0;
+const ROCK: Color = Color::srgb(0.36, 0.33, 0.30);
+const PLANK: Color = Color::srgb(0.38, 0.28, 0.18);
 
 /// The reviewed state of the sketch (see `sketch_tool`).
 const SKETCH: &[u8] = include_bytes!("../assets/world.baked");
 #[cfg(debug_assertions)]
 const SKETCH_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/world.aseprite");
 
-/// The moving pieces, placed by hand on the sketch, in sketch pixels from the
+/// The moving pieces placed by hand on the sketch, in sketch pixels from the
 /// origin marker (the magenta cross; y down). `at` is the middle of the
-/// platform's top surface. (The sewer pit is a "feature: large gap that
-/// requires dash to cross", so it gets no bridge.)
-const PINS: &[Pin] = &[
-    // Crumbling building blocks (checked with a reachability search at a 17 px jump): a
-    // step back out of the floor, and a route up to the Venom Mother's chamber (the
-    // crumbling one re-forms after 3 s; without it the route needs a full jump).
-    Pin { at: (381, -16), width: 10, kind: PinKind::Slab },
-    Pin { at: (431, -18), width: 12, kind: PinKind::Slab },
-    Pin { at: (415, -27), width: 10, kind: PinKind::Crumble },
-    Pin { at: (451, -39), width: 10, kind: PinKind::Slab },
-];
+/// platform's top surface. None right now: the collapsing slabs are found on
+/// the terrain by `loose::plan`, and the ground itself is made of tiles.
+const PINS: &[Pin] = &[];
 
 struct Pin {
     at: (i32, i32),
@@ -71,17 +65,14 @@ impl Pin {
     }
 }
 
-/// Where the moving pieces are (for the dev tour).
-pub fn pin_spots() -> Vec<(String, Vec2)> {
-    PINS.iter().map(|p| (format!("{:?}", p.kind).to_lowercase(), p.place())).collect()
+/// Where the moving pieces are (for the dev tour): the pins, and one loose platform of each material.
+pub fn pin_spots(terrain: &Terrain) -> Vec<(String, Vec2)> {
+    let pins = PINS.iter().map(|p| (format!("{:?}", p.kind).to_lowercase(), p.place()));
+    pins.chain(loose::tour_spots(terrain)).collect()
 }
 
 #[derive(Clone, Copy, Debug)]
 enum PinKind {
-    /// Concrete slab, stays put.
-    Slab,
-    /// Concrete slab that breaks under you.
-    Crumble,
     /// Scrap plate that sinks under your weight (7 px: never where the next jump needs every pixel).
     #[allow(dead_code)] // none placed right now
     Plate,
@@ -156,20 +147,42 @@ pub struct Platform {
     pub stable: bool,
     /// How far it moved this frame (so the player rides along).
     pub delta: Vec2,
+    /// Inclined platforms: the angle (radians, + = rising to the right) its
+    /// transform is rotated by at rest. `half` is then its own, unrotated size.
+    pub tilt: f32,
 }
 
 impl Platform {
     fn new(half: Vec2, color: Color, one_way: bool, stable: bool) -> Self {
-        Self { half, color, one_way, solid: true, stable, delta: Vec2::ZERO }
+        Self { half, color, one_way, solid: true, stable, delta: Vec2::ZERO, tilt: 0.0 }
+    }
+
+    /// Half the horizontal extent of the top surface.
+    pub fn run(&self) -> f32 {
+        self.half.x * self.tilt.cos()
+    }
+
+    /// Half extents of the axis-aligned box around it (for broad overlap tests).
+    pub fn bound(&self) -> Vec2 {
+        let (s, c) = (self.tilt.sin().abs(), self.tilt.cos());
+        Vec2::new(self.half.x * c + self.half.y * s, self.half.x * s + self.half.y * c)
+    }
+
+    /// Height of the top surface at world `x` (the piece being centered at `center`).
+    pub fn top_at(&self, center: Vec2, x: f32) -> f32 {
+        let x = x.clamp(center.x - self.run(), center.x + self.run());
+        center.y + self.half.y / self.tilt.cos() + self.tilt.tan() * (x - center.x)
     }
 }
 
 struct Mats {
-    concrete: Handle<ColorMaterial>,
     concrete_dark: Handle<ColorMaterial>,
     rust: Handle<ColorMaterial>,
     steel: Handle<ColorMaterial>,
     steel_dark: Handle<ColorMaterial>,
+    rock: Handle<ColorMaterial>,
+    plank: Handle<ColorMaterial>,
+    plank_dark: Handle<ColorMaterial>,
     soot: Handle<ColorMaterial>,
     white: Handle<ColorMaterial>,
     rim: Handle<ColorMaterial>,
@@ -198,11 +211,13 @@ fn build(
     terrain_props::spawn(commands, materials, terrain);
 
     let mats = Mats {
-        concrete: materials.add(CONCRETE),
         concrete_dark: materials.add(scale_color(CONCRETE, 0.6)),
         rust: materials.add(RUST),
         steel: materials.add(STEEL),
         steel_dark: materials.add(scale_color(STEEL, 0.55)),
+        rock: materials.add(ROCK),
+        plank: materials.add(PLANK),
+        plank_dark: materials.add(scale_color(PLANK, 0.65)),
         soot: materials.add(SOOT),
         white: materials.add(Color::WHITE),
         rim: materials.add(Color::srgb(0.70, 0.67, 0.62)),
@@ -215,12 +230,11 @@ fn build(
             warn!("world sketch: the {:?} pinned at {:?} is buried in the ground", pin.kind, pin.at);
         }
         match pin.kind {
-            PinKind::Slab => b.slab(top - Vec2::Y * SLAB_H / 2.0, w, None),
-            PinKind::Crumble => b.slab(top - Vec2::Y * SLAB_H / 2.0, w, Some(Motion::crumble())),
             PinKind::Plate => b.plate(top - Vec2::Y * 7.0, w),
             PinKind::Girder => b.girder(top - Vec2::Y * 8.0, w),
         }
     }
+    loose::spawn(&mut b, terrain);
 }
 
 /// The sketch file's modification time and size: a change means a save.
@@ -354,47 +368,6 @@ impl Builder<'_, '_, '_> {
     fn child(&mut self, mesh: Mesh, mat: &Handle<ColorMaterial>, tf: Transform, parent: Entity) {
         let mesh = self.meshes.add(mesh);
         self.commands.spawn((Mesh2d(mesh), MeshMaterial2d(mat.clone()), tf, ChildOf(parent)));
-    }
-
-    /// Broken concrete slab. With `Motion::Crumble` it falls when stepped on.
-    fn slab(&mut self, center: Vec2, w: f32, motion: Option<Motion>) {
-        let crumbles = motion.is_some();
-        let e = self.root(center, Platform::new(Vec2::new(w / 2.0, SLAB_H / 2.0), CONCRETE, true, !crumbles), motion);
-        let (hw, hh) = (w / 2.0, SLAB_H / 2.0);
-
-        let mut outline = Vec::new();
-        let mut x = -hw + self.rng.range(2.0, 8.0);
-        while x < hw - 8.0 {
-            outline.push(Vec2::new(x, hh + self.rng.range(-1.5, 1.0)));
-            x += self.rng.range(10.0, 20.0);
-        }
-        outline.push(Vec2::new(hw - self.rng.range(2.0, 8.0), hh));
-        let top_edge = outline.clone();
-        outline.push(Vec2::new(hw + self.rng.range(-2.0, 3.0), self.rng.range(-3.0, 3.0)));
-        let mut x = hw - self.rng.range(4.0, 12.0);
-        while x > -hw + 8.0 {
-            outline.push(Vec2::new(x, -hh - self.rng.range(-1.0, 5.0)));
-            x -= self.rng.range(8.0, 18.0);
-        }
-        outline.push(Vec2::new(-hw + self.rng.range(-3.0, 2.0), self.rng.range(-3.0, 3.0)));
-        // Reverse so the outline is counter-clockwise (only matters for consistency).
-        outline.reverse();
-        let mat = if crumbles { self.mats.concrete_dark.clone() } else { self.mats.concrete.clone() };
-        self.child(fill(&outline, |p| 0.55 + 0.45 * ((p.y + hh) / SLAB_H).clamp(0.0, 1.0)), &mat, Transform::default(), e);
-
-        self.rim(e, &top_edge);
-
-        for _ in 0..if crumbles { 4 } else { 1 } {
-            let start = Vec2::new(self.rng.range(-hw + 8.0, hw - 8.0), hh);
-            self.crack(e, start, SLAB_H + 6.0);
-        }
-        for side in [-1.0, 1.0] {
-            if self.rng.chance(0.7) {
-                let base = Vec2::new(side * (hw - 3.0), self.rng.range(-4.0, 4.0));
-                let dir = Vec2::new(side, self.rng.range(-0.8, 0.4)).normalize();
-                self.rebar(e, base, dir);
-            }
-        }
     }
 
     /// Rusty scrap plate that sinks under the player's weight.

@@ -4,6 +4,8 @@ mod camera;
 mod chameleon;
 mod debug_overlay;
 mod dev;
+mod electric;
+mod webs;
 mod map_export;
 mod features;
 mod fumes;
@@ -27,6 +29,7 @@ mod terrain_art;
 mod terrain_props;
 mod unstable;
 mod wasp;
+mod water;
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, MonitorSelection, PrimaryWindow, WindowMode};
@@ -62,7 +65,7 @@ fn main() {
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin))
+        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),
