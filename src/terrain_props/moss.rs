@@ -49,18 +49,37 @@ fn theme(style: Style) -> Theme {
 /// Maybe a hint of `tone` at the spot `s` (`at` = its point on the surface).
 pub(super) fn hint(p: &mut Props, s: &Site, at: Vec2, style: Style, tone: Tone) {
     let yellow = tone == Tone::Yellow;
-    let th = if yellow { theme_yellow(style) } else { theme(style) };
+    let pink = tone == Tone::Pink;
+    let th = match tone {
+        Tone::Green => theme(style),
+        Tone::Yellow => theme_yellow(style),
+        Tone::Pink => theme_pink(style),
+    };
     let far = |q: &Vec2, d: f32| q.distance_squared(at) >= d * d;
-    let others = if yellow { &p.yellow } else { &p.hints };
+    let others = match tone {
+        Tone::Green => &p.hints,
+        Tone::Yellow => &p.yellow,
+        Tone::Pink => &p.pink,
+    };
     if !others.iter().all(|q| far(q, GAP)) || !p.taken.iter().all(|(q, _)| far(q, 20.0 * S)) {
         return;
     }
-    p.rng = Rng(s.key ^ if yellow { 0x7965_6c6c } else { 0x6d6f_7373 });
+    p.rng = Rng(s.key ^ match tone {
+        Tone::Green => 0x6d6f_7373,
+        Tone::Yellow => 0x7965_6c6c,
+        Tone::Pink => 0x7069_6e6b,
+    });
     p.rng.next();
     // Clumps: some stretches of the region get many, most none.
-    let clump = (vines::noise(at, 600.0, if yellow { 17 } else { 9 }) * 2.0).powi(2).min(2.5);
-    // The Gutter King's region (his sewer and the dump beside it) is where the yellow is thick.
-    let home = if yellow { 1.0 + 3.0 * (1.0 - at.distance(p.t.roach.unwrap_or(at + Vec2::splat(1e5))) / 2600.0).clamp(0.0, 1.0) } else { 1.0 };
+    let clump = (vines::noise(at, 600.0, match tone { Tone::Green => 9, Tone::Yellow => 17, Tone::Pink => 23 }) * 2.0).powi(2).min(2.5);
+    // Thick around the home of the boss whose color it is (the Gutter King's
+    // sewer and dump, the Razorwing's plant); the green is even everywhere.
+    let home_of = match tone {
+        Tone::Green => None,
+        Tone::Yellow => p.t.roach,
+        Tone::Pink => p.t.dragonfly,
+    };
+    let home = home_of.map_or(1.0, |h| 1.0 + 3.0 * (1.0 - at.distance(h) / 2600.0).clamp(0.0, 1.0));
     if !p.rng.chance(th.chance * DENSITY * clump * home) {
         return;
     }
@@ -74,29 +93,38 @@ pub(super) fn hint(p: &mut Props, s: &Site, at: Vec2, style: Style, tone: Tone) 
         let Some((y, angle, inside)) = p.fit(s.cell, 14.0, 24.0, true) else { return };
         (at.y, tilt, indoor) = (y, angle, inside);
     }
-    let build = choose(&mut p.rng, if yellow { table_yellow(style, s.kind) } else { table(style, s.kind) });
+    let build = choose(&mut p.rng, match tone {
+        Tone::Green => table(style, s.kind),
+        Tone::Yellow => table_yellow(style, s.kind),
+        Tone::Pink => table_pink(s.kind),
+    });
     let meshes = build(&mut p.rng);
     let t = p.t;
     indoor |= t.cell(t.to_cell(at + Vec2::Y * 6.0)) == Cell::Back || t.cell(t.to_cell(at + Vec2::new(flip * 6.0, 0.0))) == Cell::Back;
     // A little off in hue, lighter or darker, each its own.
-    let hue = th.hue + p.rng.range(-12.0, 12.0) * if yellow { 0.6 } else { 1.0 };
-    let light = (th.light * p.rng.range(0.75, 1.3)).min(if yellow { 0.68 } else { 0.6 });
+    let hue = th.hue + p.rng.range(-12.0, 12.0) * if yellow || pink { 0.6 } else { 1.0 };
+    let light = (th.light * p.rng.range(0.75, 1.3)).min(match tone { Tone::Green => 0.6, Tone::Yellow => 0.68, Tone::Pink => 0.82 });
     let color = Color::hsl(hue, (th.sat * p.rng.range(0.8, 1.15)).min(1.0), light);
-    let gray = if light > if yellow { 0.42 } else { 0.34 } { M::Concrete } else { M::Soot };
+    let gray = if light > match tone { Tone::Green => 0.34, Tone::Yellow => 0.42, Tone::Pink => 0.5 } { M::Concrete } else { M::Soot };
 
-    let home_of = if yellow { t.roach } else { t.wasp };
+    let (home_of, boss) = match tone {
+        Tone::Green => (t.wasp, crate::boss::BossKind::Wasp),
+        Tone::Yellow => (t.roach, crate::boss::BossKind::Roach),
+        Tone::Pink => (t.dragonfly, crate::boss::BossKind::Dragonfly),
+    };
     let dist = at.distance(home_of.unwrap_or(at));
-    let boss = if yellow { crate::boss::BossKind::Roach } else { crate::boss::BossKind::Wasp };
-    dress(p, at, flip, tilt, indoor, meshes, color, gray, boss, dist);
-    if yellow {
-        p.yellow.push(at);
-    } else {
-        p.hints.push(at);
+    // Flowers: only their blossoms (the last mesh) get the color back.
+    let plain = if pink { meshes.len() - 1 } else { 0 };
+    dress(p, at, flip, tilt, indoor, meshes, color, gray, boss, dist, plain);
+    match tone {
+        Tone::Green => p.hints.push(at),
+        Tone::Yellow => p.yellow.push(at),
+        Tone::Pink => p.pink.push(at),
     }
     p.taken.push((at, s.kind));
 }
 
-fn fuzz(q: Vec2) -> f32 {
+pub(super) fn fuzz(q: Vec2) -> f32 {
     0.72 + 0.28 * ((q.x * 0.8 + q.y * 1.9).sin() * 0.5 + 0.5)
 }
 
@@ -141,14 +169,14 @@ fn patch(rng: &mut Rng) -> Vec<Mesh> {
 }
 
 /// Green slime (or algae) standing on the floor.
-fn pool(rng: &mut Rng) -> Vec<Mesh> {
+pub(super) fn pool(rng: &mut Rng) -> Vec<Mesh> {
     let rx = rng.range(8.0, 14.0);
     let outline: Vec<Vec2> = ellipse_pts(rx, 1.6, 12).into_iter().map(|q| q + Vec2::new(0.0, 0.6)).collect();
     vec![fill(&outline, |q| 0.8 + 0.2 * (q.x * 0.5).sin().abs())]
 }
 
 /// A strand of slime off a ceiling.
-fn drip(rng: &mut Rng) -> Vec<Mesh> {
+pub(super) fn drip(rng: &mut Rng) -> Vec<Mesh> {
     let len = rng.range(10.0, 40.0);
     let x = rng.range(-3.0, 3.0);
     let path = smooth_open(&[Vec2::new(x, 1.0), Vec2::new(x + 0.4, -len * 0.5), Vec2::new(x, -len)], 4);
@@ -370,7 +398,7 @@ fn creeper(rng: &mut Rng) -> Vec<Mesh> {
 }
 
 /// Green slime running down a wall from a leaking pipe.
-fn slime_fall(rng: &mut Rng) -> Vec<Mesh> {
+pub(super) fn slime_fall(rng: &mut Rng) -> Vec<Mesh> {
     let (top, len) = (rng.range(8.0, 24.0), rng.range(25.0, 50.0));
     let (phase, x) = (rng.range(0.0, TAU), rng.range(1.0, 1.6));
     let path: Vec<Vec2> = (0..=10)
@@ -384,7 +412,7 @@ fn slime_fall(rng: &mut Rng) -> Vec<Mesh> {
 }
 
 /// Algae streaks down a wall.
-fn streaks(rng: &mut Rng) -> Vec<Mesh> {
+pub(super) fn streaks(rng: &mut Rng) -> Vec<Mesh> {
     let mut tris = Vec::new();
     for _ in 0..4 + rng.below(4) {
         let (x, y0, len, w) = (rng.range(0.4, 1.2), rng.range(-6.0, 22.0), rng.range(10.0, 34.0), rng.range(1.0, 2.6));
@@ -443,7 +471,7 @@ fn slime_curtain(rng: &mut Rng) -> Vec<Mesh> {
 }
 
 /// Several drips side by side.
-fn drips(rng: &mut Rng) -> Vec<Mesh> {
+pub(super) fn drips(rng: &mut Rng) -> Vec<Mesh> {
     let mut out = Vec::new();
     for i in 0..2 + rng.below(3) {
         let len = rng.range(8.0, 36.0);
@@ -467,6 +495,114 @@ pub(super) enum Tone {
     Green,
     /// The Gutter King's: sludge, dry things, sulfur and what people painted to warn each other.
     Yellow,
+    /// The Razorwing's: flowers, all over the world (its plant's chemicals are `chemicals.rs`).
+    Pink,
+}
+
+/// The pinks: dusty, around the Razorwing's own `#d1b0c6`, a little deeper
+/// or paler; most where flowers would have grown.
+fn theme_pink(style: Style) -> Theme {
+    let (sat, light, chance) = match style {
+        Style::Park => (0.40, 0.72, 0.20),
+        Style::Sinkhole | Style::Dam | Style::Cave => (0.34, 0.70, 0.12),
+        Style::Treatment => (0.38, 0.70, 0.16),
+        Style::Concrete | Style::Mall | Style::Trash => (0.30, 0.72, 0.08),
+        Style::Sewer | Style::Subway | Style::Catacombs | Style::Bunker => (0.28, 0.68, 0.05),
+    };
+    Theme { hue: 320.0, sat, light, chance }
+}
+
+/// Where the pink grows: flowers on the floors, blooms hanging and climbing.
+fn table_pink(kind: Kind) -> &'static [(Build, f32)] {
+    match kind {
+        Kind::Ground => &[(blossoms, 4.0), (foxgloves, 2.0), (clover, 2.0)],
+        Kind::Wall => &[(climbing_blooms, 1.0)],
+        Kind::Edge | Kind::Ceiling => &[(hanging_blooms, 1.0)],
+    }
+}
+
+/// A flower head: `n` round petals around `c`.
+fn petals(c: Vec2, r: f32, n: usize, turn: f32) -> Vec<Vec<Vec2>> {
+    (0..n)
+        .map(|i| {
+            let a = turn + i as f32 / n as f32 * TAU;
+            let at = c + Vec2::from_angle(a) * r * 0.75;
+            ellipse_pts(r * 0.55, r * 0.4, 7).into_iter().map(|q| Vec2::from_angle(a).rotate(q) + at).collect()
+        })
+        .collect()
+}
+
+/// A few five-petaled flowers on thin stems.
+fn blossoms(rng: &mut Rng) -> Vec<Mesh> {
+    let mut stems = Vec::new();
+    let mut heads = Vec::new();
+    for _ in 0..3 + rng.below(4) {
+        let (x, h, bend) = (rng.range(-9.0, 9.0), rng.range(6.0, 16.0), rng.range(-2.5, 2.5));
+        stems.push([Vec2::new(x - 0.45, -0.5), Vec2::new(x + 0.45, -0.5), Vec2::new(x + bend, h)]);
+        heads.extend(petals(Vec2::new(x + bend, h + 0.8), rng.range(1.8, 2.8), 5, rng.range(0.0, TAU)));
+    }
+    vec![triangles(&stems), blobs(&heads, |q| 0.85 + 0.15 * (q.x * 1.3).sin())]
+}
+
+/// Tall spikes of bell flowers.
+fn foxgloves(rng: &mut Rng) -> Vec<Mesh> {
+    let mut stems = Vec::new();
+    let mut bells = Vec::new();
+    for _ in 0..1 + rng.below(3) {
+        let (x, h, lean) = (rng.range(-7.0, 7.0), rng.range(18.0, 30.0), rng.range(-3.0, 3.0));
+        stems.push([Vec2::new(x - 0.6, -0.5), Vec2::new(x + 0.6, -0.5), Vec2::new(x + lean, h)]);
+        let n = 4 + rng.below(4);
+        for k in 0..n {
+            let t = 0.45 + 0.55 * k as f32 / n as f32;
+            let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let c = Vec2::new(x + lean * t + side * 1.6, h * t);
+            let r = 2.2 * (1.15 - 0.5 * t);
+            bells.push(ellipse_pts(r * 0.8, r, 8).into_iter().map(|q| q + c).collect());
+        }
+    }
+    vec![triangles(&stems), blobs(&bells, |q| 0.75 + 0.25 * ((q.y * 0.9).sin() * 0.5 + 0.5))]
+}
+
+/// Low clover with pink puffs.
+fn clover(rng: &mut Rng) -> Vec<Mesh> {
+    let w = rng.range(8.0, 13.0);
+    let leaves: Vec<Vec2> = (0..7 + rng.below(4)).map(|_| Vec2::new(rng.range(-w, w), rng.range(1.0, 3.5))).collect();
+    let puffs: Vec<Vec<Vec2>> = (0..3 + rng.below(3))
+        .map(|_| {
+            let c = Vec2::new(rng.range(-w * 0.8, w * 0.8), rng.range(4.0, 7.0));
+            let r = rng.range(1.6, 2.4);
+            ellipse_pts(r, r * 1.1, 9).into_iter().map(|q| q + c).collect()
+        })
+        .collect();
+    vec![blobs(&ellipses(rng, &leaves, (1.5, 2.6)), fuzz), blobs(&puffs, fuzz)]
+}
+
+/// Blooming strands hanging off a ledge or a ceiling.
+fn hanging_blooms(rng: &mut Rng) -> Vec<Mesh> {
+    let mut out = Vec::new();
+    let mut heads = Vec::new();
+    for _ in 0..2 + rng.below(3) {
+        let (x, len, sway) = (rng.range(-6.0, 6.0), rng.range(10.0, 32.0), rng.range(-2.5, 2.5));
+        let path = smooth_open(&[Vec2::new(x, 1.0), Vec2::new(x + sway * 0.4, -len * 0.5), Vec2::new(x + sway, -len)], 5);
+        for k in [0.45, 0.75, 1.0] {
+            heads.extend(petals(path[((path.len() - 1) as f32 * k) as usize], rng.range(1.5, 2.3), 5, rng.range(0.0, TAU)));
+        }
+        out.push(stroke(&path, |t| 1.0 * (1.0 - 0.6 * t) + 0.3, 1.0, 0.7, |_| 1.0));
+    }
+    out.push(blobs(&heads, |_| 0.9));
+    out
+}
+
+/// A creeper up a wall, flowering.
+fn climbing_blooms(rng: &mut Rng) -> Vec<Mesh> {
+    let (base, top) = (rng.range(-24.0, -10.0), rng.range(10.0, 26.0));
+    let path = smooth_open(&[Vec2::new(1.5, base), Vec2::new(3.0, base * 0.3), Vec2::new(1.8, top * 0.5), Vec2::new(2.6, top)], 5);
+    let mut heads = Vec::new();
+    for k in 0..4 + rng.below(3) {
+        let q = path[(k * 7 + 3).min(path.len() - 1)];
+        heads.extend(petals(q + Vec2::new(rng.range(0.5, 3.0), 0.0), rng.range(1.4, 2.2), 5, rng.range(0.0, TAU)));
+    }
+    vec![stroke(&path, |_| 1.1, 1.0, 0.6, |_| 1.0), blobs(&heads, |_| 0.9)]
 }
 
 fn theme_yellow(style: Style) -> Theme {
@@ -627,7 +763,11 @@ fn sign_frame(rng: &mut Rng) -> Vec<Mesh> {
 }
 
 /// Spawns a hint's two copies: gray in the world, and the living one on the color layer.
-fn dress(p: &mut Props, at: Vec2, flip: f32, tilt: f32, indoor: bool, meshes: Vec<Mesh>, color: Color, gray: M, boss: crate::boss::BossKind, dist: f32) {
+/// Draws a hint twice: gray in the world, and on the color layer (hidden
+/// until `boss`'s color comes back, `dist` from its home). The first `plain`
+/// meshes only have the gray copy (stems under colored blossoms).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dress(p: &mut Props, at: Vec2, flip: f32, tilt: f32, indoor: bool, meshes: Vec<Mesh>, color: Color, gray: M, boss: crate::boss::BossKind, dist: f32, plain: usize) {
     let meshes: Vec<Handle<Mesh>> = meshes.into_iter().map(|m| p.meshes.add(m)).collect();
     let jitter = (seed(at.x as i32, at.y as i32) >> 8) as f32 / (1u32 << 24) as f32 * 0.08;
     p.tilt = tilt;
@@ -643,7 +783,7 @@ fn dress(p: &mut Props, at: Vec2, flip: f32, tilt: f32, indoor: bool, meshes: Ve
         Visibility::Hidden,
         Vine { boss, dist, stem: mat.clone(), leaf: mat.clone(), shown: 0.0, base: [color, color], lit: 0.0 },
     ));
-    for m in meshes {
+    for m in meshes.into_iter().skip(plain) {
         p.commands.spawn((Mesh2d(m), MeshMaterial2d(mat.clone()), Transform::default(), camera::color_layer(), ChildOf(alive)));
     }
     p.tilt = 0.0;
@@ -692,7 +832,7 @@ pub(super) fn vent(p: &mut Props, s: &Site, at: Vec2, style: Style) {
     let hue = 50.0 + p.rng.range(-5.0, 5.0);
     let color = Color::hsl(hue, 0.72, p.rng.range(0.42, 0.55));
     let dist = at.distance(p.t.roach.unwrap_or(at));
-    dress(p, at, flip, angle, indoor, crust, color, M::Concrete, crate::boss::BossKind::Roach, dist);
+    dress(p, at, flip, angle, indoor, crust, color, M::Concrete, crate::boss::BossKind::Roach, dist, 0);
 
     p.commands.spawn((
         Transform::from_translation((at + Vec2::new(0.0, 9.5 * S)).extend(0.0)),

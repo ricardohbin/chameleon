@@ -60,6 +60,7 @@ pub struct Regrowth {
 /// The colors themselves (the bosses' own, lightly).
 pub const GREEN: Color = Color::srgb(0.36, 0.78, 0.18);
 pub const YELLOW: Color = Color::srgb(0.93, 0.80, 0.32);
+pub const PINK: Color = Color::srgb_u8(0xd1, 0xb0, 0xc6);
 
 /// How far from its home a boss's color is felt in the air.
 const FELT: f32 = 4500.0;
@@ -133,7 +134,7 @@ fn regrow(
 ) {
     let now = time.elapsed_secs();
     grow.now = now;
-    for boss in [BossKind::Wasp, BossKind::Roach] {
+    for boss in BossKind::ALL {
         let i = index(boss);
         let earned = defeated.0.contains(&boss);
         match (earned, grow.since[i]) {
@@ -187,14 +188,14 @@ fn tint_and_pulse(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut flash: ResMut<ScreenFlash>,
     mut shake: ResMut<Shake>,
-    mut waved: Local<[bool; 2]>,
+    mut waved: Local<[bool; 3]>,
 ) {
     let eye = camera.translation.truncate();
     let (mut tf, mat) = tint.into_inner();
     tf.translation.x = eye.x;
     tf.translation.y = eye.y;
     let (mut rgb, mut alpha) = (Vec3::ZERO, 0.0);
-    for (boss, color, strength) in [(BossKind::Wasp, GREEN, 0.03), (BossKind::Roach, YELLOW, 0.15)] {
+    for (boss, color, strength) in [(BossKind::Wasp, GREEN, 0.03), (BossKind::Roach, YELLOW, 0.15), (BossKind::Dragonfly, PINK, 0.1)] {
         let (revealed, near) = regrowth.felt_at(boss, &terrain, eye);
         let a = revealed * (if boss == BossKind::Wasp { 0.0 } else { 0.04 } + strength * near * near);
         let c = color.to_srgba();

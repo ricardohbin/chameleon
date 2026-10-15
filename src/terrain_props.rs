@@ -43,6 +43,7 @@ mod cave;
 mod vines;
 mod moss;
 mod curtains;
+mod chemicals;
 
 /// How a region places its props (the older styles are matched inline below).
 struct Hooks {
@@ -161,6 +162,9 @@ pub struct PropJob {
     yellow: Vec<Vec2>,
     vents: Vec<Vec2>,
     curtains: Vec<Vec2>,
+    pink: Vec<Vec2>,
+    drums: Vec<Vec2>,
+    stains: Vec<Vec2>,
     mats: Vec<Handle<ColorMaterial>>,
 }
 
@@ -187,7 +191,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         sites.sort_by_key(|s| s.key);
         (sites, facade_spots(&found))
     });
-    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), mats };
+    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), mats };
     commands.spawn((job, TerrainPart));
 }
 
@@ -219,6 +223,9 @@ pub fn place_props(
             yellow: std::mem::take(&mut job.yellow),
             vents: std::mem::take(&mut job.vents),
             curtains: std::mem::take(&mut job.curtains),
+            pink: std::mem::take(&mut job.pink),
+            drums: std::mem::take(&mut job.drums),
+            stains: std::mem::take(&mut job.stains),
             tilt: 0.0,
             depth: BACK,
         };
@@ -234,6 +241,7 @@ pub fn place_props(
             job.next += 1;
         }
         (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents, job.curtains) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents, p.curtains);
+        (job.pink, job.drums, job.stains) = (p.pink, p.drums, p.stains);
         if job.next >= total {
             commands.entity(e).try_despawn();
         }
@@ -377,6 +385,10 @@ struct Props<'a, 'w, 's> {
     vents: Vec<Vec2>,
     /// Web curtains across corridors (`curtains`).
     curtains: Vec<Vec2>,
+    /// Where the pink flowers are (`moss`), and the Razorwing's chemical drums and stains (`chemicals`).
+    pink: Vec<Vec2>,
+    drums: Vec<Vec2>,
+    stains: Vec<Vec2>,
     /// Ground slope under the prop being drawn (added to its root's angle).
     tilt: f32,
     /// Depth of the prop being drawn.
@@ -440,6 +452,12 @@ impl Props<'_, '_, '_> {
             Kind::Ceiling => min + Vec2::new(PX / 2.0, 0.0),
         };
         let style = t.style_at(at);
+        // The Razorwing's plant is full of its chemical drums.
+        if chemicals::in_lair(t, at) && chemicals::place(self, s, at) {
+            self.depth = BACK;
+            self.taken.push((at, s.kind));
+            return;
+        }
         let green_zone = t.wasp.and_then(|w| t.area_at(w)).is_some_and(|a| a.rect.contains(at));
         if !green_zone {
             moss::hint(self, s, at, style, moss::Tone::Green);
@@ -449,6 +467,7 @@ impl Props<'_, '_, '_> {
         }
         moss::vent(self, s, at, style);
         moss::hint(self, s, at, style, moss::Tone::Yellow);
+        moss::hint(self, s, at, style, moss::Tone::Pink);
         let hooks = hooks(style);
         let (gap, density) = match (s.kind, style) {
             _ if let Some(h) = hooks => (h.spacing)(s.kind),
