@@ -1232,10 +1232,10 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
 }
 
 /// World size of a nav cell.
-const NAV_STEP: f32 = NAV_CELL as f32 * PX;
+pub(crate) const NAV_STEP: f32 = NAV_CELL as f32 * PX;
 
 /// Every point between `a` and `b` (not counting `a`) has `room` to the nearest wall.
-fn clear_line(terrain: &Terrain, a: Vec2, b: Vec2, room: f32) -> bool {
+pub(crate) fn clear_line(terrain: &Terrain, a: Vec2, b: Vec2, room: f32) -> bool {
     let n = ((b - a).length() / (PX * 0.5)).ceil().max(1.0) as i32;
     (1..=n).all(|i| terrain.clearance(a.lerp(b, i as f32 / n as f32)) >= room)
 }
@@ -1277,7 +1277,7 @@ fn spot_score(terrain: &Terrain, want: Want, q: Vec2, steps: u16, ppos: Vec2, ho
 /// out from the wasp, so it finds its way around walls and through buildings
 /// to wherever it wants to be. Buffers are reused between plans.
 #[derive(Default)]
-struct Nav {
+pub(crate) struct Nav {
     size: IVec2,
     /// `seen[i] == mark`: visited by the current plan.
     seen: Vec<u32>,
@@ -1302,7 +1302,7 @@ impl Nav {
 
     /// The best-scoring reachable spot (sticking with `keep` unless another is
     /// clearly better) and the waypoints to it.
-    fn plan(
+    pub(crate) fn plan(
         &mut self,
         terrain: &Terrain,
         from: Vec2,

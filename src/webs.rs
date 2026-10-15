@@ -155,7 +155,6 @@ fn wear(
     let moving = [KeyCode::KeyA, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::ArrowRight];
     let tapping = [KeyCode::KeyA, KeyCode::KeyD, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp];
     let center = chameleon::slash_center(at, p.facing);
-    let aim = anim.slash_dir();
     for mut c in &mut curtains {
         if c.fall > 0.0 {
             continue;
@@ -163,7 +162,7 @@ fn wear(
         // The claws cut whatever strands they sweep through (once per slash).
         if anim.striking() && c.slash != anim.slash_id {
             let near = center.clamp(c.center - c.half, c.center + c.half);
-            if near.distance(center) < chameleon::SLASH_REACH && (near - center).dot(aim) > -chameleon::SLASH_REACH * 0.3 {
+            if anim.reaches(at, p.facing, near, 0.0) {
                 c.slash = anim.slash_id;
                 c.hurt(SLASH, 0.18);
             }

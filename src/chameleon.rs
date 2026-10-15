@@ -2,7 +2,7 @@
 //!
 //! Everything is built from shaded meshes (see `shapes.rs`) arranged in a
 //! bone-like hierarchy, so it can be animated procedurally:
-//! walk cycle, curling tail, darting eye, claw slash and camouflage.
+//! walk cycle, curling tail, darting eye, claw slash (and the air spin) and camouflage.
 //!
 //! Local coordinates: the chameleon faces +X, origin = `player::RIG_DROP` below the player collider center.
 
@@ -11,6 +11,7 @@ use std::f32::consts::PI;
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
+    boss::Defeated,
     camera,
     gore::PaintTarget,
     level::{self, Restart},
@@ -35,6 +36,32 @@ const WAVE_RADIUS: f32 = 60.0;
 /// The slash hitbox: a half-disc of this radius (world units) around the
 /// swiping shoulder, on the side the slash is aimed at. Matches the wave.
 pub const SLASH_REACH: f32 = WAVE_RADIUS * player::SCALE * 1.15;
+/// The air spin (earned from the dragonfly): attacking in the air whirls the
+/// chameleon around once, cutting a wide fan toward the aim, untouchable for
+/// `SPIN_GUARD`; then it needs `SPIN_COOLDOWN` before the next one.
+const SPIN_TIME: f32 = 0.4;
+const SPIN_GUARD: f32 = 0.5;
+const SPIN_COOLDOWN: f32 = 2.0;
+/// The spin's fan: this far from the body, this wide each side of the aim (radians).
+pub const SPIN_REACH: f32 = SLASH_REACH * 1.45;
+pub const SPIN_FAN: f32 = 1.75;
+/// Part of the spin (fraction of `SPIN_TIME`) where it cuts.
+const SPIN_STRIKE: (f32, f32) = (0.1, 0.85);
+
+/// Whether a target at `pos` (with hurtbox `radius`) is inside a fan from
+/// `center` along `dir`: within `reach`, at most `half` radians off `dir`
+/// (anything touching the center counts, whatever the angle).
+pub fn in_fan(center: Vec2, dir: Vec2, reach: f32, half: f32, pos: Vec2, radius: f32) -> bool {
+    let d = pos - center;
+    let len = d.length();
+    if len >= reach + radius {
+        return false;
+    }
+    // The hurtbox widens the angle it covers.
+    let slack = (radius / len.max(1.0)).min(1.0).asin();
+    len < radius + 10.0 || d.angle_to(dir).abs() <= half + slack
+}
+
 /// The head's pivot, in rig units.
 const NECK: Vec2 = Vec2::new(38.0, 6.0);
 /// A spit jerks the head forward for this long.
@@ -75,7 +102,7 @@ impl Plugin for ChameleonPlugin {
             .add_systems(PreUpdate, forget_colors.after(level::restart))
             .add_systems(
             Update,
-            (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave)
+            (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave, spin_wave)
                 .chain()
                 .after(player::move_player),
         );
@@ -182,6 +209,10 @@ pub struct ChameleonAnim {
     slash: Option<f32>,
     /// Where the current slash goes (unit, world space): the aim when it started.
     slash_aim: Vec2,
+    /// Seconds since the air spin started, `None` when not spinning.
+    spin: Option<f32>,
+    /// Seconds before another air spin.
+    spin_cooldown: f32,
     /// Seconds since the last spit, `None` after `SPIT_TIME`.
     spat: Option<f32>,
     /// The head looks forward (1) or back over the shoulder (-1), turning
@@ -235,6 +266,10 @@ struct TailRings;
 /// The faint crescent left in the air by the claws.
 #[derive(Component)]
 struct SlashWave(Handle<ColorMaterial>);
+
+/// The fan swept by the air spin.
+#[derive(Component)]
+struct SpinWave(Handle<ColorMaterial>);
 
 pub fn spawn_chameleon(
     commands: &mut Commands,
@@ -460,6 +495,19 @@ pub fn spawn_chameleon(
     let wave = c.part(wave_mesh, &wave_mat, WAVE_CENTER.extend(0.9), rig);
     c.commands.entity(wave).insert((SlashWave(wave_mat), Visibility::Hidden));
 
+    // Spin wave: a wide fan of crescents around the body (in world units, not
+    // in the rig, so it doesn't turn with the spin), hidden until a spin.
+    let spin_mat = materials.add(ColorMaterial {
+        color: WAVE.with_alpha(0.0),
+        alpha_mode: AlphaMode2d::Blend,
+        ..default()
+    });
+    let spin = c.commands.spawn((SpinWave(spin_mat.clone()), Transform::from_xyz(0.0, 0.0, 0.9), Visibility::Hidden, ChildOf(player))).id();
+    for (r, w) in [(1.0, 9.0), (0.72, 5.0)] {
+        let arc: Vec<Vec2> = (0..=40).map(|i| Vec2::from_angle(lerp(SPIN_FAN, -SPIN_FAN, i as f32 / 40.0)) * SPIN_REACH * r).collect();
+        c.part(stroke(&arc, |t| 0.5 + w * (PI * t).sin().powf(0.6), 1.0, 0.5, |_| 1.0), &spin_mat, Vec3::ZERO, spin);
+    }
+
     c.commands.insert_resource(skin);
     c.commands.entity(player).insert(ChameleonAnim {
         phase: 0.0,
@@ -476,6 +524,8 @@ pub fn spawn_chameleon(
         focus: 0.0,
         slash: None,
         slash_aim: Vec2::X,
+        spin: None,
+        spin_cooldown: 0.0,
         spat: None,
         head_side: 1.0,
         head_pitch: 0.0,
@@ -611,10 +661,11 @@ pub fn update_anim_state(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    player: Single<(&Player, &mut ChameleonAnim)>,
+    defeated: Res<Defeated>,
+    player: Single<(&mut Player, &mut ChameleonAnim)>,
 ) {
     let dt = time.delta_secs();
-    let (p, mut a) = player.into_inner();
+    let (mut p, mut a) = player.into_inner();
     let speed = p.vel.x.abs();
 
     // Swimming: the legs paddle (the walk cycle at its own pace), more when tired.
@@ -630,15 +681,24 @@ pub fn update_anim_state(
     a.curl = smooth(a.curl, curl_target, 4.0, dt);
 
     // Claw slash: holding the button keeps slashing, one right after another.
+    // In the air, with the dragonfly's power and when it's ready: the spin.
     let attack = keys.any_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left);
-    let free = a.slash.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
+    let free = a.slash.is_none() && a.spin.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
     a.eat = keys.just_pressed(KeyCode::KeyE) && free;
+    a.spin_cooldown = (a.spin_cooldown - dt).max(0.0);
     if attack && free && !a.eat {
-        a.slash = Some(0.0);
         a.slash_aim = p.aim;
         a.slash_id += 1;
+        if !p.grounded && !p.swimming && defeated.spin() && a.spin_cooldown <= 0.0 {
+            a.spin = Some(0.0);
+            a.spin_cooldown = SPIN_COOLDOWN;
+            p.guard = p.guard.max(SPIN_GUARD);
+        } else {
+            a.slash = Some(0.0);
+        }
     }
     a.slash = a.slash.map(|t| t + dt).filter(|&t| t < SLASH_TIME);
+    a.spin = a.spin.map(|t| t + dt).filter(|&t| t < SPIN_TIME && !dead);
     a.bite = a.bite.map(|t| t + dt).filter(|&t| t < BITE_TIME && !dead);
     a.spat = a.spat.map(|t| t + dt).filter(|&t| t < SPIT_TIME);
 
@@ -732,8 +792,12 @@ fn pose_parts(
                 // Flip by scaling X through zero: reads as a quick turn.
                 tf.scale.x = smooth(tf.scale.x, p.facing * player::SCALE, 16.0, dt);
                 let tilt = (p.vel.y * 0.00035).clamp(-0.25, 0.25) * a.air;
-                // Dead: rolls over belly-up.
-                tf.rotation = Quat::from_rotation_z(lerp(tilt, PI, a.death) * p.facing);
+                // Dead: rolls over belly-up. Spinning: one whole turn, forward.
+                let spin = a.spin.map_or(0.0, |t| {
+                    let k = t / SPIN_TIME;
+                    -2.0 * PI * k * k * (3.0 - 2.0 * k)
+                });
+                tf.rotation = Quat::from_rotation_z((lerp(tilt, PI, a.death) + spin) * p.facing);
                 tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0) + player::RIG_DROP;
                 // Blink while invulnerable.
                 let blink = p.invuln > 0.0 && p.dead.is_none() && (t * 30.0).sin() > 0.0;
@@ -832,6 +896,28 @@ fn animate_tail(
     **rings = if shown { Visibility::Inherited } else { Visibility::Hidden };
     if shown && let Some(mut mesh) = meshes.get_mut(&tail.rings) {
         *mesh = tail_rings(player.curl);
+    }
+}
+
+fn spin_wave(
+    player: Single<(&Player, &ChameleonAnim)>,
+    wave: Single<(&SpinWave, &mut Transform, &mut Visibility)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let (p, a) = *player;
+    let (wave, mut tf, mut vis) = wave.into_inner();
+    let Some(t) = a.spin else {
+        *vis = Visibility::Hidden;
+        return;
+    };
+    // Sweeps a little the way the body turns as it widens and fades.
+    let k = t / SPIN_TIME;
+    *vis = Visibility::Inherited;
+    tf.translation.y = player::RIG_DROP;
+    tf.rotation = Quat::from_rotation_z(a.slash_aim.to_angle() - p.facing * (k - 0.5) * 0.7);
+    tf.scale = Vec3::splat(0.8 + 0.25 * k);
+    if let Some(mut mat) = materials.get_mut(&wave.0) {
+        mat.color.set_alpha(0.6 * (1.0 - k).powf(1.2) * (k / 0.15).min(1.0));
     }
 }
 
@@ -945,16 +1031,39 @@ fn palette(c: Oklcha) -> [Color; 4] {
 impl ChameleonAnim {
     /// Slashing or eating: its mind is on something.
     pub fn busy(&self) -> bool {
-        self.slash.is_some() || self.bite.is_some()
+        self.slashing() || self.bite.is_some()
     }
 
+    /// Slashing or spinning.
     pub fn slashing(&self) -> bool {
-        self.slash.is_some()
+        self.slash.is_some() || self.spin.is_some()
     }
 
     /// True while the claws are cutting through the air.
     pub fn striking(&self) -> bool {
         self.slash.is_some_and(|t| (STRIKE.0..=STRIKE.1).contains(&(t / SLASH_TIME)))
+            || self.spin.is_some_and(|t| (SPIN_STRIKE.0..=SPIN_STRIKE.1).contains(&(t / SPIN_TIME)))
+    }
+
+    /// Whether the current attack reaches a target at `pos` with hurtbox
+    /// `radius`, for a chameleon at `ppos`: the slash's half-disc around the
+    /// shoulder, or the spin's wide fan around the body.
+    pub fn reaches(&self, ppos: Vec2, facing: f32, pos: Vec2, radius: f32) -> bool {
+        if self.spin.is_some() {
+            return in_fan(ppos, self.slash_aim, SPIN_REACH, SPIN_FAN, pos, radius);
+        }
+        let center = slash_center(ppos, facing);
+        (pos - center).dot(self.slash_aim) > -radius * 0.5 && pos.distance(center) < SLASH_REACH + radius
+    }
+
+    /// Which way the current attack throws a target at `pos`: along the slash,
+    /// or straight out from the spinning body.
+    pub fn blow_dir(&self, ppos: Vec2, pos: Vec2) -> Vec2 {
+        if self.spin.is_some() {
+            (pos - ppos).normalize_or(self.slash_aim)
+        } else {
+            self.slash_aim
+        }
     }
 
     /// The eat key was pressed this frame, with the mouth free.

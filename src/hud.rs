@@ -286,6 +286,9 @@ fn hint(defeated: &Defeated) -> String {
     if defeated.spit() {
         s.push_str("   G/Right click: spit");
     }
+    if defeated.spin() {
+        s.push_str("   Attack in the air: spin");
+    }
     s
 }
 

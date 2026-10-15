@@ -4,6 +4,7 @@ mod camera;
 mod chameleon;
 mod debug_overlay;
 mod dev;
+mod dragonfly;
 mod electric;
 mod webs;
 mod map_export;
@@ -65,7 +66,7 @@ fn main() {
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin))
+        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),

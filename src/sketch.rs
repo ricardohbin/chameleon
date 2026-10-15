@@ -29,6 +29,8 @@ pub enum MarkerKind {
     Player,
     Roach,
     Wasp,
+    /// Cyan: the dragonfly boss.
+    Dragonfly,
 }
 
 pub struct Marker {
@@ -76,6 +78,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
                 (true, false, true) => Some(MarkerKind::Origin),
                 (true, true, false) => Some(MarkerKind::Roach),
                 (false, true, false) => Some(MarkerKind::Wasp),
+                (false, true, true) => Some(MarkerKind::Dragonfly),
                 _ => None,
             };
             continue;
@@ -180,6 +183,7 @@ fn unbake(packed: &[u8]) -> Result<Sketch, String> {
             1 => MarkerKind::Player,
             2 => MarkerKind::Roach,
             3 => MarkerKind::Wasp,
+            4 => MarkerKind::Dragonfly,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

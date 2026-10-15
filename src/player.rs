@@ -124,6 +124,9 @@ pub struct Player {
     pub digest: f32,
     /// Seconds left of post-hit invulnerability.
     pub invuln: f32,
+    /// Seconds left untouchable in the middle of an attack (the air spin): like
+    /// `invuln`, without the blinking.
+    pub guard: f32,
     /// F3 invulnerability: no damage, no knockback (enemies pass right through).
     pub god: bool,
     /// F4: gravity-free movement with mouse-directed jump impulses.
@@ -172,7 +175,7 @@ pub enum Hurt {
 impl Player {
     /// Take `damage` and get knocked back with velocity `knock`.
     pub fn hurt(&mut self, damage: i32, knock: Vec2) -> Hurt {
-        if self.dead.is_some() || self.invuln > 0.0 || self.god {
+        if self.dead.is_some() || self.invuln > 0.0 || self.guard > 0.0 || self.god {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
@@ -407,6 +410,7 @@ pub fn move_player(
     }
     p.stun = (p.stun - dt).max(0.0);
     p.invuln = (p.invuln - dt).max(0.0);
+    p.guard = (p.guard - dt).max(0.0);
     let dead = p.dead.is_some();
     if p.stun > 0.0 || dead {
         dir = 0.0;

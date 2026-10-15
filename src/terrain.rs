@@ -127,8 +127,9 @@ pub struct Terrain {
     pub canvas_origin: IVec2,
     /// Boss markers resting on the ground below them (feet position).
     pub roach: Option<Vec2>,
-    /// The flying boss: where it was drawn.
+    /// The flying bosses: where they were drawn.
     pub wasp: Option<Vec2>,
+    pub dragonfly: Option<Vec2>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -180,6 +181,7 @@ impl Terrain {
             canvas_origin: origin + lo,
             roach: None,
             wasp: None,
+            dragonfly: None,
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -190,6 +192,7 @@ impl Terrain {
         t.spawn = t.rest(marker(MarkerKind::Player).map_or(Vec2::ZERO, to_world));
         t.roach = marker(MarkerKind::Roach).map(|p| t.rest(to_world(p)));
         t.wasp = marker(MarkerKind::Wasp).map(to_world);
+        t.dragonfly = marker(MarkerKind::Dragonfly).map(to_world);
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();

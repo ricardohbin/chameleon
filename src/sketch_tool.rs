@@ -418,6 +418,7 @@ impl<'a> Diff<'a> {
             MarkerKind::Player => [255, 40, 40],
             MarkerKind::Roach => [255, 230, 0],
             MarkerKind::Wasp => [0, 255, 0],
+            MarkerKind::Dragonfly => [0, 255, 255],
         };
         for m in &self.markers {
             if let MarkerChange::Moved(k, at, _) | MarkerChange::Removed(k, at) = m {
@@ -438,7 +439,7 @@ impl<'a> Diff<'a> {
 /// Pairs markers of the same kind, nearest first.
 fn diff_markers(old: &View, new: &View) -> Vec<MarkerChange> {
     let mut out = Vec::new();
-    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp] {
+    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly] {
         let mut a: Vec<Vec2> = old.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         let mut b: Vec<Vec2> = new.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         while !a.is_empty() && !b.is_empty() {

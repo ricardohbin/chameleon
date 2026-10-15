@@ -47,10 +47,12 @@ pub enum Fluid {
     Venom,
     /// Cockroach blood: very light yellow.
     Yellow,
+    /// Dragonfly blood.
+    Pink,
 }
 
 impl Fluid {
-    const ALL: [Fluid; 4] = [Fluid::Green, Fluid::Red, Fluid::Venom, Fluid::Yellow];
+    const ALL: [Fluid; 5] = [Fluid::Green, Fluid::Red, Fluid::Venom, Fluid::Yellow, Fluid::Pink];
 
     fn fresh(self) -> Color {
         match self {
@@ -58,6 +60,7 @@ impl Fluid {
             Fluid::Red => Color::srgb(0.72, 0.02, 0.03),
             Fluid::Venom => Color::srgb(0.20, 0.56, 0.08),
             Fluid::Yellow => Color::srgb(1.0, 0.96, 0.68),
+            Fluid::Pink => Color::srgb_u8(0xd1, 0xb0, 0xc6),
         }
     }
 
@@ -67,6 +70,7 @@ impl Fluid {
             Fluid::Red => Color::srgb(0.28, 0.02, 0.02),
             Fluid::Venom => Color::srgb(0.09, 0.24, 0.04),
             Fluid::Yellow => Color::srgb(0.74, 0.66, 0.36),
+            Fluid::Pink => Color::srgb(0.46, 0.34, 0.42),
         }
     }
 

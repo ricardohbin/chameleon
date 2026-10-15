@@ -575,7 +575,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -591,7 +591,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
                     a.floor + 600.0,
                 ))],
                 // Her home and the whole chamber she fights in.
-                BossKind::Wasp => vec![
+                BossKind::Wasp | BossKind::Dragonfly => vec![
                     Zone::Circle(a.home, WASP_CLEAR),
                     Zone::Rect(Rect::new(a.left - 400.0, a.floor - 250.0, a.right + 400.0, a.home.y.max(a.floor) + 500.0)),
                 ],
@@ -685,6 +685,13 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
             (MobKind::Soldier, 0.2),
             (MobKind::Nest, 0.15),
             (MobKind::Spider, 0.2),
+        ],
+        // Around the water: swarms to hunt, and what hunts them too.
+        BossKind::Dragonfly => vec![
+            (MobKind::Fly, 0.35),
+            (MobKind::Spider, 0.25),
+            (MobKind::Flea, 0.2),
+            (MobKind::Rat, 0.2),
         ],
     }
 }
@@ -784,15 +791,10 @@ fn slash_mobs(
     // (mob, direction of the blow, slashed rather than spat on)
     let mut struck: Vec<(Entity, Vec2, bool)> = spat.read().map(|h| (h.target, h.dir, false)).collect();
     if anim.striking() {
-        let aim = anim.slash_dir();
-        let center = chameleon::slash_center(ppos, p.facing);
         for (e, m, tf) in &mobs {
             let pos = tf.translation.truncate();
-            let radius = m.spec.radius;
-            let in_front = (pos - center).dot(aim) > -radius * 0.5;
-            let in_reach = pos.distance(center) < chameleon::SLASH_REACH + radius;
-            if !matches!(m.state, State::Dead { .. }) && m.hit_by != anim.slash_id && in_front && in_reach {
-                struck.push((e, aim, true));
+            if !matches!(m.state, State::Dead { .. }) && m.hit_by != anim.slash_id && anim.reaches(ppos, p.facing, pos, m.spec.radius) {
+                struck.push((e, anim.blow_dir(ppos, pos), true));
             }
         }
     }

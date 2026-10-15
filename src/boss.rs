@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -22,6 +22,7 @@ use bevy::prelude::*;
 use crate::{
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
+    dragonfly,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -64,7 +65,8 @@ impl Plugin for BossPlugin {
 }
 
 /// The bosses beaten so far, in order. Each one gives a power for good: the
-/// Gutter King the dash, the Venom Mother the venom spit. F8 forgets them.
+/// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
+/// air spin. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -84,6 +86,11 @@ impl Defeated {
     pub fn spit(&self) -> bool {
         self.0.contains(&BossKind::Wasp)
     }
+
+    /// Attacking in the air: the spin.
+    pub fn spin(&self) -> bool {
+        self.0.contains(&BossKind::Dragonfly)
+    }
 }
 
 /// A boss was just killed (its power is earned now).
@@ -96,6 +103,7 @@ impl BossKind {
         match self {
             BossKind::Roach => "DASH  (Shift / K)",
             BossKind::Wasp => "VENOM SPIT  (Right click / G)",
+            BossKind::Dragonfly => "AIR SPIN  (attack in the air)",
         }
     }
 }
@@ -110,16 +118,18 @@ fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<D
 pub enum BossKind {
     Wasp,
     Roach,
+    Dragonfly,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 2] = [BossKind::Wasp, BossKind::Roach];
+    pub const ALL: [BossKind; 3] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
         match self {
             BossKind::Roach => terrain.roach,
             BossKind::Wasp => terrain.wasp,
+            BossKind::Dragonfly => terrain.dragonfly,
         }
     }
 
@@ -130,11 +140,12 @@ impl BossKind {
         let e = match self {
             BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
             BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
+            BossKind::Dragonfly => dragonfly::spawn(commands, meshes, materials, &arena),
         };
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let arena_rect = match self {
             BossKind::Roach => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
-            BossKind::Wasp => chamber(terrain, marker, 70),
+            BossKind::Wasp | BossKind::Dragonfly => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
         let region = terrain
@@ -212,6 +223,7 @@ impl Arena {
         let home = match kind {
             BossKind::Roach => terrain.roach.unwrap_or(fallback),
             BossKind::Wasp => terrain.wasp.unwrap_or(fallback + Vec2::Y * 230.0),
+            BossKind::Dragonfly => terrain.dragonfly.unwrap_or(fallback + Vec2::Y * 230.0),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.
@@ -245,6 +257,8 @@ pub struct Boss {
     pub awake: bool,
     /// Waiting for its introduction (it must be on screen first): no health bar yet.
     pub staged: bool,
+    /// Untouchable right now (set by its AI, e.g. mid-spin): blows glance off.
+    pub guard: bool,
     /// Hits taken lately (it fades): enough of them and it stops flinching and hits back.
     pressure: f32,
     /// Time left in which hits don't stagger it.
@@ -265,7 +279,7 @@ impl Boss {
     }
 
     pub fn new(spec: &'static BossSpec, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>) -> Self {
-        Self { spec, hp: spec.hp, home, dead: false, awake: false, staged: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
+        Self { spec, hp: spec.hp, home, dead: false, awake: false, staged: false, guard: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
     }
 
     /// Second phase: below half health.
@@ -291,6 +305,8 @@ pub struct BossHit {
     pub stagger: bool,
     /// Too many hits in a row: it answers with an attack or gets out of reach.
     pub retaliate: bool,
+    /// Venom spit rather than claws.
+    pub venom: bool,
 }
 
 /// Hits fade and the armor wears off.
@@ -481,16 +497,11 @@ fn slash_bosses(
     // (boss, direction of the blow, slashed rather than spat on)
     let mut struck: Vec<(Entity, Vec2, bool)> = spat.read().map(|h| (h.target, h.dir, false)).collect();
     if anim.striking() {
-        // The hitbox is the slash wave: a half-disc toward the mouse.
-        let dir = anim.slash_dir();
-        let center = chameleon::slash_center(ppos, p.facing);
+        // The slash wave's half-disc toward the mouse, or the spin's fan.
         for (e, boss, tf, _) in &bosses {
             let pos = tf.translation.truncate();
-            let radius = boss.spec.radius;
-            let in_front = (pos - center).dot(dir) > -radius * 0.5;
-            let in_reach = pos.distance(center) < chameleon::SLASH_REACH + radius;
-            if !boss.dead && boss.hit_by != anim.slash_id && in_front && in_reach {
-                struck.push((e, dir, true));
+            if !boss.dead && boss.hit_by != anim.slash_id && anim.reaches(ppos, p.facing, pos, boss.spec.radius) {
+                struck.push((e, anim.blow_dir(ppos, pos), true));
             }
         }
     }
@@ -502,6 +513,13 @@ fn slash_bosses(
         let pos = tf.translation.truncate();
         if slashed {
             boss.hit_by = anim.slash_id;
+        }
+        if boss.guard {
+            // Glances off: a flash, no harm.
+            boss.flash = 0.6;
+            shake.add(0.12);
+            stop.add(0.03);
+            continue;
         }
         boss.hp -= 1;
         boss.flash = 1.0;
@@ -524,7 +542,7 @@ fn slash_bosses(
                 (true, false)
             }
         };
-        hits.write(BossHit { boss: e, dir: (dir + Vec2::Y * 0.3).normalize(), killed, stagger, retaliate });
+        hits.write(BossHit { boss: e, dir: (dir + Vec2::Y * 0.3).normalize(), killed, stagger, retaliate, venom: !slashed });
 
         // The gush: a fan of blood along the cut, and (slashed) a backsplash right onto the chameleon.
         let gush = Bleed { pos, dir: dir + Vec2::Y * 0.35, spread: 0.8, speed: 650.0, amount: if slashed { 60 } else { 30 }, fluid, sticky: true };

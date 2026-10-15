@@ -30,7 +30,7 @@ const FLASH: Color = Color::srgb(0.9, 0.9, 1.0);
 fn delay(boss: BossKind) -> f32 {
     match boss {
         BossKind::Wasp => 3.6,
-        BossKind::Roach => 0.8,
+        BossKind::Roach | BossKind::Dragonfly => 0.8,
     }
 }
 /// How fast the wave spreads, world units per second, and how much faster it gets
@@ -51,10 +51,10 @@ impl Plugin for RegrowthPlugin {
 /// When each boss's color was earned (virtual seconds), `None` while it hasn't been.
 #[derive(Resource, Default)]
 pub struct Regrowth {
-    since: [Option<f32>; 2],
+    since: [Option<f32>; 3],
     now: f32,
     /// How far each wave has got (world units from the boss's home).
-    reach: [Option<f32>; 2],
+    reach: [Option<f32>; 3],
 }
 
 /// The colors themselves (the bosses' own, lightly).
@@ -68,6 +68,7 @@ fn index(boss: BossKind) -> usize {
     match boss {
         BossKind::Wasp => 0,
         BossKind::Roach => 1,
+        BossKind::Dragonfly => 2,
     }
 }
 
@@ -84,7 +85,7 @@ impl Regrowth {
         };
         match boss {
             BossKind::Wasp => smooth(t / 0.4) * (1.0 - smooth((t - 0.8) / 1.8)),
-            BossKind::Roach => 1.0,
+            BossKind::Roach | BossKind::Dragonfly => 1.0,
         }
     }
 
@@ -94,6 +95,7 @@ impl Regrowth {
         let home = match boss {
             BossKind::Wasp => terrain.wasp,
             BossKind::Roach => terrain.roach,
+            BossKind::Dragonfly => terrain.dragonfly,
         };
         let dist = home.map_or(f32::MAX, |h| h.distance(eye));
         (self.reveal(boss, dist), (1.0 - dist / FELT).clamp(0.0, 1.0))
