@@ -39,6 +39,8 @@ mod mall;
 mod dam;
 mod bunker;
 mod cave;
+mod vines;
+mod moss;
 
 /// How a region places its props (the older styles are matched inline below).
 struct Hooks {
@@ -135,12 +137,16 @@ const BUDGET: Duration = Duration::from_millis(4);
 #[derive(Component)]
 pub struct PropJob {
     t: Arc<Terrain>,
-    finding: Option<Task<(Vec<Site>, Vec<IVec2>)>>,
+    finding: Option<Task<(Vec<Site>, Vec<(IVec2, bool)>)>>,
     sites: Vec<Site>,
-    facades: Vec<IVec2>,
+    facades: Vec<(IVec2, bool)>,
     next: usize,
     taken: Vec<(Vec2, Kind)>,
     statues: Vec<Vec2>,
+    vined: Vec<Vec2>,
+    hints: Vec<Vec2>,
+    yellow: Vec<Vec2>,
+    vents: Vec<Vec2>,
     mats: Vec<Handle<ColorMaterial>>,
 }
 
@@ -153,11 +159,16 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         sites.sort_by_key(|s| s.key);
         (sites, facade_spots(&found))
     });
-    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), mats };
+    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), mats };
     commands.spawn((job, TerrainPart));
 }
 
-pub fn place_props(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut jobs: Query<(Entity, &mut PropJob)>) {
+pub fn place_props(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut colors: ResMut<Assets<ColorMaterial>>,
+    mut jobs: Query<(Entity, &mut PropJob)>,
+) {
     for (e, mut job) in &mut jobs {
         let job = &mut *job;
         if let Some(task) = &mut job.finding {
@@ -169,11 +180,16 @@ pub fn place_props(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut
         let mut p = Props {
             commands: &mut commands,
             meshes: &mut meshes,
+            colors: &mut colors,
             mats: std::mem::take(&mut job.mats),
             t: &t,
             rng: Rng(1),
             taken: std::mem::take(&mut job.taken),
             statues: std::mem::take(&mut job.statues),
+            vined: std::mem::take(&mut job.vined),
+            hints: std::mem::take(&mut job.hints),
+            yellow: std::mem::take(&mut job.yellow),
+            vents: std::mem::take(&mut job.vents),
             tilt: 0.0,
             depth: BACK,
         };
@@ -181,11 +197,14 @@ pub fn place_props(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut
         while job.next < total && start.elapsed() < BUDGET {
             match job.sites.get(job.next) {
                 Some(s) => p.visit(s),
-                None => p.facade(job.facades[job.next - job.sites.len()]),
+                None => {
+                    let (c, roof) = job.facades[job.next - job.sites.len()];
+                    p.facade(c, roof)
+                }
             }
             job.next += 1;
         }
-        (job.mats, job.taken, job.statues) = (p.mats, p.taken, p.statues);
+        (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents);
         if job.next >= total {
             commands.entity(e).try_despawn();
         }
@@ -251,7 +270,7 @@ fn find_sites(t: &Terrain) -> Vec<Site> {
 
 /// Concrete blocks are buildings: windows on a grid of floors across their
 /// faces. The candidate cells (`Props::facade` checks there's room).
-fn facade_spots(t: &Terrain) -> Vec<IVec2> {
+fn facade_spots(t: &Terrain) -> Vec<(IVec2, bool)> {
     // Window spacing in world units, as whole cells.
     let step = IVec2::new(cells(75.0), cells(crate::terrain::FLOOR_HEIGHT));
     let size = t.size();
@@ -264,7 +283,36 @@ fn facade_spots(t: &Terrain) -> Vec<IVec2> {
                 continue;
             }
             if t.style_at(t.cell_min(c) + Vec2::splat(PX / 2.0)) == Style::Concrete {
-                out.push(c);
+                out.push((c, false));
+            }
+        }
+    }
+    // Interiors of the Venom Mother's region: ivy hanging from the top of the
+    // dark walls, and patches in the middle of them.
+    if let Some(area) = t.wasp.and_then(|w| t.area_at(w)).map(|a| a.rect) {
+        let (gap, mid) = (cells(26.0), IVec2::new(cells(70.0), cells(90.0)));
+        for cy in 1..size.y {
+            for cx in 0..size.x {
+                let c = IVec2::new(cx, cy);
+                if t.cell(c) != Cell::Back || !area.contains(t.cell_min(c) + Vec2::splat(PX / 2.0)) {
+                    continue;
+                }
+                let w = (t.cell_min(c) / PX).round().as_ivec2();
+                let top = t.cell(c - IVec2::Y) != Cell::Back && w.x.rem_euclid(gap) == 0;
+                if top || (w.x.rem_euclid(mid.x) == 0 && w.y.rem_euclid(mid.y) == 0) {
+                    out.push((c, false));
+                }
+            }
+        }
+        // The tops of the big blocks, to drape their faces.
+        let every = cells(45.0);
+        for cy in 1..size.y {
+            for cx in 0..size.x {
+                let c = IVec2::new(cx, cy);
+                let w = (t.cell_min(c) / PX).round().as_ivec2();
+                if w.x.rem_euclid(every) == 0 && t.solid(c) && !t.solid(c - IVec2::Y) && area.contains(t.cell_min(c) + Vec2::splat(PX / 2.0)) {
+                    out.push((c, true));
+                }
             }
         }
     }
@@ -282,6 +330,7 @@ fn seed(a: i32, b: i32) -> u32 {
 struct Props<'a, 'w, 's> {
     commands: &'a mut Commands<'w, 's>,
     meshes: &'a mut Assets<Mesh>,
+    colors: &'a mut Assets<ColorMaterial>,
     mats: Vec<Handle<ColorMaterial>>,
     t: &'a Terrain,
     rng: Rng,
@@ -289,6 +338,14 @@ struct Props<'a, 'w, 's> {
     taken: Vec<(Vec2, Kind)>,
     /// Park areas that already have their statue (by area center).
     statues: Vec<Vec2>,
+    /// Where the vines of the Venom Mother's region are (so none of it is left bare).
+    vined: Vec<Vec2>,
+    /// Where the hints of green of the other regions are (`moss`).
+    hints: Vec<Vec2>,
+    /// The same for the yellow ones (the Gutter King's).
+    yellow: Vec<Vec2>,
+    /// Sulfur vents (`moss::vent`).
+    vents: Vec<Vec2>,
     /// Ground slope under the prop being drawn (added to its root's angle).
     tilt: f32,
     /// Depth of the prop being drawn.
@@ -352,6 +409,12 @@ impl Props<'_, '_, '_> {
             Kind::Ceiling => min + Vec2::new(PX / 2.0, 0.0),
         };
         let style = t.style_at(at);
+        let green_zone = t.wasp.and_then(|w| t.area_at(w)).is_some_and(|a| a.rect.contains(at));
+        if !green_zone {
+            moss::hint(self, s, at, style, moss::Tone::Green);
+        }
+        moss::vent(self, s, at, style);
+        moss::hint(self, s, at, style, moss::Tone::Yellow);
         let hooks = hooks(style);
         let (gap, density) = match (s.kind, style) {
             _ if let Some(h) = hooks => (h.spacing)(s.kind),
@@ -390,6 +453,17 @@ impl Props<'_, '_, '_> {
         };
         if open_side.is_some_and(|c| t.cell(c) == Cell::Back) {
             self.depth = INDOOR;
+        }
+        // The Venom Mother's region is overgrown with the vines she'll give back.
+        let vined = s.kind != Kind::Ground
+            && green_zone
+            && { let k = vines::share(self, at, s.kind, flip).max(vines::starved(self, at)); self.rng.chance(k) };
+        if vined {
+            vines::plant(self, at, flip, s.kind, None, false);
+            self.vined.push(at);
+            self.depth = BACK;
+            self.taken.push((at, s.kind));
+            return;
         }
         let placed = match (s.kind, hooks) {
             (Kind::Ground, Some(h)) => (h.ground)(self, s.cell, at.x),
@@ -632,12 +706,21 @@ impl Props<'_, '_, '_> {
 
     /// A blown-out window on a building's face (a spot from `facade_spots`),
     /// if the solid is deep enough to hold one.
-    fn facade(&mut self, c: IVec2) {
+    fn facade(&mut self, c: IVec2, roof: bool) {
+        if roof {
+            vines::facade_vine(self, c);
+            self.depth = BACK;
+            return;
+        }
         let t = self.t;
         let w = (t.cell_min(c) / PX).round().as_ivec2();
         let at = t.cell_min(c) + Vec2::splat(PX / 2.0);
         self.rng = Rng(seed(w.x, w.y * 7 + 5));
         self.rng.next();
+        if t.cell(c) == Cell::Back {
+            vines::backdrop(self, c);
+            return;
+        }
         let half = Vec2::new(self.rng.range(10.0, 13.0), self.rng.range(13.0, 16.0));
         if !self.rng.chance(0.6) || !self.inside(at, half * S) {
             return;

@@ -1,5 +1,7 @@
 //! Developer helpers: F12 saves a screenshot to `screenshots/`.
 //!
+//! `GREEN=1` / `YELLOW=1` start with the Venom Mother / the Gutter King already beaten (their colors come back to the world).
+//!
 //! `TOUR=1 cargo run` visits the places that matter in the world sketch (the
 //! spawn, the bosses, every named area, the moving platforms, then the whole
 //! world from afar),
@@ -35,6 +37,13 @@ impl Plugin for DevPlugin {
         }
         if std::env::var("AIM").is_ok() {
             app.add_systems(Update, fake_aim.after(player::move_player).before(chameleon::update_anim_state));
+        }
+        if std::env::var("GREEN").is_ok() {
+            // Test the regrown world without fighting the wasp.
+            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Wasp));
+        }
+        if std::env::var("YELLOW").is_ok() {
+            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Roach));
         }
         if std::env::var("TOUR").is_ok() {
             app.add_systems(Update, tour.after(player::move_player).before(camera::follow_player));

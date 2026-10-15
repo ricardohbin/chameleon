@@ -55,8 +55,9 @@ const GROUND_ACCEL: f32 = 2200.0;
 const AIR_ACCEL: f32 = 1300.0;
 const GRAVITY: f32 = 2000.0;
 const JUMP_SPEED: f32 = 740.0;
-const FLIGHT_IMPULSE: f32 = 900.0;
-const FLIGHT_DAMPING: f32 = 3.5;
+const FLIGHT_ACCEL: f32 = 2000.0;
+const FLIGHT_SPEED: f32 = 700.0;
+const FLIGHT_BRAKE: f32 = 10.0;
 const MAX_FALL: f32 = 1400.0;
 /// Grace time to still jump after walking off a ledge.
 const COYOTE_TIME: f32 = 0.1;
@@ -386,17 +387,23 @@ pub fn move_player(
     } else {
         p.grounded = false;
         p.ground = None;
-        p.vel *= (-FLIGHT_DAMPING * dt).exp();
-        if p.vel.length_squared() < 1.0 {
-            p.vel = Vec2::ZERO;
+        let mut direction = Vec2::new(dir, 0.0);
+        if p.stun <= 0.0 && !dead {
+            if keys.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+                direction.y += 1.0;
+            }
+            if keys.any_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+                direction.y -= 1.0;
+            }
         }
-        if p.stun <= 0.0 && keys.any_just_pressed([KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp]) {
-            if let Some(target) = p.aim_at {
-                let direction = (target - tf.translation.truncate()).normalize_or_zero();
-                p.vel += direction * FLIGHT_IMPULSE;
-                if direction.x.abs() > 0.01 {
-                    p.facing = direction.x.signum();
-                }
+        if direction != Vec2::ZERO {
+            // Accelerate along the pressed arrows, up to a top speed.
+            p.vel = (p.vel + direction.normalize() * FLIGHT_ACCEL * dt).clamp_length_max(FLIGHT_SPEED);
+        } else {
+            // Released: brake quickly.
+            p.vel *= (-FLIGHT_BRAKE * dt).exp();
+            if p.vel.length_squared() < 1.0 {
+                p.vel = Vec2::ZERO;
             }
         }
     }

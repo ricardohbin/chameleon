@@ -6,6 +6,7 @@ mod debug_overlay;
 mod dev;
 mod map_export;
 mod features;
+mod fumes;
 mod feeding;
 mod gore;
 mod hud;
@@ -14,6 +15,7 @@ mod mob_art;
 mod mobs;
 mod outline;
 mod player;
+mod regrowth;
 mod roach;
 mod save;
 mod shapes;
@@ -60,7 +62,7 @@ fn main() {
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin))
+        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),
