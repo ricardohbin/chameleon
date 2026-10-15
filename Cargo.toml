@@ -5,11 +5,17 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.20"
+miniz_oxide = "0.8"
+image = { version = "0.25", default-features = false }
+webp = { version = "0.3", default-features = false }
 
 # Small optimization for our own code in dev builds.
 [profile.dev]
 opt-level = 1
+debug = false # or "line-tables-only" for backtraces with line numbers
+strip = "debuginfo"
 
 # Fully optimize dependencies (Bevy) even in dev builds — big FPS win, compiled once.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false

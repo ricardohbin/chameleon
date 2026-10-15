@@ -1,11 +1,16 @@
-//! Shared boss machinery. Every boss fights in the level's arena; this module
+//! Shared boss machinery. Every boss fights in its arena (found around its
+//! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
 //! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`)
 //! only builds its body and runs its own AI and corpse.
 //!
-//! Pick the boss with `cargo run -- <id>` (or `BOSS=<id> cargo run`), ids in
-//! `BossKind::id`. In-game, F2 swaps to the next boss (the arena resets).
+//! Every boss with a marker in the sketch is always there, asleep in its lair
+//! (the slice it's drawn in). It wakes when the chameleon steps into its arena
+//! (the walkable floor around a walker, the open chamber around a flyer) and
+//! hunts it; if the chameleon leaves the lair or gets `LEASH` away, the boss is
+//! reset: back home, full health, asleep. Dead bosses stay dead.
+//! F2 teleports the chameleon to the next boss's lair.
 //!
 //! Adding a boss: a module with a `spawn` fn (spawns a `Boss` + its own AI
 //! component) and its systems, then a `BossKind` entry.
@@ -19,35 +24,84 @@ use crate::{
     chameleon::{self, ChameleonAnim, ColorEarned},
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
-    level::{self, Platform},
+    level::{self, Platform, Restart, WorldReloaded},
     player::{self, Hurt, Player, Respawned},
-    roach, wasp,
+    roach,
+    spit::{self, SpitHit},
+    terrain::Terrain,
+    wasp,
 };
 
 pub struct BossPlugin;
 
 impl Plugin for BossPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(SelectedBoss(BossKind::from_env()))
-            .init_resource::<BossStatus>()
+        app.init_resource::<BossStatus>()
+            .init_resource::<Defeated>()
             .add_message::<BossHit>()
-            // PostStartup: the level's platforms exist by then.
-            .add_systems(PostStartup, find_arena)
+            .add_message::<Beaten>()
+            .add_systems(Startup, spawn_all)
+            .add_systems(PreUpdate, forget_defeated.after(level::restart))
             .add_systems(
                 Update,
                 (
-                    switch_boss,
-                    spawn_selected.run_if(resource_changed::<SelectedBoss>),
+                    visit_next_boss,
+                    restart_on_reload,
+                    lairs,
                     slash_bosses,
-                    reset_bosses,
+                    reset_on_respawn,
                     flash_bosses,
                     update_status,
                     move_gibs,
                 )
                     .chain()
                     .after(player::move_player)
-                    .after(chameleon::update_anim_state),
+                    .after(chameleon::update_anim_state)
+                    .after(spit::move_spit),
             );
+    }
+}
+
+/// The bosses beaten so far, in order. Each one gives a power for good: the
+/// Gutter King the dash, the Venom Mother the venom spit. F8 forgets them.
+#[derive(Resource, Default)]
+pub struct Defeated(pub Vec<BossKind>);
+
+impl Defeated {
+    pub fn add(&mut self, kind: BossKind) {
+        if !self.0.contains(&kind) {
+            self.0.push(kind);
+        }
+    }
+
+    /// Shift / K: dash.
+    pub fn dash(&self) -> bool {
+        self.0.contains(&BossKind::Roach)
+    }
+
+    /// Right mouse button / G: spit venom.
+    pub fn spit(&self) -> bool {
+        self.0.contains(&BossKind::Wasp)
+    }
+}
+
+/// A boss was just killed (its power is earned now).
+#[derive(Message)]
+pub struct Beaten(pub BossKind);
+
+impl BossKind {
+    /// The power it gives, as the HUD names it.
+    pub fn power(self) -> &'static str {
+        match self {
+            BossKind::Roach => "DASH  (Shift / K)",
+            BossKind::Wasp => "VENOM SPIT  (Right click / G)",
+        }
+    }
+}
+
+fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<Defeated>) {
+    if restarted.read().count() > 0 {
+        defeated.0.clear();
     }
 }
 
@@ -58,57 +112,110 @@ pub enum BossKind {
 }
 
 impl BossKind {
-    const ALL: [BossKind; 2] = [BossKind::Wasp, BossKind::Roach];
+    pub const ALL: [BossKind; 2] = [BossKind::Wasp, BossKind::Roach];
 
-    /// Name used on the command line.
-    fn id(self) -> &'static str {
+    /// Where its marker is in the sketch (no marker = no boss).
+    fn marker(self, terrain: &Terrain) -> Option<Vec2> {
         match self {
-            BossKind::Wasp => "wasp",
-            BossKind::Roach => "roach",
+            BossKind::Roach => terrain.roach,
+            BossKind::Wasp => terrain.wasp,
         }
     }
 
-    /// From the first CLI argument or `BOSS`; defaults to the newest boss.
-    fn from_env() -> Self {
-        let wanted = std::env::args().nth(1).or_else(|| std::env::var("BOSS").ok());
-        wanted
-            .and_then(|w| Self::ALL.into_iter().find(|k| k.id() == w.to_lowercase()))
-            .unwrap_or(BossKind::Roach)
-    }
-
-    fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|&k| k == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
-    }
-
-    fn spawn(
-        self,
-        commands: &mut Commands,
-        meshes: &mut Assets<Mesh>,
-        materials: &mut Assets<ColorMaterial>,
-        arena: &Arena,
-    ) {
-        match self {
-            BossKind::Wasp => wasp::spawn(commands, meshes, materials, arena),
-            BossKind::Roach => roach::spawn(commands, meshes, materials, arena),
-        }
+    /// Spawns it asleep in its lair, if the sketch has its marker.
+    fn spawn(self, commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
+        let Some(marker) = self.marker(terrain) else { return };
+        let arena = Arena::find(self, terrain);
+        let e = match self {
+            BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
+            BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
+        };
+        // Where it wakes: the floor it fights on, or the open chamber it flies in.
+        let arena_rect = match self {
+            BossKind::Roach => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
+            BossKind::Wasp => chamber(terrain, marker, 70),
+        };
+        // The lair is the slice it's drawn in (always covering its arena).
+        let region = terrain
+            .areas
+            .iter()
+            .filter(|a| a.rect.contains(marker))
+            .min_by(|a, b| a.rect.size().element_product().total_cmp(&b.rect.size().element_product()))
+            .map_or(Rect::from_center_half_size(marker, Vec2::new(1000.0, 700.0)), |a| a.rect)
+            .union(arena_rect);
+        debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
+        commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect }, Sense::default()));
     }
 }
 
-#[derive(Resource)]
-pub struct SelectedBoss(pub BossKind);
+/// The open space around `at` (flood fill through non-solid cells, at most
+/// `radius` sketch pixels away), as a rectangle.
+fn chamber(terrain: &Terrain, at: Vec2, radius: i32) -> Rect {
+    let start = terrain.to_cell(at);
+    let (mut lo, mut hi) = (start, start);
+    let mut seen = std::collections::HashSet::from([start]);
+    let mut queue = std::collections::VecDeque::from([start]);
+    while let Some(c) = queue.pop_front() {
+        lo = lo.min(c);
+        hi = hi.max(c);
+        for d in [IVec2::X, IVec2::NEG_X, IVec2::Y, IVec2::NEG_Y] {
+            let n = c + d;
+            if (n - start).abs().max_element() <= radius && !terrain.solid(n) && seen.insert(n) {
+                queue.push_back(n);
+            }
+        }
+    }
+    Rect::from_corners(terrain.cell_min(lo), terrain.cell_min(hi) + Vec2::splat(crate::terrain::PX))
+}
 
-/// The arena's floor height and walkable x range.
-#[derive(Resource, Clone, Copy)]
+/// What a boss perceives and wants this frame (shown by the F1 debug overlay).
+#[derive(Component, Default)]
+pub struct Sense {
+    /// Where it wants to be.
+    pub goal: Option<Vec2>,
+    /// Where it's actually heading (a path step when walls are in the way).
+    pub target: Option<Vec2>,
+    /// Clear line of sight to the chameleon.
+    pub sees_player: bool,
+    /// Its planned route (flyers: waypoints to where they want to be).
+    pub path: Vec<Vec2>,
+}
+
+/// How far the chameleon can lead an awake boss before it gives up and resets.
+const LEASH: f32 = 1800.0;
+
+/// Where a boss lives.
+#[derive(Component)]
+pub struct Lair {
+    pub kind: BossKind,
+    /// Leaving this resets it.
+    pub region: Rect,
+    /// Entering this wakes it.
+    pub arena: Rect,
+}
+
+/// Where a boss fights: the floor height and walkable x range around its home.
+#[derive(Clone, Copy)]
 pub struct Arena {
     pub floor: f32,
     pub left: f32,
     pub right: f32,
+    /// Where the boss starts (on the floor for walkers, in the air for flyers).
+    pub home: Vec2,
 }
 
 impl Arena {
-    pub fn center(&self) -> f32 {
-        (self.left + self.right) / 2.0
+    /// The ground around the boss's marker in the sketch (or a stand-in near the spawn).
+    pub fn find(kind: BossKind, terrain: &Terrain) -> Arena {
+        let fallback = terrain.spawn + Vec2::new(600.0, 0.0);
+        let home = match kind {
+            BossKind::Roach => terrain.roach.unwrap_or(fallback),
+            BossKind::Wasp => terrain.wasp.unwrap_or(fallback + Vec2::Y * 230.0),
+        };
+        let feet = terrain.rest(home);
+        // "Relatively flat": the ground may wander this much up or down.
+        let (left, right) = terrain.flat_span(feet, 60.0);
+        Arena { floor: feet.y, left, right, home }
     }
 }
 
@@ -123,6 +230,8 @@ pub struct BossSpec {
     pub color: Color,
     /// It fights the chameleon within this distance.
     pub aggro: f32,
+    /// Shadow health its carcass gives when eaten (`feeding.rs`), in health ticks.
+    pub food: f32,
 }
 
 #[derive(Component)]
@@ -131,6 +240,8 @@ pub struct Boss {
     pub hp: i32,
     pub home: Vec2,
     pub dead: bool,
+    /// Woken by the chameleon entering its lair (asleep, it stays home).
+    pub awake: bool,
     /// Last slash that hit it (one hit per slash).
     hit_by: u32,
     /// 1 = white flash after a hit, fades to 0.
@@ -141,7 +252,7 @@ pub struct Boss {
 
 impl Boss {
     pub fn new(spec: &'static BossSpec, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>) -> Self {
-        Self { spec, hp: spec.hp, home, dead: false, hit_by: 0, flash: 0.0, mats }
+        Self { spec, hp: spec.hp, home, dead: false, awake: false, hit_by: 0, flash: 0.0, mats }
     }
 
     /// Second phase: below half health.
@@ -233,14 +344,16 @@ pub fn hurt_player(
     }
 }
 
-/// Landing height if moving `from` → `to` crosses the top of a solid platform
-/// (`foot` = distance from the center down to the bottom).
+/// Landing height if moving `from` → `to` crosses the top of the terrain or a
+/// solid platform (`foot` = distance from the center down to the bottom).
 pub fn floor<'a>(
+    terrain: &Terrain,
     platforms: impl Iterator<Item = (&'a Platform, &'a Transform)>,
     from: Vec2,
     to: Vec2,
     foot: f32,
 ) -> Option<f32> {
+    let ground = terrain.landing(from, to, foot);
     platforms
         .filter(|(pl, ptf)| {
             let c = ptf.translation.truncate();
@@ -248,56 +361,70 @@ pub fn floor<'a>(
             pl.solid && (to.x - c.x).abs() < pl.half.x && to.y - foot <= top && from.y - foot >= top - 6.0
         })
         .map(|(pl, ptf)| ptf.translation.y + pl.half.y)
+        .chain(ground)
         .reduce(f32::max)
 }
 
-fn find_arena(mut commands: Commands, platforms: Query<(&Platform, &Transform)>) {
-    let ground = platforms
-        .iter()
-        .filter(|(p, tf)| !p.one_way && (tf.translation.x - level::ARENA_X).abs() < p.half.x)
-        .max_by(|a, b| (a.1.translation.y + a.0.half.y).total_cmp(&(b.1.translation.y + b.0.half.y)));
-    let arena = match ground {
-        Some((p, tf)) => Arena {
-            floor: tf.translation.y + p.half.y,
-            left: tf.translation.x - p.half.x,
-            right: tf.translation.x + p.half.x,
-        },
-        None => Arena {
-            floor: 0.0,
-            left: level::ARENA_X - level::ARENA_HALF_WIDTH,
-            right: level::ARENA_X + level::ARENA_HALF_WIDTH,
-        },
-    };
-    commands.insert_resource(arena);
+fn spawn_all(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>, terrain: Res<Terrain>) {
+    for kind in BossKind::ALL {
+        kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
+    }
 }
 
-fn spawn_selected(
+/// Bosses wake when the chameleon enters their lair, and reset when it leaves
+/// the lair or runs too far.
+fn lairs(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    selected: Res<SelectedBoss>,
-    arena: Res<Arena>,
+    terrain: Res<Terrain>,
+    player: Single<(&Player, &Transform)>,
+    mut bosses: Query<(Entity, &mut Boss, &Lair, &Transform)>,
 ) {
-    selected.0.spawn(&mut commands, &mut meshes, &mut materials, &arena);
+    let (p, ptf) = *player;
+    let ppos = ptf.translation.truncate();
+    for (e, mut boss, lair, tf) in &mut bosses {
+        if boss.dead || p.dead.is_some() {
+            continue;
+        }
+        let inside = lair.region.contains(ppos);
+        if !boss.awake && lair.arena.contains(ppos) {
+            boss.awake = true;
+            info!("{} wakes", boss.spec.name);
+        } else if boss.awake && (!inside || tf.translation.truncate().distance(ppos) > LEASH) {
+            info!("{} gives up and goes home", boss.spec.name);
+            commands.entity(e).despawn();
+            lair.kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
+        }
+    }
 }
 
-/// F2: clear the arena and bring in the next boss (and heal the chameleon).
-fn switch_boss(
-    mut commands: Commands,
+/// F2: jump to the next boss's lair (it wakes) and heal up.
+fn visit_next_boss(
     keys: Res<ButtonInput<KeyCode>>,
-    mut selected: ResMut<SelectedBoss>,
-    mut player: Single<&mut Player>,
-    stuff: Query<Entity, Or<(With<Boss>, With<BossStuff>)>>,
+    terrain: Res<Terrain>,
+    mut next: Local<usize>,
+    player: Single<(&mut Player, &mut Transform)>,
+    bosses: Query<(&Boss, &Lair)>,
 ) {
     if !keys.just_pressed(KeyCode::F2) {
         return;
     }
-    for e in &stuff {
-        commands.entity(e).despawn();
-    }
-    selected.0 = selected.0.next();
-    if player.dead.is_none() {
-        player.hp = player::MAX_HP;
+    let (mut p, mut tf) = player.into_inner();
+    for _ in 0..BossKind::ALL.len() {
+        let kind = BossKind::ALL[*next % BossKind::ALL.len()];
+        *next += 1;
+        let Some((boss, _)) = bosses.iter().find(|(_, l)| l.kind == kind) else { continue };
+        // A little away from it, on the ground.
+        let at = terrain.rest(boss.home - Vec2::X * 300.0) + Vec2::Y * player::HALF.y;
+        tf.translation.x = at.x;
+        tf.translation.y = at.y;
+        p.vel = Vec2::ZERO;
+        p.forget_fall(at);
+        if p.dead.is_none() {
+            p.hp = p.max_hp;
+        }
+        return;
     }
 }
 
@@ -310,39 +437,57 @@ fn slash_bosses(
     mut paint: MessageWriter<Paint>,
     mut earned: MessageWriter<ColorEarned>,
     mut hits: MessageWriter<BossHit>,
+    mut spat: MessageReader<SpitHit>,
+    mut defeated: ResMut<Defeated>,
+    mut beaten: MessageWriter<Beaten>,
     player: Single<(&Player, &Transform, &ChameleonAnim)>,
-    mut bosses: Query<(Entity, &mut Boss, &Transform)>,
+    mut bosses: Query<(Entity, &mut Boss, &Transform, &Lair)>,
 ) {
     let (p, ptf, anim) = *player;
-    if !anim.striking() {
-        return;
-    }
     let ppos = ptf.translation.truncate();
-    // The hitbox is the slash wave: a half-disc in front of the chameleon.
-    let center = ppos + Vec2::new(chameleon::SLASH_CENTER.x * p.facing, chameleon::SLASH_CENTER.y);
-    for (e, mut boss, tf) in &mut bosses {
-        let pos = tf.translation.truncate();
-        let radius = boss.spec.radius;
-        let in_front = (pos.x - center.x) * p.facing > -radius * 0.5;
-        let in_reach = pos.distance(center) < chameleon::SLASH_REACH + radius;
-        if boss.dead || boss.hit_by == anim.slash_id || !in_front || !in_reach {
+    // (boss, direction of the blow, slashed rather than spat on)
+    let mut struck: Vec<(Entity, Vec2, bool)> = spat.read().map(|h| (h.target, h.dir, false)).collect();
+    if anim.striking() {
+        // The hitbox is the slash wave: a half-disc toward the mouse.
+        let dir = anim.slash_dir();
+        let center = chameleon::slash_center(ppos, p.facing);
+        for (e, boss, tf, _) in &bosses {
+            let pos = tf.translation.truncate();
+            let radius = boss.spec.radius;
+            let in_front = (pos - center).dot(dir) > -radius * 0.5;
+            let in_reach = pos.distance(center) < chameleon::SLASH_REACH + radius;
+            if !boss.dead && boss.hit_by != anim.slash_id && in_front && in_reach {
+                struck.push((e, dir, true));
+            }
+        }
+    }
+    for (e, dir, slashed) in struck {
+        let Ok((_, mut boss, tf, lair)) = bosses.get_mut(e) else { continue };
+        if boss.dead {
             continue;
         }
-        boss.hit_by = anim.slash_id;
+        let pos = tf.translation.truncate();
+        if slashed {
+            boss.hit_by = anim.slash_id;
+        }
         boss.hp -= 1;
         boss.flash = 1.0;
         let killed = boss.hp <= 0;
         boss.dead = killed;
         let fluid = boss.spec.blood;
-        hits.write(BossHit { boss: e, dir: Vec2::new(p.facing, 0.3).normalize(), killed });
+        hits.write(BossHit { boss: e, dir: (dir + Vec2::Y * 0.3).normalize(), killed });
 
-        // The gush: a fan of blood along the cut, and a backsplash right onto the chameleon.
-        let gush = Bleed { pos, dir: Vec2::new(p.facing, 0.35), spread: 0.8, speed: 650.0, amount: 60, fluid, sticky: true };
+        // The gush: a fan of blood along the cut, and (slashed) a backsplash right onto the chameleon.
+        let gush = Bleed { pos, dir: dir + Vec2::Y * 0.35, spread: 0.8, speed: 650.0, amount: if slashed { 60 } else { 30 }, fluid, sticky: true };
         bleed.write(gush);
-        bleed.write(Bleed { dir: ppos + Vec2::Y * 8.0 - pos, spread: 0.4, speed: 420.0, amount: 40, ..gush });
-        paint.write(Paint { amount: 5, fluid });
+        if slashed {
+            bleed.write(Bleed { dir: ppos + Vec2::Y * 8.0 - pos, spread: 0.4, speed: 420.0, amount: 40, ..gush });
+            paint.write(Paint { amount: 5, fluid });
+        }
 
         if killed {
+            defeated.add(lair.kind);
+            beaten.write(Beaten(lair.kind));
             // Burst open and give up its color. Make it land: freeze, slow motion,
             // zoom punch and a flash of its color.
             bleed.write(Bleed { dir: Vec2::Y, spread: PI, speed: 800.0, amount: 240, ..gush });
@@ -361,17 +506,23 @@ fn slash_bosses(
 }
 
 /// The chameleon came back: living bosses heal and go home (their AI resets itself).
-fn reset_bosses(mut respawned: MessageReader<Respawned>, mut bosses: Query<(&mut Boss, &mut Transform)>) {
+/// The chameleon came back: living bosses start over, asleep at home.
+fn reset_on_respawn(
+    mut commands: Commands,
+    mut respawned: MessageReader<Respawned>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    terrain: Res<Terrain>,
+    bosses: Query<(Entity, &Boss, &Lair)>,
+) {
     if respawned.read().count() == 0 {
         return;
     }
-    for (mut boss, mut tf) in &mut bosses {
-        if boss.dead {
-            continue;
+    for (e, boss, lair) in &bosses {
+        if !boss.dead {
+            commands.entity(e).despawn();
+            lair.kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
         }
-        boss.hp = boss.spec.hp;
-        boss.flash = 0.01; // restores its colors
-        tf.translation = boss.home.extend(tf.translation.z);
     }
 }
 
@@ -396,12 +547,39 @@ fn update_status(
 ) {
     let (p, ptf) = *player;
     status.engaged = false;
-    for (boss, tf) in &bosses {
-        let near = tf.translation.truncate().distance(ptf.translation.truncate()) < boss.spec.aggro * 1.4;
+    // The nearest awake boss (or one that just died, so the bar empties).
+    let fighting = bosses
+        .iter()
+        .filter(|(b, tf)| b.awake && (!b.dead || tf.translation.truncate().distance(ptf.translation.truncate()) < b.spec.aggro))
+        .min_by(|a, b| {
+            let d = |tf: &Transform| tf.translation.truncate().distance(ptf.translation.truncate());
+            d(a.1).total_cmp(&d(b.1))
+        });
+    if let Some((boss, _)) = fighting {
         status.name = boss.spec.name;
         status.color = boss.spec.color;
         status.health = boss.hp.max(0) as f32 / boss.spec.hp as f32;
-        status.engaged = p.dead.is_none() && !boss.dead && near;
+        status.engaged = p.dead.is_none() && !boss.dead;
+    }
+}
+
+/// The sketch moved a boss: clear the fight and start it again at the new spot.
+fn restart_on_reload(
+    mut commands: Commands,
+    mut reloaded: MessageReader<WorldReloaded>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    terrain: Res<Terrain>,
+    stuff: Query<Entity, Or<(With<Boss>, With<BossStuff>)>>,
+) {
+    if !reloaded.read().any(|r| r.bosses_moved) {
+        return;
+    }
+    for e in &stuff {
+        commands.entity(e).despawn();
+    }
+    for kind in BossKind::ALL {
+        kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
     }
 }
 
@@ -411,6 +589,7 @@ fn move_gibs(
     mut bleed: MessageWriter<Bleed>,
     mut gibs: Query<(Entity, &mut Gib, &mut Transform)>,
     platforms: Query<(&Platform, &Transform), Without<Gib>>,
+    terrain: Res<Terrain>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     for (e, mut g, mut tf) in &mut gibs {
@@ -419,7 +598,7 @@ fn move_gibs(
         if !g.landed {
             g.vel.y -= 1400.0 * dt;
             let next = pos + g.vel * dt;
-            if let Some(top) = floor(platforms.iter(), pos, next, 4.0) {
+            if let Some(top) = floor(&terrain, platforms.iter(), pos, next, 4.0) {
                 tf.translation.y = top + 4.0;
                 g.landed = true;
             } else {
@@ -442,7 +621,7 @@ fn move_gibs(
                 });
             }
         }
-        if tf.translation.y < -900.0 {
+        if tf.translation.y < terrain.bounds.min.y - 600.0 {
             commands.entity(e).despawn();
         }
     }

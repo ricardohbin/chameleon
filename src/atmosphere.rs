@@ -1,15 +1,26 @@
 //! The apocalyptic backdrop: ruined skyline, smoke plumes over fires,
 //! falling ash, rising embers, fog and lightning.
+//!
+//! The distant layers echo the area of the world they're seen from: ruined
+//! towers behind the buildings, junk heaps behind the dump, culverts and
+//! pipes behind the sewer, dead trees and a fairground wheel behind the park.
 
 use std::f32::consts::PI;
 
-use bevy::{prelude::*, sprite_render::AlphaMode2d};
+use bevy::{asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology, sprite_render::AlphaMode2d};
 
-use crate::{camera::{MainCamera, Shake}, shapes::*};
+use crate::{
+    camera::{MainCamera, Shake},
+    level::WorldReloaded,
+    shapes::*,
+    terrain::{Style, Terrain, PX},
+};
 
 const SKY_TOP: Color = Color::srgb(0.07, 0.07, 0.08);
 const SKY_HORIZON: Color = Color::srgb(0.52, 0.36, 0.27);
 const SMOKE: Color = Color::srgb(0.10, 0.09, 0.09);
+/// Dark haze over the ground below the horizon.
+const HAZE: Color = Color::srgb(0.16, 0.14, 0.13);
 const FIRE: Color = Color::srgb(1.0, 0.62, 0.25);
 const ASH_COUNT: usize = 160;
 const EMBER_COUNT: usize = 50;
@@ -20,21 +31,25 @@ pub struct AtmospherePlugin;
 
 impl Plugin for AtmospherePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ClearColor(SKY_HORIZON))
+        app.insert_resource(ClearColor(HAZE))
             .insert_resource(Lightning { next: 3.0, since: 99.0, rng: Rng(0xF1A5) })
-            .add_systems(Startup, (spawn_backdrop, spawn_particles))
+            .add_systems(Startup, (setup_backdrop, spawn_lightning, spawn_particles))
             .add_systems(Update, (drift_particles, animate_smoke, animate_fire, lightning))
-            .add_systems(PostUpdate, parallax.before(TransformSystems::Propagate));
+            .add_systems(PostUpdate, (rebuild_backdrop, parallax).chain().before(TransformSystems::Propagate));
     }
 }
 
 /// Position = origin + camera * factor. factor 0 = part of the world,
 /// 1 = glued to the screen, in between = distant layers, negative = foreground.
 #[derive(Component)]
-struct Parallax {
+pub(crate) struct Parallax {
     origin: Vec2,
     factor: Vec2,
 }
+
+/// Everything rebuilt when the world reloads (children go with their parents).
+#[derive(Component)]
+struct Backdrop;
 
 #[derive(Component)]
 struct Particle {
@@ -75,42 +90,226 @@ fn blend(materials: &mut Assets<ColorMaterial>, color: Color) -> Handle<ColorMat
     materials.add(ColorMaterial { color, alpha_mode: AlphaMode2d::Blend, ..default() })
 }
 
-fn spawn_backdrop(
+fn setup_backdrop(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    terrain: Res<Terrain>,
 ) {
+    spawn_backdrop(&mut commands, &mut meshes, &mut materials, &terrain);
+}
+
+/// The world changed: bounds, areas and ground heights may have moved.
+fn rebuild_backdrop(
+    mut commands: Commands,
+    mut reloaded: MessageReader<WorldReloaded>,
+    old: Query<Entity, With<Backdrop>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    terrain: Res<Terrain>,
+) {
+    if reloaded.read().count() == 0 {
+        return;
+    }
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    spawn_backdrop(&mut commands, &mut meshes, &mut materials, &terrain);
+}
+
+/// How high the camera sits above the ground the player stands on.
+const CAM_ABOVE: f32 = 75.0;
+/// How far the layers' ground and the fog reach down (deeper than any pit).
+const DEPTH: f32 = 9000.0;
+
+/// The height of the ground per world x, smoothed: what the backdrop stands on.
+/// Each column averages every floor in it (building storeys, pit bottoms), so
+/// the layers sit in the middle of wherever the camera can be.
+struct Horizon {
+    x0: f32,
+    heights: Vec<f32>,
+}
+
+impl Horizon {
+    const STEP: f32 = 50.0;
+    /// Gaussian smoothing radius (sigma), in world units.
+    const SMOOTH: f32 = 450.0;
+
+    fn new(terrain: &Terrain) -> Horizon {
+        let b = terrain.bounds;
+        let n = (b.width() / Self::STEP).ceil() as usize + 1;
+        let raw: Vec<Option<f32>> = (0..n)
+            .map(|i| {
+                let x = b.min.x + i as f32 * Self::STEP;
+                let (mut sum, mut count, mut above) = (0.0, 0, false);
+                let mut y = b.max.y;
+                while y > b.min.y {
+                    let solid = terrain.solid_at(Vec2::new(x, y));
+                    if solid && !above {
+                        sum += y;
+                        count += 1;
+                    }
+                    above = solid;
+                    y -= PX;
+                }
+                (count > 0).then(|| sum / count as f32)
+            })
+            .collect();
+        let radius = (Self::SMOOTH * 3.0 / Self::STEP) as isize;
+        let heights = (0..n as isize)
+            .map(|i| {
+                let (mut sum, mut weight) = (0.0, 0.0);
+                for j in (i - radius).max(0)..(i + radius + 1).min(n as isize) {
+                    if let Some(h) = raw[j as usize] {
+                        let d = (j - i) as f32 * Self::STEP / Self::SMOOTH;
+                        let w = (-0.5 * d * d).exp();
+                        sum += h * w;
+                        weight += w;
+                    }
+                }
+                if weight > 1e-3 { sum / weight } else { terrain.spawn.y }
+            })
+            .collect();
+        Horizon { x0: b.min.x, heights }
+    }
+
+    fn at(&self, x: f32) -> f32 {
+        let last = self.heights.len() - 1;
+        let f = ((x - self.x0) / Self::STEP).clamp(0.0, last as f32);
+        let i = (f as usize).min(last.saturating_sub(1));
+        let a = self.heights[i];
+        let b = self.heights.get(i + 1).copied().unwrap_or(a);
+        a + (b - a) * (f - i as f32)
+    }
+
+    /// World x the camera is at when something at layer x is centered on screen.
+    fn seen_from(x: f32, factor: Vec2) -> f32 {
+        x / (1.0 - factor.x)
+    }
+
+    /// Layer origin for `x` such that, seen from the ground of the area below
+    /// it, it shows `screen_y` above the camera.
+    fn anchor(&self, x: f32, factor: Vec2, screen_y: f32) -> Vec2 {
+        let ground = self.at(Self::seen_from(x, factor));
+        Vec2::new(x, screen_y + (ground + CAM_ABOVE) * (1.0 - factor.y))
+    }
+
+    /// A band following the layer's ground line (`screen_y` above the camera):
+    /// `top` color fading to `bottom` over `fade`, then `bottom` down to `DEPTH`.
+    fn band(&self, (from, to): (f32, f32), factor: Vec2, screen_y: f32, fade: f32, top: Color, bottom: Color) -> Mesh {
+        let (t, b) = (top.to_linear().to_f32_array(), bottom.to_linear().to_f32_array());
+        let (mut pos, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        let n = ((to - from) / 40.0).ceil() as u32;
+        for i in 0..=n {
+            let x = from + i as f32 * 40.0;
+            let y = self.anchor(x, factor, screen_y).y;
+            for (dy, c) in [(0.0, t), (-fade, b), (-DEPTH, b)] {
+                pos.push([x, y + dy, 0.0]);
+                colors.push(c);
+            }
+            if i > 0 {
+                let (p, q) = ((i - 1) * 3, i * 3);
+                for k in 0..2 {
+                    indices.extend([p + k, p + k + 1, q + k, q + k, p + k + 1, q + k + 1]);
+                }
+            }
+        }
+        color_mesh(pos, colors, indices)
+    }
+}
+
+/// Vertical gradient through the given (y, color) stops, `width` wide.
+fn gradient_column(width: f32, stops: &[(f32, Color)]) -> Mesh {
+    let (mut pos, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, &(y, c)) in stops.iter().enumerate() {
+        let c = c.to_linear().to_f32_array();
+        pos.extend([[-width / 2.0, y, 0.0], [width / 2.0, y, 0.0]]);
+        colors.extend([c, c]);
+        if i > 0 {
+            let p = (i as u32 - 1) * 2;
+            indices.extend([p, p + 2, p + 1, p + 1, p + 2, p + 3]);
+        }
+    }
+    color_mesh(pos, colors, indices)
+}
+
+fn color_mesh(pos: Vec<[f32; 3]>, colors: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
+    let n = pos.len();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+fn spawn_backdrop(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
+    let horizon = Horizon::new(terrain);
+    // A layer moving at `factor` must cover this x range for the camera to
+    // never run out of it anywhere in the world.
+    let bounds = terrain.bounds;
+    let span = |factor: f32| (bounds.min.x * (1.0 - factor) - 1300.0, bounds.max.x * (1.0 - factor) + 1300.0);
+    // The area the camera is in when a layer piece at `x` is centered on screen.
+    let seen_from = |x: f32, factor: Vec2| {
+        let at = Horizon::seen_from(x, factor);
+        terrain.style_at(Vec2::new(at, horizon.at(at)))
+    };
+    let mut wheel_done = false;
     let white = materials.add(Color::WHITE);
-    let white_blend = blend(&mut materials, Color::WHITE);
+    let white_blend = blend(materials, Color::WHITE);
+    let haze = HAZE;
     let mut rng = Rng(0xA5A5);
 
-    // Sky: dark smoke-choked top, burning horizon.
-    let sky = gradient_rect(Vec2::new(4000.0, 720.0), SKY_TOP, SKY_HORIZON);
-    layer(&mut commands, &mut meshes, sky, &white, Vec2::new(0.0, 60.0), -100.0, Vec2::ONE);
+    // Sky, glued to the screen and tall enough for any zoom: dark smoke-choked
+    // top, burning horizon, hazy dark ground below it (seen from deep pits).
+    let sky = gradient_column(
+        60000.0,
+        &[
+            (30000.0, SKY_TOP),
+            (420.0, SKY_TOP),
+            (-300.0, SKY_HORIZON),
+            (-700.0, scale_color(SKY_HORIZON, 0.55)),
+            (-1400.0, haze),
+            (-30000.0, haze),
+        ],
+    );
+    layer(commands, meshes, sky, &white, Vec2::ZERO, -100.0, Vec2::ONE);
 
     // A pale, sick sun behind the haze.
     for (r, a) in [(120.0, 0.06), (80.0, 0.12), (46.0, 0.85)] {
-        let mat = blend(&mut materials, Color::srgba(0.95, 0.88, 0.80, a));
-        layer(&mut commands, &mut meshes, Circle::new(r).into(), &mat, Vec2::new(-220.0, 150.0), -99.0, Vec2::splat(0.97));
+        let mat = blend(materials, Color::srgba(0.95, 0.88, 0.80, a));
+        layer(commands, meshes, Circle::new(r).into(), &mat, Vec2::new(-220.0, 150.0), -99.0, Vec2::new(0.97, 1.0));
     }
 
-    // Ruined skylines, far to near.
+    // Ruined skylines, far to near, each on its own hazy ground. `screen_y`:
+    // where its ground line shows, relative to the camera, standing on the ground.
     let skylines = [
-        (Color::srgb(0.36, 0.28, 0.24), Vec2::splat(0.9), -95.0, -130.0, (60.0, 140.0), (120.0, 300.0), false),
-        (Color::srgb(0.22, 0.18, 0.17), Vec2::new(0.75, 0.8), -90.0, -210.0, (70.0, 160.0), (160.0, 380.0), true),
-        (Color::srgb(0.12, 0.11, 0.11), Vec2::new(0.5, 0.6), -70.0, -330.0, (90.0, 200.0), (220.0, 480.0), true),
+        (Color::srgb(0.36, 0.28, 0.24), Vec2::new(0.9, 0.95), -95.0, -105.0, (60.0, 140.0), (120.0, 300.0), false),
+        (Color::srgb(0.22, 0.18, 0.17), Vec2::new(0.75, 0.9), -90.0, -185.0, (70.0, 160.0), (160.0, 380.0), true),
+        (Color::srgb(0.12, 0.11, 0.11), Vec2::new(0.5, 0.8), -70.0, -305.0, (90.0, 200.0), (220.0, 480.0), true),
     ];
-    for (color, factor, z, base_y, (wmin, wmax), (hmin, hmax), windows) in skylines {
+    for (color, factor, z, screen_y, (wmin, wmax), (hmin, hmax), windows) in skylines {
         let mat = materials.add(color);
         let hole = materials.add(scale_color(SKY_HORIZON, 0.75));
-        let mut x = -2200.0;
-        let extent = 7500.0 * (1.0 - factor.x) + 1500.0;
+        // In front of the pieces' feet, so a slope never shows a gap under them.
+        let ground = horizon.band(span(factor.x), factor, screen_y, 260.0, scale_color(color, 0.8), haze.mix(&color, 0.4));
+        layer(commands, meshes, ground, &white, Vec2::ZERO, z + 0.5, factor);
+        let (mut x, extent) = span(factor.x);
         while x < extent {
+            let style = seen_from(x, factor);
+            // Sunk a little: the ground line slopes under wide pieces.
+            let origin = horizon.anchor(x, factor, screen_y - 40.0);
+            if matches!(style, Style::Trash | Style::Sewer | Style::Park) {
+                let piece = Piece { mat: &mat, hole: &hole, origin, z, factor, size: (wmin, wmax, hmin + 40.0, hmax + 40.0) };
+                let w = piece.spawn(commands, meshes, &mut rng, style, !windows && !wheel_done);
+                wheel_done |= style == Style::Park && !windows;
+                x += w + rng.range(-20.0, 80.0);
+                continue;
+            }
             let w = rng.range(wmin, wmax);
-            let h = rng.range(hmin, hmax);
-            let origin = Vec2::new(x, base_y);
+            let h = rng.range(hmin, hmax) + 40.0;
             let tilt = if rng.chance(0.2) { rng.range(-0.12, 0.12) } else { 0.0 };
-            let id = layer(&mut commands, &mut meshes, fill(&ruin_outline(&mut rng, w, h), |p| 0.8 + 0.2 * (p.y / h)), &mat, origin, z, factor);
+            let id = layer(commands, meshes, fill(&ruin_outline(&mut rng, w, h), |p| 0.8 + 0.2 * (p.y / h)), &mat, origin, z, factor);
             commands.entity(id).insert(Transform::from_translation(origin.extend(z)).with_rotation(Quat::from_rotation_z(tilt)));
             if windows {
                 // Blown-out windows showing the burning sky behind.
@@ -119,7 +318,7 @@ fn spawn_backdrop(
                 for c in 0..cols {
                     for r in 0..rows {
                         if rng.chance(0.45) {
-                            let p = Vec2::new(-w / 2.0 + 14.0 + c as f32 * 22.0, 20.0 + r as f32 * 26.0);
+                            let p = Vec2::new(-w / 2.0 + 14.0 + c as f32 * 22.0, 60.0 + r as f32 * 26.0);
                             let win = Rectangle::new(rng.range(6.0, 10.0), rng.range(8.0, 14.0));
                             let mesh = meshes.add(win);
                             commands.spawn((Mesh2d(mesh), MeshMaterial2d(hole.clone()), Transform::from_translation(p.extend(0.01)), ChildOf(id)));
@@ -138,92 +337,108 @@ fn spawn_backdrop(
         }
     }
 
-    // Toppled power pylons with sagging cables, and broken cranes.
+    // Toppled power pylons with sagging cables, and broken cranes, standing
+    // in the haze between the middle and near skylines.
     let mid = materials.add(Color::srgb(0.17, 0.15, 0.14));
-    let factor = Vec2::new(0.62, 0.7);
-    let mut x = -1500.0;
+    let factor = Vec2::new(0.62, 0.85);
+    let (mut x, extent) = span(factor.x);
     let mut prev_top: Option<Vec2> = None;
-    while x < 4500.0 {
+    while x < extent {
         let h = rng.range(170.0, 240.0);
         let lean = rng.range(-0.15, 0.15);
-        let base = Vec2::new(x, -260.0);
+        let base = horizon.anchor(x, factor, -260.0);
         let top = base + Vec2::new(lean * h, h);
         let pylon = [base + Vec2::new(-14.0, 0.0), base + Vec2::new(14.0, 0.0), top + Vec2::new(2.0, 0.0), top + Vec2::new(-2.0, 0.0)];
-        layer(&mut commands, &mut meshes, fill(&pylon, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
+        layer(commands, meshes, fill(&pylon, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
         let arm = [top + Vec2::new(-26.0, -4.0), top + Vec2::new(26.0, -4.0 + lean * 30.0), top + Vec2::new(26.0, -1.0 + lean * 30.0), top + Vec2::new(-26.0, -1.0)];
-        layer(&mut commands, &mut meshes, fill(&arm, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
+        layer(commands, meshes, fill(&arm, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
         if let Some(prev) = prev_top {
             for dy in [0.0, -4.0] {
                 let a = prev + Vec2::new(20.0, dy - 3.0);
                 let b = top + Vec2::new(-20.0, dy - 3.0);
                 let sag = smooth_open(&[a, (a + b) / 2.0 - Vec2::Y * rng.range(30.0, 70.0), b], 10);
-                layer(&mut commands, &mut meshes, stroke(&sag, |_| 1.2, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
+                layer(commands, meshes, stroke(&sag, |_| 1.2, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -80.0, factor);
             }
         }
         // Some cables snapped and dangle.
         prev_top = if rng.chance(0.7) { Some(top) } else { None };
         if rng.chance(0.25) {
-            let mast = Vec2::new(x + 120.0, -260.0);
+            let mast = horizon.anchor(x + 120.0, factor, -260.0);
             let mh = rng.range(260.0, 340.0);
             let tip = mast + Vec2::Y * mh;
-            layer(&mut commands, &mut meshes, Rectangle::new(8.0, mh).into(), &mid, mast + Vec2::Y * mh / 2.0, -81.0, factor);
+            layer(commands, meshes, Rectangle::new(8.0, mh).into(), &mid, mast + Vec2::Y * mh / 2.0, -81.0, factor);
             let jib_end = tip + Vec2::new(rng.range(120.0, 180.0), rng.range(-60.0, -10.0));
-            layer(&mut commands, &mut meshes, stroke(&[tip, jib_end], |_| 6.0, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -81.0, factor);
+            layer(commands, meshes, stroke(&[tip, jib_end], |_| 6.0, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -81.0, factor);
             let hook = smooth_open(&[jib_end, jib_end + Vec2::new(4.0, -60.0), jib_end + Vec2::new(-2.0, -110.0)], 6);
-            layer(&mut commands, &mut meshes, stroke(&hook, |_| 1.5, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -81.0, factor);
+            layer(commands, meshes, stroke(&hook, |_| 1.5, 1.0, 1.0, |_| 1.0), &mid, Vec2::ZERO, -81.0, factor);
         }
         x += rng.range(260.0, 380.0);
     }
 
-    // Fog banks between the layers and at the bottom of the screen.
-    for (y, h, alpha, z, factor) in [(-200.0, 260.0, 0.55, -85.0, Vec2::splat(0.75)), (-330.0, 300.0, 0.6, -60.0, Vec2::new(0.5, 0.6)), (-190.0, 260.0, 0.75, 35.0, Vec2::ONE)] {
-        let fog = gradient_rect(Vec2::new(4000.0, h), Color::srgba(0.30, 0.25, 0.22, 0.0), Color::srgba(0.16, 0.14, 0.13, alpha));
-        layer(&mut commands, &mut meshes, fog, &white_blend, Vec2::new(0.0, y), z, factor);
+    // Fog banks over the middle and near grounds, thick all the way down.
+    let fog_top = Color::srgba(0.30, 0.25, 0.22, 0.0);
+    for (screen_y, h, alpha, z, factor) in [(-175.0, 260.0, 0.55, -85.0, Vec2::new(0.75, 0.9)), (-305.0, 300.0, 0.6, -60.0, Vec2::new(0.5, 0.8))] {
+        let fog = horizon.band(span(factor.x), factor, screen_y + h / 2.0, h, fog_top, haze.with_alpha(alpha));
+        layer(commands, meshes, fog, &white_blend, Vec2::ZERO, z, factor);
     }
+    // And at the bottom of the screen, over the world (down past the bottom
+    // edge when zoomed out).
+    let thick = haze.with_alpha(0.75);
+    let fog = gradient_column(60000.0, &[(-60.0, fog_top), (-320.0, thick), (-800.0, thick), (-1200.0, fog_top)]);
+    layer(commands, meshes, fog, &white_blend, Vec2::ZERO, 35.0, Vec2::ONE);
 
-    // Foreground wreckage silhouettes, moving faster than the world.
+    // Foreground wreckage silhouettes along the bottom of the screen, moving
+    // faster than the world.
     let fg = materials.add(Color::srgb(0.03, 0.03, 0.035));
-    let mut x = -1200.0;
-    while x < 10000.0 {
+    let factor = Vec2::new(-0.3, 1.0);
+    let (mut x, extent) = span(factor.x);
+    while x < extent {
         let w = rng.range(120.0, 260.0);
         let h = rng.range(40.0, 90.0);
-        let mound = ruin_outline(&mut rng, w, h);
-        layer(&mut commands, &mut meshes, fill(&mound, |_| 1.0), &fg, Vec2::new(x, -300.0), 45.0, Vec2::new(-0.3, 1.0));
+        let base = Vec2::new(x, -300.0);
+        // With a foot reaching below the screen when zoomed out.
+        let mut mound = ruin_outline(&mut rng, w, h);
+        let last = mound.len() - 1;
+        mound[0].y = -500.0;
+        mound[last].y = -500.0;
+        layer(commands, meshes, fill(&mound, |_| 1.0), &fg, base, 45.0, factor);
         if rng.chance(0.6) {
-            let bx = x + rng.range(-w / 3.0, w / 3.0);
-            let bar = smooth_open(&[Vec2::new(bx, -240.0), Vec2::new(bx + rng.range(-20.0, 20.0), -170.0), Vec2::new(bx + rng.range(-60.0, 60.0), -140.0)], 6);
-            layer(&mut commands, &mut meshes, stroke(&bar, |t| 5.0 - 3.0 * t, 1.0, 1.0, |_| 1.0), &fg, Vec2::ZERO, 45.0, Vec2::new(-0.3, 1.0));
+            let bx = rng.range(-w / 3.0, w / 3.0);
+            let bar = smooth_open(&[Vec2::new(bx, 60.0), Vec2::new(bx + rng.range(-20.0, 20.0), 130.0), Vec2::new(bx + rng.range(-60.0, 60.0), 160.0)], 6);
+            layer(commands, meshes, stroke(&bar, |t| 5.0 - 3.0 * t, 1.0, 1.0, |_| 1.0), &fg, base, 45.0, factor);
         }
         x += rng.range(500.0, 900.0);
     }
 
-    // Smoke plumes rising from distant fires.
-    let factor = Vec2::new(0.4, 0.5);
-    let mut x = -900.0;
-    while x < 5000.0 {
-        let source = Vec2::new(x, -240.0 + rng.range(-30.0, 40.0));
+    // Smoke plumes rising from fires on the near ground.
+    let factor = Vec2::new(0.5, 0.8);
+    let (mut x, extent) = span(factor.x);
+    while x < extent {
+        let source = horizon.anchor(x, factor, -215.0 + rng.range(-30.0, 40.0));
         for (r, a) in [(26.0, 0.25), (12.0, 0.7)] {
-            let mat = blend(&mut materials, FIRE.with_alpha(a));
-            let id = layer(&mut commands, &mut meshes, fill(&ellipse_pts(r * 1.6, r, 20), |_| 1.0), &mat, source, -55.0, factor);
+            let mat = blend(materials, FIRE.with_alpha(a));
+            let id = layer(commands, meshes, fill(&ellipse_pts(r * 1.6, r, 20), |_| 1.0), &mat, source, -55.0, factor);
             commands.entity(id).insert(Fire { seed: rng.range(0.0, 100.0), base_alpha: a });
         }
         let life = rng.range(6.0, 9.0);
         for i in 0..14 {
-            let mat = blend(&mut materials, SMOKE.with_alpha(0.0));
+            let mat = blend(materials, SMOKE.with_alpha(0.0));
             let puff = fill(&smooth_closed(&rock_pts(&mut rng, 1.0, 7), 5), |p| 0.8 + 0.4 * p.y);
-            let id = layer(&mut commands, &mut meshes, puff, &mat, source, -54.0 + i as f32 * 0.01, factor);
+            let id = layer(commands, meshes, puff, &mat, source, -54.0 + i as f32 * 0.01, factor);
             commands.entity(id).insert(Puff { source, age: life * i as f32 / 14.0, life, seed: rng.range(0.0, 100.0) });
         }
         x += rng.range(380.0, 700.0);
     }
+}
 
-    // Lightning: a full-screen flash and a bolt in the sky.
+/// Lightning: a full-screen flash and a bolt in the sky (kept across reloads).
+fn spawn_lightning(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
     let flash_mat = blend(&mut materials, Color::srgba(0.9, 0.9, 1.0, 0.0));
-    let id = layer(&mut commands, &mut meshes, Rectangle::new(4000.0, 3000.0).into(), &flash_mat, Vec2::ZERO, 80.0, Vec2::ONE);
-    commands.entity(id).insert(Flash);
+    let flash = (Mesh2d(meshes.add(Rectangle::new(60000.0, 60000.0))), MeshMaterial2d(flash_mat), Transform::from_xyz(0.0, 0.0, 80.0));
+    commands.spawn((flash, Parallax { origin: Vec2::ZERO, factor: Vec2::ONE }, Flash));
     let bolt_mat = materials.add(Color::srgb(0.95, 0.95, 1.0));
-    let id = layer(&mut commands, &mut meshes, Rectangle::new(1.0, 1.0).into(), &bolt_mat, Vec2::ZERO, -96.0, Vec2::ONE);
-    commands.entity(id).insert((Bolt, Visibility::Hidden));
+    let bolt = (Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))), MeshMaterial2d(bolt_mat), Transform::from_xyz(0.0, 0.0, -96.0));
+    commands.spawn((bolt, Parallax { origin: Vec2::ZERO, factor: Vec2::ONE }, Bolt, Visibility::Hidden));
 }
 
 fn layer(
@@ -241,8 +456,143 @@ fn layer(
             MeshMaterial2d(mat.clone()),
             Transform::from_translation(origin.extend(z)),
             Parallax { origin, factor },
+            Backdrop,
         ))
         .id()
+}
+
+/// A distant silhouette that isn't a ruined tower.
+struct Piece<'a> {
+    mat: &'a Handle<ColorMaterial>,
+    /// For openings showing the sky behind.
+    hole: &'a Handle<ColorMaterial>,
+    origin: Vec2,
+    z: f32,
+    factor: Vec2,
+    /// The layer's (min width, max width, min height, max height).
+    size: (f32, f32, f32, f32),
+}
+
+impl Piece<'_> {
+    /// Spawns one piece in the style of the area; returns its width.
+    fn spawn(&self, commands: &mut Commands, meshes: &mut Assets<Mesh>, rng: &mut Rng, style: Style, landmark: bool) -> f32 {
+        let (wmin, wmax, hmin, hmax) = self.size;
+        let root = |commands: &mut Commands, meshes: &mut Assets<Mesh>, mesh: Mesh| layer(commands, meshes, mesh, self.mat, self.origin, self.z, self.factor);
+        let child = |commands: &mut Commands, meshes: &mut Assets<Mesh>, parent: Entity, mesh: Mesh, mat: &Handle<ColorMaterial>, z: f32| {
+            commands.spawn((Mesh2d(meshes.add(mesh)), MeshMaterial2d(mat.clone()), Transform::from_xyz(0.0, 0.0, z), ChildOf(parent)));
+        };
+        match style {
+            Style::Trash => {
+                // A heap of junk with things sticking out of it.
+                let w = rng.range(wmin * 1.4, wmax * 2.0);
+                let h = rng.range(hmin * 0.35, hmax * 0.5);
+                let mut pts = vec![Vec2::new(-w / 2.0, 0.0)];
+                for i in 1..24 {
+                    let s = i as f32 / 24.0 * 2.0 - 1.0;
+                    pts.push(Vec2::new(s * w / 2.0, h * (1.0 - s * s).powf(0.7) + rng.range(-6.0, 6.0)));
+                }
+                pts.push(Vec2::new(w / 2.0, 0.0));
+                let id = root(commands, meshes, fill(&pts, |p| 0.85 + 0.15 * (p.y / h)));
+                for _ in 0..rng.below(4) + 2 {
+                    let s = rng.range(-0.6, 0.6);
+                    let base = Vec2::new(s * w / 2.0, h * (1.0 - s * s).powf(0.7) - 6.0);
+                    match rng.below(3) {
+                        0 => {
+                            // A wheel.
+                            let r = rng.range(8.0, 16.0);
+                            let ring: Vec<Vec2> = ellipse_pts(r, r, 20).iter().map(|p| *p + base + Vec2::Y * r * 0.6).collect();
+                            let mut ring = ring.clone();
+                            ring.push(ring[0]);
+                            child(commands, meshes, id, stroke(&ring, |_| 3.0, 1.0, 1.0, |_| 1.0), self.mat, 0.01);
+                        }
+                        1 => {
+                            // A bent bar or bed frame.
+                            let tip = base + Vec2::new(rng.range(-30.0, 30.0), rng.range(25.0, 50.0));
+                            let bar = smooth_open(&[base, (base + tip) / 2.0 + Vec2::X * rng.range(-10.0, 10.0), tip], 5);
+                            child(commands, meshes, id, stroke(&bar, |_| 2.5, 1.0, 1.0, |_| 1.0), self.mat, 0.01);
+                        }
+                        _ => {
+                            // A fridge or a car door, tipped over.
+                            let (bw, bh) = (rng.range(12.0, 22.0), rng.range(20.0, 34.0));
+                            let a = rng.range(-0.6, 0.6);
+                            let corners = [Vec2::new(-bw, 0.0), Vec2::new(bw, 0.0), Vec2::new(bw, bh), Vec2::new(-bw, bh)]
+                                .map(|c| Vec2::from_angle(a).rotate(c / Vec2::new(2.0, 1.0)) + base);
+                            child(commands, meshes, id, fill(&corners, |_| 1.0), self.mat, 0.01);
+                        }
+                    }
+                }
+                w
+            }
+            Style::Sewer => {
+                // A retaining wall with culverts, and pipes spilling out of it.
+                let w = rng.range(wmin * 1.5, wmax * 1.8);
+                let h = rng.range(hmin * 0.5, hmax * 0.6);
+                let mut wall = ruin_outline(rng, w, h);
+                for p in &mut wall {
+                    p.y = p.y.min(h * 0.9);
+                }
+                let id = root(commands, meshes, fill(&wall, |p| 0.8 + 0.2 * (p.y / h)));
+                let r = h * rng.range(0.22, 0.32);
+                let cx = rng.range(-w / 4.0, w / 4.0);
+                child(commands, meshes, id, fill(&ellipse_pts(r, r, 24).iter().map(|p| *p + Vec2::new(cx, r * 1.1)).collect::<Vec<_>>(), |_| 1.0), self.hole, 0.01);
+                for _ in 0..rng.below(3) + 1 {
+                    let y = rng.range(h * 0.3, h * 0.7);
+                    let side = if rng.chance(0.5) { -1.0 } else { 1.0 };
+                    let start = Vec2::new(side * w / 2.0 - side * 10.0, y);
+                    let end = start + Vec2::new(side * rng.range(30.0, 60.0), rng.range(-25.0, 5.0));
+                    let pipe = smooth_open(&[start, (start + end) / 2.0 + Vec2::Y * 4.0, end], 4);
+                    child(commands, meshes, id, stroke(&pipe, |_| rng_width(r), 1.0, 1.0, |_| 1.0), self.mat, 0.01);
+                }
+                w
+            }
+            Style::Park if landmark => {
+                // The fairground wheel, tilted and missing gondolas.
+                let r = hmax * 0.55;
+                let hub = Vec2::new(0.0, r + 20.0);
+                let id = root(commands, meshes, fill(&[Vec2::new(-r * 0.6, 0.0), Vec2::new(-r * 0.5, 0.0), hub, hub + Vec2::new(-4.0, 6.0)], |_| 1.0));
+                child(commands, meshes, id, fill(&[Vec2::new(r * 0.5, 0.0), Vec2::new(r * 0.6, 0.0), hub + Vec2::new(4.0, 6.0), hub], |_| 1.0), self.mat, 0.0);
+                let mut rim: Vec<Vec2> = ellipse_pts(r, r * 0.96, 48).iter().map(|p| *p + hub).collect();
+                rim.truncate(41); // a broken section
+                child(commands, meshes, id, stroke(&rim, |_| 4.0, 1.0, 1.0, |_| 1.0), self.mat, 0.0);
+                for i in 0..16 {
+                    let a = i as f32 / 16.0 * std::f32::consts::TAU + 0.1;
+                    let end = hub + Vec2::from_angle(a) * r;
+                    child(commands, meshes, id, stroke(&[hub, end], |_| 1.4, 1.0, 1.0, |_| 1.0), self.mat, 0.0);
+                    if i % 2 == 0 && rng.chance(0.6) {
+                        let car = [Vec2::new(-7.0, -14.0), Vec2::new(7.0, -14.0), Vec2::new(5.0, 0.0), Vec2::new(-5.0, 0.0)].map(|c| c + end);
+                        child(commands, meshes, id, fill(&car, |_| 1.0), self.mat, 0.0);
+                    }
+                }
+                r * 2.4
+            }
+            Style::Park => {
+                // A dead tree.
+                let h = rng.range(hmin * 0.5, hmax * 0.7);
+                let lean = rng.range(-0.2, 0.2);
+                let trunk = smooth_open(&[Vec2::ZERO, Vec2::new(lean * h * 0.3, h * 0.5), Vec2::new(lean * h * 0.5, h * 0.75)], 5);
+                let top = trunk[trunk.len() - 1];
+                let id = root(commands, meshes, stroke(&trunk, |t| 9.0 - 5.0 * t, 1.0, 1.0, |_| 1.0));
+                let mut branches = vec![(top, Vec2::Y.rotate(Vec2::from_angle(lean)), h * 0.35, 4.0)];
+                while let Some((from, dir, len, width)) = branches.pop() {
+                    for side in [-1.0, 1.0] {
+                        let d = Vec2::from_angle(side * rng.range(0.3, 0.8)).rotate(dir);
+                        let to = from + d * len * rng.range(0.6, 1.0);
+                        let twig = smooth_open(&[from, (from + to) / 2.0 + d.perp() * rng.range(-4.0, 4.0), to], 3);
+                        child(commands, meshes, id, stroke(&twig, |t| width * (1.0 - 0.6 * t), 1.0, 1.0, |_| 1.0), self.mat, 0.0);
+                        if width > 1.5 {
+                            branches.push((to, d, len * 0.6, width * 0.6));
+                        }
+                    }
+                }
+                h * 0.6 + rng.range(20.0, 80.0)
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+fn rng_width(r: f32) -> f32 {
+    (r * 0.45).clamp(5.0, 14.0)
 }
 
 /// A building silhouette with a broken, jagged top. Base at y = 0.

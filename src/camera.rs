@@ -6,12 +6,16 @@ use bevy::{
     render::view::{ColorGrading, ColorGradingGlobal},
 };
 
-use crate::player::{self, Player};
+use crate::{
+    level::{self, Restart},
+    player::{self, Player},
+    terrain::Terrain,
+};
 
 const LOOK_AHEAD: f32 = 80.0;
 const HEIGHT_OFFSET: f32 = 40.0;
 const FOLLOW_RATE: f32 = 4.0;
-const ZOOM: f32 = 0.65;
+pub const ZOOM: f32 = 0.65;
 /// How much a full `ZoomPunch` zooms in.
 const PUNCH_ZOOM: f32 = 0.2;
 /// 0.0 = grayscale world, 1.0 = full color. Colors are earned as the game
@@ -32,8 +36,10 @@ impl Plugin for CameraPlugin {
         app.init_resource::<Shake>()
             .init_resource::<HitStop>()
             .init_resource::<ZoomPunch>()
+            .init_resource::<DevZoom>()
             .add_systems(Startup, spawn_camera)
             .add_systems(First, apply_hit_stop)
+            .add_systems(PreUpdate, restart.after(level::restart))
             .add_systems(Update, follow_player.after(player::move_player));
     }
 }
@@ -107,23 +113,41 @@ impl ZoomPunch {
     }
 }
 
+/// Zoom multiplier for developer tools (1 = normal).
+#[derive(Resource)]
+pub struct DevZoom(pub f32);
+
+impl Default for DevZoom {
+    fn default() -> Self {
+        DevZoom(1.0)
+    }
+}
+
 /// The grayscale world camera (the color overlay camera is its child).
 #[derive(Component)]
 pub struct MainCamera;
 
 /// Camera position before shake is applied.
 #[derive(Component)]
-struct Follow(Vec2);
+pub struct Follow(Vec2);
 
-fn spawn_camera(mut commands: Commands) {
+impl Follow {
+    /// Cut the camera to where it would sit with the chameleon at `pos` (no easing).
+    pub fn cut_to(&mut self, pos: Vec2) {
+        self.0 = pos + Vec2::new(LOOK_AHEAD, HEIGHT_OFFSET);
+    }
+}
+
+fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
+    let spawn = player::spawn_point(&terrain);
     let projection = || Projection::Orthographic(OrthographicProjection { scale: ZOOM, ..OrthographicProjection::default_2d() });
     let main = commands
         .spawn((
             Camera2d,
             MainCamera,
-            Follow(player::SPAWN),
+            Follow(spawn),
             projection(),
-            Transform::from_translation(player::SPAWN.extend(0.0)),
+            Transform::from_translation(spawn.extend(0.0)),
             ColorGrading {
                 global: ColorGradingGlobal { post_saturation: WORLD_SATURATION, ..default() },
                 ..default()
@@ -142,12 +166,33 @@ fn spawn_camera(mut commands: Commands) {
     ));
 }
 
-fn follow_player(
+/// F8: no leftover shake, freeze, slow motion or zoom; the camera cuts to the spawn.
+fn restart(
+    mut restarted: MessageReader<Restart>,
+    terrain: Res<Terrain>,
+    mut shake: ResMut<Shake>,
+    mut stop: ResMut<HitStop>,
+    mut punch: ResMut<ZoomPunch>,
+    mut time: ResMut<Time<Virtual>>,
+    mut follow: Single<&mut Follow, With<MainCamera>>,
+) {
+    if restarted.read().count() == 0 {
+        return;
+    }
+    *shake = default();
+    *stop = default();
+    *punch = default();
+    time.set_relative_speed(1.0);
+    follow.0 = player::spawn_point(&terrain) + Vec2::new(LOOK_AHEAD, HEIGHT_OFFSET);
+}
+
+pub fn follow_player(
     time: Res<Time>,
     mut shake: ResMut<Shake>,
     mut punch: ResMut<ZoomPunch>,
+    dev_zoom: Res<DevZoom>,
     camera: Single<(&mut Transform, &mut Follow), (With<MainCamera>, Without<Player>)>,
-    mut projections: Query<&mut Projection>,
+    mut projections: Query<&mut Projection, Without<crate::map_export::ExportCamera>>,
     player: Single<(&Transform, &Player)>,
 ) {
     let (mut tf, mut follow) = camera.into_inner();
@@ -169,7 +214,7 @@ fn follow_player(
     shake.trauma = (shake.trauma - dt * 1.1).max(0.0);
 
     // Both cameras share the zoom.
-    let scale = ZOOM * (1.0 - PUNCH_ZOOM * punch.0 * punch.0 * (3.0 - 2.0 * punch.0));
+    let scale = ZOOM * dev_zoom.0 * (1.0 - PUNCH_ZOOM * punch.0 * punch.0 * (3.0 - 2.0 * punch.0));
     for mut projection in &mut projections {
         if let Projection::Orthographic(ortho) = &mut *projection {
             ortho.scale = scale;

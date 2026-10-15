@@ -9,7 +9,7 @@
 
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 
-use crate::{camera, level::Platform, shapes::*};
+use crate::{camera, level::{self, Platform, Restart}, shapes::*, terrain::{Terrain, PX}, terrain_art::TerrainPart};
 
 const GRAVITY: f32 = 1500.0;
 const DROP_LIFE: f32 = 4.0;
@@ -22,6 +22,9 @@ const DRY_TIME: f32 = 25.0;
 /// Fresh splats drip for this long.
 const WET_TIME: f32 = 4.0;
 const VARIANTS: usize = 8;
+/// Surface inclinations a stain mesh is drawn for (its drips follow gravity at that tilt).
+const TILTS: usize = 24;
+const STAIN_VARIANTS: usize = 4;
 
 pub struct GorePlugin;
 
@@ -30,6 +33,7 @@ impl Plugin for GorePlugin {
         app.add_message::<Bleed>()
             .add_message::<Paint>()
             .add_systems(Startup, setup)
+            .add_systems(PreUpdate, mop_up.after(level::restart))
             .add_systems(Update, (spray, paint_claws, move_drops, age_splats, cap_stains).chain());
     }
 }
@@ -132,7 +136,8 @@ struct Stain(u32);
 struct Gore {
     drop: Handle<Mesh>,
     splats: Vec<Handle<Mesh>>,
-    stains: Vec<Handle<Mesh>>,
+    /// Stain meshes per surface tilt (`TILTS` buckets around the circle), `STAIN_VARIANTS` each.
+    stains: Vec<Vec<Handle<Mesh>>>,
     drop_mats: Vec<Handle<ColorMaterial>>,
     /// Two shades per fluid.
     stain_mats: Vec<[Handle<ColorMaterial>; 2]>,
@@ -140,10 +145,25 @@ struct Gore {
     seq: u32,
 }
 
+/// F8: every drop, splat and stain goes (most already went with the level and the chameleon).
+fn mop_up(mut commands: Commands, mut restarted: MessageReader<Restart>, blood: Query<Entity, Or<(With<Drop>, With<Splat>, With<Stain>)>>) {
+    if restarted.read().count() == 0 {
+        return;
+    }
+    for e in &blood {
+        commands.entity(e).try_despawn();
+    }
+}
+
 fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
     let mut rng = Rng(0xB100D);
     let splats = (0..VARIANTS).map(|_| meshes.add(splat_mesh(&mut rng))).collect();
-    let stains = (0..VARIANTS).map(|_| meshes.add(stain_mesh(&mut rng))).collect();
+    let stains = (0..TILTS)
+        .map(|t| {
+            let theta = t as f32 * std::f32::consts::TAU / TILTS as f32;
+            (0..STAIN_VARIANTS).map(|_| meshes.add(stain_mesh(&mut rng, theta))).collect()
+        })
+        .collect();
     let drop_mats = Fluid::ALL.map(|f| materials.add(f.fresh())).to_vec();
     let stain_mats = Fluid::ALL
         .map(|f| {
@@ -190,16 +210,93 @@ fn splat_mesh(rng: &mut Rng) -> Mesh {
     blobs(&parts, |p| 0.7 + 0.3 * (1.0 - p.length() / 1.8).max(0.0))
 }
 
-/// A stain of width ~2 sitting on y = 0: a flat puddle with drips running down.
-fn stain_mesh(rng: &mut Rng) -> Mesh {
-    let mut parts = vec![ellipse_pts(1.0, rng.range(0.16, 0.26), 16)];
-    for _ in 0..rng.below(3) {
-        let x = rng.range(-0.7, 0.7);
-        let len = rng.range(0.3, 1.1);
-        parts.push(ellipse_pts(0.09, len / 2.0, 8).into_iter().map(|p| p + Vec2::new(x, -len / 2.0)).collect());
-        parts.push(ellipse_pts(0.13, 0.15, 8).into_iter().map(|p| p + Vec2::new(x, -len)).collect());
+/// A tapered streak from `from` to `to` ending in a round bead.
+fn drip(from: Vec2, to: Vec2, width: f32, bead: f32) -> [Vec<Vec2>; 2] {
+    let d = to - from;
+    let a = d.to_angle();
+    let streak = ellipse_pts(d.length() / 2.0, width, 8).into_iter().map(|p| Vec2::from_angle(a).rotate(p) + (from + to) / 2.0).collect();
+    let tip = ellipse_pts(bead, bead * 1.15, 8).into_iter().map(|p| p + to).collect();
+    [streak, tip]
+}
+
+/// A stain of width ~2 lying on a surface whose normal is local +Y (the decal is rotated by
+/// `theta` into place, so the world's "down" is `Vec2::NEG_Y` rotated by `-theta` in here).
+/// A thin film outside, a wider smear soaked into the surface, and drips that follow gravity:
+/// running along walls and slopes (downhill), seeping into floors, hanging off ceilings.
+fn stain_mesh(rng: &mut Rng, theta: f32) -> Mesh {
+    let g = Vec2::from_angle(-theta).rotate(Vec2::NEG_Y);
+    let run = g.x.abs();
+    let side = if g.x >= 0.0 { 1.0 } else { -1.0 };
+
+    let (out, inn) = (rng.range(0.07, 0.13), rng.range(0.22, 0.38));
+    let n = 20;
+    let film = (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU;
+            let (s, c) = a.sin_cos();
+            Vec2::new(c, s * if s > 0.0 { out } else { inn }) * rng.range(0.85, 1.0)
+        })
+        .collect();
+    let mut parts = vec![film];
+
+    if run > 0.25 {
+        // Runs down the surface from the low end of the smear.
+        for _ in 0..rng.below(3) + 1 {
+            let from = Vec2::new(side * rng.range(0.1, 0.7), -rng.range(0.0, inn * 0.6));
+            let to = from + Vec2::X * side * run * rng.range(0.6, 1.6);
+            let w = rng.range(0.05, 0.09);
+            parts.extend(drip(from, to, w, w * 1.7));
+        }
+    }
+    if g.y < -0.5 && run < 0.6 {
+        // Floor: seeps into the ground.
+        for _ in 0..rng.below(3) {
+            let from = Vec2::new(rng.range(-0.7, 0.7), -inn * 0.5);
+            let to = from - Vec2::Y * (1.0 - run) * rng.range(0.3, 0.9);
+            parts.extend(drip(from, to, 0.08, 0.13));
+        }
+    }
+    if g.y > 0.5 && run < 0.6 {
+        // Ceiling: short beads hanging off it.
+        for _ in 0..rng.below(3) + 1 {
+            let from = Vec2::new(rng.range(-0.7, 0.7), out * 0.5);
+            let to = from + Vec2::Y * rng.range(0.2, 0.5);
+            parts.extend(drip(from, to, 0.07, 0.14));
+        }
+    }
+    // Satellite droplets thrown along the surface.
+    for _ in 0..rng.below(3) + 1 {
+        let x = if rng.chance(0.5) { -1.0 } else { 1.0 } * rng.range(1.1, 1.8);
+        let r = rng.range(0.06, 0.12);
+        parts.push(ellipse_pts(r, r, 8).into_iter().map(|p| p + Vec2::new(x, rng.range(-0.05, 0.1))).collect());
     }
     blobs(&parts, |p| 0.85 + 0.15 * p.y.clamp(-1.0, 1.0))
+}
+
+/// Where the segment `from` (open air) → `to` (inside the ground) enters it, and the
+/// surface normal there (smoothed over a few cells so stair-stepped slopes read as slopes).
+fn contact(terrain: &Terrain, from: Vec2, to: Vec2) -> Option<(Vec2, Vec2)> {
+    if terrain.solid_at(from) {
+        return None;
+    }
+    let (mut a, mut b) = (from, to);
+    for _ in 0..8 {
+        let m = (a + b) / 2.0;
+        if terrain.solid_at(m) {
+            b = m;
+        } else {
+            a = m;
+        }
+    }
+    let mut sum = Vec2::ZERO;
+    for ring in [1.5, 3.0] {
+        for i in 0..16 {
+            let d = Vec2::from_angle(i as f32 / 16.0 * std::f32::consts::TAU);
+            sum += if terrain.solid_at(a + d * ring * PX) { -d } else { d };
+        }
+    }
+    let normal = if sum.length() > 0.5 { sum.normalize() } else { (from - to).normalize_or(Vec2::Y) };
+    Some((a, normal))
 }
 
 impl Gore {
@@ -211,6 +308,33 @@ impl Gore {
             Transform::from_translation(pos.extend(20.0)).with_scale(Vec3::splat(size)),
             fluid.layers(),
         ));
+    }
+
+    /// A stain lying on a surface at `pos` (in its parent's space) with world `normal`;
+    /// `frame` is the parent's world rotation. Tilted to match, with the drips running downhill.
+    fn stain_parts(
+        &mut self,
+        pos: Vec2,
+        normal: Vec2,
+        frame: f32,
+        size: f32,
+        fluid: Fluid,
+    ) -> (Stain, Mesh2d, MeshMaterial2d<ColorMaterial>, Transform, RenderLayers) {
+        let theta = normal.to_angle() - std::f32::consts::FRAC_PI_2;
+        let step = std::f32::consts::TAU / TILTS as f32;
+        let tilt = ((theta.rem_euclid(std::f32::consts::TAU) / step).round() as usize) % TILTS;
+        let mesh = self.stains[tilt][self.rng.below(STAIN_VARIANTS)].clone();
+        let mat = self.stain_mats[fluid.index()][self.rng.below(2)].clone();
+        let w = size * self.rng.range(2.0, 3.5);
+        self.seq += 1;
+        let z = 0.5 + (self.seq % 300) as f32 * 0.0005;
+        (
+            Stain(self.seq),
+            Mesh2d(mesh),
+            MeshMaterial2d(mat),
+            Transform::from_xyz(pos.x, pos.y, z).with_rotation(Quat::from_rotation_z(theta - frame)).with_scale(Vec3::new(w, w, 1.0)),
+            fluid.layers(),
+        )
     }
 
     fn spawn_splat(
@@ -295,6 +419,7 @@ fn move_drops(
     mut drops: Query<(Entity, &mut Drop, &mut Transform)>,
     targets: Query<(Entity, &PaintTarget, &GlobalTransform)>,
     platforms: Query<(Entity, &Platform, &Transform), Without<Drop>>,
+    terrain: Res<Terrain>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let gore = &mut *gore;
@@ -310,7 +435,7 @@ fn move_drops(
         tf.rotation = Quat::from_rotation_z(d.vel.to_angle());
         tf.scale = Vec3::new(d.size * stretch, d.size, 1.0);
 
-        if d.life <= 0.0 || pos.y < -900.0 {
+        if d.life <= 0.0 || pos.y < terrain.bounds.min.y - 600.0 {
             commands.entity(e).despawn();
             continue;
         }
@@ -335,6 +460,16 @@ fn move_drops(
             }
         }
 
+        if terrain.solid_at(pos) {
+            // Hit the ground, a wall or a ceiling: a stain lying on that surface, tilted to it.
+            if let Some((at, normal)) = contact(&terrain, prev, pos) {
+                let stain = gore.stain_parts(at, normal, 0.0, d.size, d.fluid);
+                commands.spawn(stain).insert(TerrainPart);
+            }
+            commands.entity(e).despawn();
+            continue;
+        }
+
         for (pe, plat, ptf) in &platforms {
             if !plat.solid {
                 continue;
@@ -346,23 +481,21 @@ fn move_drops(
                 continue;
             }
             let prev_local = (inv * (prev - c).extend(0.0)).truncate();
-            if prev_local.y >= plat.half.y - 3.0 {
-                // Landed on top: leave a stain that rides with the platform.
-                let r = &mut gore.rng;
-                let w = d.size * r.range(2.0, 3.5);
-                let flip = if r.chance(0.5) { -1.0 } else { 1.0 };
-                let mesh = gore.stains[r.below(VARIANTS)].clone();
-                let mat = gore.stain_mats[d.fluid.index()][r.below(2)].clone();
-                gore.seq += 1;
-                let z = 0.5 + (gore.seq % 300) as f32 * 0.0005;
-                commands.spawn((
-                    Stain(gore.seq),
-                    Mesh2d(mesh),
-                    MeshMaterial2d(mat),
-                    Transform::from_xyz(local.x, plat.half.y, z).with_scale(Vec3::new(w * flip, w, 1.0)),
-                    d.fluid.layers(),
-                    ChildOf(pe),
-                ));
+            if prev_local.x.abs() > plat.half.x || prev_local.y.abs() > plat.half.y {
+                // Came in through the nearest face (top, sides or underside): leave a stain
+                // there that rides with the platform.
+                let (pen_x, pen_y) = (plat.half.x - local.x.abs(), plat.half.y - local.y.abs());
+                let (at, n) = if pen_y <= pen_x {
+                    let s = local.y.signum();
+                    (Vec2::new(local.x, plat.half.y * s), Vec2::Y * s)
+                } else {
+                    let s = local.x.signum();
+                    (Vec2::new(plat.half.x * s, local.y), Vec2::X * s)
+                };
+                let normal = (ptf.rotation * n.extend(0.0)).truncate();
+                let frame = ptf.rotation.to_euler(EulerRot::ZYX).0;
+                let stain = gore.stain_parts(at, normal, frame, d.size, d.fluid);
+                commands.spawn(stain).insert(ChildOf(pe));
             }
             commands.entity(e).despawn();
             continue 'drops;

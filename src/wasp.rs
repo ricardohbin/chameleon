@@ -20,19 +20,21 @@ use crate::{
     level::Platform,
     player::{self, Player, Respawned},
     shapes::*,
+    terrain::{Terrain, PX},
 };
 
-static SPEC: BossSpec = BossSpec {
+pub(crate) static SPEC: BossSpec = BossSpec {
     name: "VENOM MOTHER",
     hp: 14,
     radius: RADIUS,
     blood: Fluid::Green,
     color: Color::srgb(0.36, 0.78, 0.18),
     aggro: AGGRO,
+    // 14 hp, venom fans and dives: a full meal.
+    food: 5.0,
 };
 /// Size of the boss relative to its drawing.
 const SCALE: f32 = 1.7;
-const HOVER_HEIGHT: f32 = 230.0;
 /// Hurtbox radius around the thorax.
 const RADIUS: f32 = 22.0 * SCALE;
 const AGGRO: f32 = 650.0;
@@ -46,6 +48,23 @@ const VENOM_SPEED: f32 = 480.0;
 const VENOM_GRAVITY: f32 = 380.0;
 const VENOM_DAMAGE: i32 = 1;
 const STING_DAMAGE: i32 = 2;
+/// How close to walls its body gets.
+const BODY_CLEARANCE: f32 = 22.0;
+/// Navigation grid cells (in sketch pixels) and the clearance needed to fly through one.
+const NAV_CELL: i32 = 4;
+const NAV_CLEARANCE: f32 = 30.0;
+/// How far (in nav cells) a plan searches from the wasp.
+const NAV_RANGE: u16 = 160;
+/// How often it rethinks where to be (sooner when its reason changes).
+const REPLAN: f32 = 0.4;
+/// A new spot must be this much better (in score) to give up the current one.
+const HYSTERESIS: f32 = 60.0;
+/// Shooting distance from the chameleon: (min, ideal, max).
+const PERCH_RANGE: (f32, f32, f32) = (170.0, KEEP_AWAY.x + 40.0, 430.0);
+/// Dive starting distance from the chameleon: (min, ideal, max).
+const DIVE_RANGE: (f32, f32, f32) = (150.0, 260.0, 380.0);
+/// Givet up on finding a dive lane after this long and spits again instead.
+const DIVE_PATIENCE: f32 = 3.0;
 
 const YELLOW: Color = Color::srgb(0.86, 0.68, 0.14);
 const BLACK: Color = Color::srgb(0.08, 0.07, 0.06);
@@ -80,6 +99,24 @@ struct Wasp {
     /// Just died: tear off wings and abdomen this frame.
     dismember: bool,
     rng: Rng,
+    /// Where it's flying to, why, and the planned way there (waypoints).
+    spot: Option<Vec2>,
+    want: Want,
+    path: Vec<Vec2>,
+    replan: f32,
+    /// How long it has been looking for a dive lane.
+    dive_wait: f32,
+}
+
+/// What a spot is for.
+#[derive(Clone, Copy, PartialEq)]
+enum Want {
+    /// A spot with a clear shot at the chameleon, at spitting range, above it.
+    Perch,
+    /// A spot with a straight, roomy lane down to the chameleon.
+    Dive,
+    /// Back home (asleep / the chameleon is dead).
+    Home,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -130,8 +167,8 @@ fn load_venom(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
 }
 
 /// Spawns the wasp hovering over the arena.
-pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, arena: &Arena) {
-    let home = Vec2::new(arena.center(), arena.floor + HOVER_HEIGHT);
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, arena: &Arena) -> Entity {
+    let home = arena.home;
 
     let yellow = materials.add(YELLOW);
     let black = materials.add(BLACK);
@@ -391,8 +428,14 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             seed: rng.range(0.0, 100.0),
             dismember: false,
             rng,
+            spot: None,
+            want: Want::Home,
+            path: Vec::new(),
+            replan: 0.0,
+            dive_wait: 0.0,
         },
     ));
+    wasp
 }
 
 struct WaspBuilder<'a, 'w, 's> {
@@ -453,25 +496,80 @@ fn think(
     venom: Res<VenomAssets>,
     mut bleed: MessageWriter<Bleed>,
     player: Single<(&mut Player, &Transform), Without<Wasp>>,
-    mut wasps: Query<(Entity, &mut Wasp, &Boss, &mut Transform)>,
+    mut wasps: Query<(Entity, &mut Wasp, &Boss, &mut Transform, Option<&mut boss::Sense>)>,
     platforms: Query<(&Platform, &Transform), (Without<Wasp>, Without<Player>)>,
+    terrain: Res<Terrain>,
+    mut nav: Local<Nav>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let t = time.elapsed_secs();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
 
-    for (e, mut w, boss, mut tf) in &mut wasps {
+    for (e, mut w, boss, mut tf, mut sense) in &mut wasps {
         let pos = tf.translation.truncate();
         let to_player = ppos - pos;
         let alive = p.dead.is_none();
-        let aggro = alive && to_player.length() < AGGRO;
+        // Awake (the chameleon entered its lair): it hunts until the lair resets it.
+        let aggro = alive && boss.awake;
         let enraged = boss.enraged();
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
         let wobble = Vec2::new(
             (t * 1.3 + w.seed).sin() * 25.0,
             (t * 2.1 + w.seed).sin() * 14.0,
         );
+        let spits_per_dive = if enraged { 1 } else { SPITS_BEFORE_DIVE };
+
+        // Plan ahead where to be (a perch to spit from, the top of a dive
+        // lane, or home) and the way there; never mid-dive.
+        if !matches!(w.state, State::Dead { .. } | State::Dive(_)) {
+            let want = match () {
+                _ if !aggro => Want::Home,
+                _ if w.spits >= spits_per_dive => Want::Dive,
+                _ => Want::Perch,
+            };
+            if want != w.want {
+                w.want = want;
+                w.replan = 0.0;
+            }
+            w.replan -= dt;
+            if w.replan <= 0.0 {
+                w.replan = REPLAN;
+                let keep = w.spot;
+                let plan = if want == Want::Home && clear_line(&terrain, pos, boss.home, BODY_CLEARANCE) {
+                    Some((boss.home, Vec::new()))
+                } else {
+                    // Can't dive from anywhere near: at least find a perch; no
+                    // perch either (a tunnel, a pit): get as close as it can.
+                    let wants: &[Want] = match want {
+                        Want::Dive => &[Want::Dive, Want::Perch],
+                        Want::Perch => &[Want::Perch],
+                        Want::Home => &[Want::Home],
+                    };
+                    let mut plan = None;
+                    for &want in wants {
+                        plan = nav.plan(&terrain, pos, keep, |q, steps| spot_score(&terrain, want, q, steps, ppos, boss.home));
+                        if plan.is_some() {
+                            break;
+                        }
+                    }
+                    plan.or_else(|| {
+                        let near = ppos + Vec2::Y * KEEP_AWAY.y;
+                        nav.plan(&terrain, pos, None, |q, steps| Some((q - near).length() + steps as f32 * NAV_STEP * 0.3))
+                    })
+                };
+                match plan {
+                    Some((spot, path)) => {
+                        w.spot = Some(spot);
+                        w.path = path;
+                    }
+                    None => {
+                        w.spot = None;
+                        w.path.clear();
+                    }
+                }
+            }
+        }
 
         w.state = match w.state {
             State::Dead {
@@ -501,7 +599,7 @@ fn think(
                     w.vel.y -= 1400.0 * dt;
                     let next = pos + w.vel * dt;
                     // Land belly-up on the first solid top below.
-                    if let Some(top) = boss::floor(platforms.iter(), pos, next, 8.0 * SCALE) {
+                    if let Some(top) = boss::floor(&terrain, platforms.iter(), pos, next, 8.0 * SCALE) {
                         tf.translation.y = top + 8.0 * SCALE;
                         tf.translation.x = next.x;
                         w.vel = Vec2::ZERO;
@@ -533,7 +631,7 @@ fn think(
                         sticky: true,
                     });
                 }
-                if tf.translation.y < -900.0 {
+                if tf.translation.y < terrain.bounds.min.y - 600.0 {
                     commands.entity(e).despawn();
                 }
                 let angle = if landed {
@@ -551,6 +649,8 @@ fn think(
             State::Hurt(s) => {
                 w.vel *= 1.0 - 4.0 * dt;
                 if s > 0.35 {
+                    // Knocked off its route: think again.
+                    w.replan = 0.0;
                     State::Hover
                 } else {
                     State::Hurt(s + dt)
@@ -565,6 +665,11 @@ fn think(
                 };
                 w.vel = (w.vel + dir * 1400.0 * dt).clamp_length_max(max);
                 w.facing = side;
+                // Look ahead: a wall coming up (the chameleon ducked away)
+                // means pulling out, not stinging the wall.
+                let ahead = pos + w.vel.normalize_or_zero() * (BODY_CLEARANCE + w.vel.length() * 0.08);
+                // (The lane was only checked down to a body length short of the chameleon.)
+                let near = (ahead - ppos).length() < RADIUS + 20.0;
                 if !alive {
                     State::Hover
                 } else if to_player.length() < RADIUS + 15.0 {
@@ -576,28 +681,59 @@ fn think(
                         &mut bleed,
                         (&mut shake, &mut stop),
                     );
-                    w.vel = -dir * 300.0;
+                    // Bounce back up the lane it came down.
+                    w.vel = -w.vel.normalize_or(dir) * 300.0;
                     w.cooldown = 1.2;
+                    w.replan = 0.0;
                     State::Hover
-                } else if s > 1.3 {
+                } else if t > 1.3 || (!near && terrain.clearance(ahead) < BODY_CLEARANCE * 0.75) {
+                    w.vel *= 0.4;
                     w.cooldown = 1.0;
+                    w.replan = 0.0;
                     State::Hover
                 } else {
                     State::Dive(s + dt)
                 }
             }
             State::Hover | State::Aim(_) => {
-                let target = if aggro {
-                    ppos + Vec2::new(-side * KEEP_AWAY.x, KEEP_AWAY.y)
-                } else {
-                    boss.home
-                } + wobble;
+                let goal = w.spot.unwrap_or(if aggro { pos } else { boss.home });
+                // Follow the planned route: drop reached waypoints, cut corners
+                // whenever a later one is in plain (roomy) sight.
+                while let Some(&next) = w.path.first() {
+                    let reached = (next - pos).length() < NAV_STEP * 0.75;
+                    if reached || (w.path.len() >= 2 && clear_line(&terrain, pos, w.path[1], BODY_CLEARANCE + 2.0)) {
+                        w.path.remove(0);
+                    } else {
+                        break;
+                    }
+                }
+                let routed = !w.path.is_empty();
+                if routed && !clear_line(&terrain, pos, w.path[0], BODY_CLEARANCE * 0.5) {
+                    // Pushed off the route (hit, bumped): plan from here.
+                    w.replan = w.replan.min(0.0);
+                }
+                // Only wobble where there's room for it.
+                let wobble = if terrain.clearance(goal) >= BODY_CLEARANCE + 32.0 { wobble } else { Vec2::ZERO };
+                let target = w.path.first().copied().unwrap_or(goal + wobble);
+                let sees = terrain.raycast(pos, ppos).is_none();
+                if let Some(t) = sense.as_mut() {
+                    t.goal = Some(goal);
+                    t.target = Some(target);
+                    t.sees_player = sees;
+                    t.path.clone_from(&w.path);
+                }
                 let speed = if enraged { SPEED * 1.3 } else { SPEED };
-                let mut desired = ((target - pos) * 2.5).clamp_length_max(speed);
+                // Full speed along the route, easing in at the end of it.
+                let mut desired = if routed {
+                    (target - pos).normalize_or_zero() * speed
+                } else {
+                    ((target - pos) * 2.5).clamp_length_max(speed)
+                };
                 if matches!(w.state, State::Aim(_)) {
                     desired *= 0.2;
                 }
-                w.vel = w.vel.lerp(desired, 1.0 - (-4.0 * dt).exp());
+                let steer = if routed { 6.0 } else { 4.0 };
+                w.vel = w.vel.lerp(desired, 1.0 - (-steer * dt).exp());
                 if aggro {
                     w.facing = side;
                 } else if w.vel.x.abs() > 20.0 {
@@ -607,6 +743,12 @@ fn think(
 
                 let aim_time = if enraged { AIM_TIME * 0.7 } else { AIM_TIME };
                 match w.state {
+                    State::Aim(t) if t >= aim_time && !sees => {
+                        // Lost the shot: find a new perch.
+                        w.cooldown = 0.3;
+                        w.replan = 0.0;
+                        State::Hover
+                    }
                     State::Aim(s) if s >= aim_time => {
                         let mouth = pos + Vec2::new(w.facing * 18.0, -2.0) * SCALE;
                         // Enraged: a fan of three.
@@ -623,24 +765,57 @@ fn think(
                         State::Hover
                     }
                     State::Aim(s) => State::Aim(s + dt),
-                    _ if aggro && w.cooldown <= 0.0 => {
-                        let spits = if enraged { 1 } else { SPITS_BEFORE_DIVE };
-                        if w.spits >= spits {
+                    _ if aggro && w.cooldown <= 0.0 && w.spits >= spits_per_dive => {
+                        // Dive only down a lane it can fly all the way.
+                        let lane = dive_lane(&terrain, pos, ppos);
+                        if lane && to_player.length() < DIVE_RANGE.2 + 60.0 {
                             w.spits = 0;
+                            w.dive_wait = 0.0;
+                            w.path.clear();
+                            // Lined up with the lane, so it flies the lane it checked.
+                            w.vel = to_player.normalize_or(Vec2::NEG_Y) * w.vel.length().min(150.0);
                             State::Dive(0.0)
                         } else {
-                            State::Aim(0.0)
+                            w.dive_wait += dt;
+                            if w.dive_wait > DIVE_PATIENCE {
+                                // No way down to it: spit some more instead.
+                                w.dive_wait = 0.0;
+                                w.spits = 0;
+                            }
+                            State::Hover
                         }
                     }
+                    // Only start aiming with a clear shot (the perch has one).
+                    _ if aggro && w.cooldown <= 0.0 && sees => State::Aim(0.0),
                     _ => State::Hover,
                 }
             }
         };
 
-        // (Corpses move themselves above.)
+        // (Corpses move themselves above.) Walls stop it, one axis at a time.
         if !matches!(w.state, State::Dead { .. }) {
-            tf.translation.x += w.vel.x * dt;
-            tf.translation.y += w.vel.y * dt;
+            let mut pos = tf.translation.truncate();
+            let mut bumped = false;
+            for axis in [Vec2::X, Vec2::Y] {
+                let next = pos + axis * w.vel.dot(axis) * dt;
+                let room = terrain.clearance(next);
+                if room >= BODY_CLEARANCE || room >= terrain.clearance(pos) {
+                    pos = next;
+                } else {
+                    let along = w.vel.dot(axis);
+                    w.vel -= axis * along;
+                    bumped = true;
+                }
+            }
+            if bumped && matches!(w.state, State::Dive(_)) {
+                // Stung the wall.
+                shake.add(0.15);
+                w.cooldown = 0.8;
+                w.replan = 0.0;
+                w.state = State::Hover;
+            }
+            tf.translation.x = pos.x;
+            tf.translation.y = pos.y;
         }
     }
 }
@@ -687,6 +862,7 @@ fn move_venom(
     player: Single<(&mut Player, &Transform), Without<Venom>>,
     mut venom: Query<(Entity, &mut Venom, &mut Transform)>,
     platforms: Query<(&Platform, &Transform), (Without<Venom>, Without<Player>)>,
+    terrain: Res<Terrain>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let t = time.elapsed_secs();
@@ -729,10 +905,11 @@ fn move_venom(
             commands.entity(e).despawn();
             continue;
         }
-        let hit_wall = platforms.iter().any(|(pl, ptf)| {
-            let d = (pos - ptf.translation.truncate()).abs();
-            pl.solid && d.x < pl.half.x && d.y < pl.half.y
-        });
+        let hit_wall = terrain.solid_at(pos)
+            || platforms.iter().any(|(pl, ptf)| {
+                let d = (pos - ptf.translation.truncate()).abs();
+                pl.solid && d.x < pl.half.x && d.y < pl.half.y
+            });
         if hit_wall || v.life <= 0.0 {
             bleed.write(splash(Vec2::Y, 12));
             commands.entity(e).despawn();
@@ -766,6 +943,10 @@ fn reset_on_respawn(
         w.vel = Vec2::ZERO;
         w.spits = 0;
         w.cooldown = 1.5;
+        w.spot = None;
+        w.path.clear();
+        w.replan = 0.0;
+        w.dive_wait = 0.0;
     }
     for e in &venom {
         commands.entity(e).despawn();
@@ -875,5 +1056,176 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
                 tf.rotation = Quat::from_rotation_z(sway);
             }
         }
+    }
+}
+
+/// World size of a nav cell.
+const NAV_STEP: f32 = NAV_CELL as f32 * PX;
+
+/// Every point between `a` and `b` (not counting `a`) has `room` to the nearest wall.
+fn clear_line(terrain: &Terrain, a: Vec2, b: Vec2, room: f32) -> bool {
+    let n = ((b - a).length() / (PX * 0.5)).ceil().max(1.0) as i32;
+    (1..=n).all(|i| terrain.clearance(a.lerp(b, i as f32 / n as f32)) >= room)
+}
+
+/// A straight dive from `from` reaches the chameleon at `ppos` without
+/// clipping a wall (it stops a body length short: that's the sting).
+fn dive_lane(terrain: &Terrain, from: Vec2, ppos: Vec2) -> bool {
+    let back = (from - ppos).normalize_or(Vec2::Y);
+    clear_line(terrain, from, ppos + back * (RADIUS + 10.0), BODY_CLEARANCE)
+}
+
+/// How good `q` (reached in `steps` nav cells) is for `want`; lower is
+/// better, `None` = unsuitable.
+fn spot_score(terrain: &Terrain, want: Want, q: Vec2, steps: u16, ppos: Vec2, home: Vec2) -> Option<f32> {
+    let travel = steps as f32 * NAV_STEP;
+    if want == Want::Home {
+        return Some((q - home).length() + travel * 0.2);
+    }
+    let ((lo, ideal, hi), height, min_y) = match want {
+        Want::Dive => (DIVE_RANGE, 170.0, 30.0),
+        _ => (PERCH_RANGE, KEEP_AWAY.y, -20.0),
+    };
+    let d = q - ppos;
+    let len = d.length();
+    if len < lo || len > hi || d.y < min_y {
+        return None;
+    }
+    // Cheap tests first; the line of sight / lane last.
+    let room = terrain.clearance(q).min(96.0);
+    let score = (len - ideal).abs() + (d.y - height).abs() * 0.7 + travel * 0.5 - room * 0.6;
+    let clear = match want {
+        Want::Dive => dive_lane(terrain, q, ppos),
+        _ => terrain.raycast(q, ppos).is_none(),
+    };
+    clear.then_some(score)
+}
+
+/// Route planning over a coarse grid of the open air: a breadth-first search
+/// out from the wasp, so it finds its way around walls and through buildings
+/// to wherever it wants to be. Buffers are reused between plans.
+#[derive(Default)]
+struct Nav {
+    size: IVec2,
+    /// `seen[i] == mark`: visited by the current plan.
+    seen: Vec<u32>,
+    mark: u32,
+    from: Vec<u32>,
+    steps: Vec<u16>,
+    order: Vec<u32>,
+}
+
+impl Nav {
+    fn coarse(terrain: &Terrain, p: Vec2) -> IVec2 {
+        terrain.to_cell(p).div_euclid(IVec2::splat(NAV_CELL))
+    }
+
+    fn center(terrain: &Terrain, c: IVec2) -> Vec2 {
+        terrain.cell_min(c * NAV_CELL + NAV_CELL / 2) + Vec2::splat(PX / 2.0)
+    }
+
+    fn open(terrain: &Terrain, c: IVec2) -> bool {
+        terrain.clearance(Self::center(terrain, c)) >= NAV_CLEARANCE
+    }
+
+    /// The best-scoring reachable spot (sticking with `keep` unless another is
+    /// clearly better) and the waypoints to it.
+    fn plan(
+        &mut self,
+        terrain: &Terrain,
+        from: Vec2,
+        keep: Option<Vec2>,
+        score: impl Fn(Vec2, u16) -> Option<f32>,
+    ) -> Option<(Vec2, Vec<Vec2>)> {
+        let size = (terrain.size() + NAV_CELL - 1) / NAV_CELL;
+        let n = (size.x * size.y) as usize;
+        if self.size != size || self.seen.len() != n {
+            *self = Nav { size, seen: vec![0; n], from: vec![0; n], steps: vec![0; n], ..default() };
+        }
+        self.mark = self.mark.wrapping_add(1);
+        if self.mark == 0 {
+            self.seen.fill(0);
+            self.mark = 1;
+        }
+        let inside = |c: IVec2| c.cmpge(IVec2::ZERO).all() && c.cmplt(size).all();
+        let index = |c: IVec2| (c.y * size.x + c.x) as usize;
+        let cell = |i: usize| IVec2::new(i as i32 % size.x, i as i32 / size.x);
+
+        let start = Self::coarse(terrain, from);
+        if !inside(start) {
+            return None;
+        }
+        self.order.clear();
+        let mut queue = std::collections::VecDeque::new();
+        let t = index(start);
+        self.seen[t] = self.mark;
+        self.from[t] = t as u32;
+        self.steps[t] = 0;
+        queue.push_back(start);
+        // Hugging a wall (its own cell too tight): start from the open cells around it.
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                let c = start + IVec2::new(dx, dy);
+                if inside(c) && self.seen[index(c)] != self.mark && Self::open(terrain, c) {
+                    let i = index(c);
+                    self.seen[i] = self.mark;
+                    self.from[i] = t as u32;
+                    self.steps[i] = 1;
+                    queue.push_back(c);
+                }
+            }
+        }
+        while let Some(c) = queue.pop_front() {
+            let i = index(c);
+            self.order.push(i as u32);
+            if self.steps[i] >= NAV_RANGE {
+                continue;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let nc = c + IVec2::new(dx, dy);
+                if !inside(nc) || self.seen[index(nc)] == self.mark || !Self::open(terrain, nc) {
+                    continue;
+                }
+                // No cutting corners diagonally.
+                if dx != 0 && dy != 0 && !(Self::open(terrain, c + IVec2::new(dx, 0)) && Self::open(terrain, c + IVec2::new(0, dy))) {
+                    continue;
+                }
+                let j = index(nc);
+                self.seen[j] = self.mark;
+                self.from[j] = i as u32;
+                self.steps[j] = self.steps[i] + 1;
+                queue.push_back(nc);
+            }
+        }
+
+        let keep = keep.map(|k| Self::coarse(terrain, k)).filter(|&k| inside(k)).map(index);
+        let (mut best, mut kept) = (None::<(usize, f32)>, None::<(usize, f32)>);
+        for &i in &self.order {
+            let i = i as usize;
+            let c = cell(i);
+            if !Self::open(terrain, c) {
+                continue;
+            }
+            let Some(t) = score(Self::center(terrain, c), self.steps[i]) else { continue };
+            if Some(i) == keep {
+                kept = Some((i, t));
+            }
+            if best.is_none_or(|(_, b)| t < b) {
+                best = Some((i, t));
+            }
+        }
+        let (goal, _) = match (best, kept) {
+            (Some((_, b)), Some(k)) if k.1 < b + HYSTERESIS => k,
+            (best, _) => best?,
+        };
+
+        let mut path = Vec::new();
+        let mut i = goal;
+        while self.steps[i] > 0 {
+            path.push(Self::center(terrain, cell(i)));
+            i = self.from[i] as usize;
+        }
+        path.reverse();
+        Some((Self::center(terrain, cell(goal)), path))
     }
 }

@@ -13,6 +13,7 @@ use bevy::{prelude::*, sprite_render::AlphaMode2d};
 use crate::{
     camera,
     gore::PaintTarget,
+    level::{self, Restart},
     player::{self, Player},
     shapes::*,
 };
@@ -24,20 +25,53 @@ const BONE: Color = Color::srgb(0.95, 0.93, 0.88);
 const EYE_GLOW: Color = Color::srgb(1.0, 0.96, 0.85);
 const WAVE: Color = Color::srgb(0.95, 0.94, 0.90);
 const SLASH_TIME: f32 = 0.34;
+/// A bite into remains (instead of a slash, see `feeding.rs`).
+const BITE_TIME: f32 = 0.45;
 /// Part of the slash (as a fraction of `SLASH_TIME`) where the claws cut.
 const STRIKE: (f32, f32) = (0.3, 0.52);
 /// Slash wave, in rig units: centered on the swiping shoulder.
 const WAVE_CENTER: Vec2 = Vec2::new(24.0, -2.0);
 const WAVE_RADIUS: f32 = 52.0;
-/// The slash hitbox in world units (x is mirrored by facing): matches the wave.
-pub const SLASH_CENTER: Vec2 = Vec2::new(WAVE_CENTER.x * player::SCALE, WAVE_CENTER.y * player::SCALE);
+/// The slash hitbox: a half-disc of this radius (world units) around the
+/// swiping shoulder, on the side the slash is aimed at. Matches the wave.
 pub const SLASH_REACH: f32 = WAVE_RADIUS * player::SCALE * 1.15;
+/// The head's pivot, in rig units.
+const NECK: Vec2 = Vec2::new(38.0, 6.0);
+/// A spit jerks the head forward for this long.
+const SPIT_TIME: f32 = 0.2;
+/// How far the head pitches toward the mouse (its own frame, radians), and how
+/// much of the mouse's angle it follows: the eyes do the rest.
+const HEAD_PITCH: (f32, f32) = (-0.8, 0.9);
+const HEAD_FOLLOW: f32 = 0.75;
+
+/// A rig point (rig units, facing +X) in the world, for a chameleon at `ppos` facing `facing`.
+fn rig_to_world(ppos: Vec2, facing: f32, at: Vec2) -> Vec2 {
+    ppos + Vec2::new(at.x * facing, at.y) * player::SCALE
+}
+
+/// The swiping shoulder: the slash arcs around it (center of the slash hitbox).
+pub fn slash_center(ppos: Vec2, facing: f32) -> Vec2 {
+    rig_to_world(ppos, facing, WAVE_CENTER)
+}
+
+/// The neck: aiming starts here, and spit leaves from just past it.
+pub fn neck(ppos: Vec2, facing: f32) -> Vec2 {
+    rig_to_world(ppos, facing, NECK)
+}
+
+/// A world direction in the rig's space (the rig is mirrored when facing left).
+fn local(dir: Vec2, facing: f32) -> Vec2 {
+    Vec2::new(dir.x * facing, dir.y)
+}
 
 pub struct ChameleonPlugin;
 
 impl Plugin for ChameleonPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<UnlockedColors>().add_message::<ColorEarned>().add_systems(
+        app.init_resource::<UnlockedColors>()
+            .add_message::<ColorEarned>()
+            .add_systems(PreUpdate, forget_colors.after(level::restart))
+            .add_systems(
             Update,
             (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave)
                 .chain()
@@ -81,8 +115,20 @@ pub struct ChameleonAnim {
     look_timer: f32,
     /// Seconds since the claw slash started, `None` when not slashing.
     slash: Option<f32>,
+    /// Where the current slash goes (unit, world space): the aim when it started.
+    slash_aim: Vec2,
+    /// Seconds since the last spit, `None` after `SPIT_TIME`.
+    spat: Option<f32>,
+    /// The head looks forward (1) or back over the shoulder (-1), turning
+    /// through 0; and how far it pitches up (+) in its own frame.
+    head_side: f32,
+    head_pitch: f32,
     /// Increments on every slash, so each one hits a target only once.
     pub slash_id: u32,
+    /// Attack pressed this frame (a slash just started; feeding may turn it into a bite).
+    attacked: bool,
+    /// Seconds since a bite started, `None` when not biting.
+    bite: Option<f32>,
     skin: Oklcha,
     /// Resting skin color (white until a color is earned).
     base_skin: Color,
@@ -321,7 +367,13 @@ pub fn spawn_chameleon(
         look_target: Vec2::X,
         look_timer: 1.0,
         slash: None,
+        slash_aim: Vec2::X,
+        spat: None,
+        head_side: 1.0,
+        head_pitch: 0.0,
         slash_id: 0,
+        attacked: false,
+        bite: None,
         skin: DEFAULT_SKIN.into(),
         base_skin: DEFAULT_SKIN,
         death: 0.0,
@@ -425,7 +477,8 @@ pub fn update_anim_state(
 
     a.stride = smooth(a.stride, (speed / 260.0).min(1.0), 8.0, dt);
     a.air = smooth(a.air, if p.grounded { 0.0 } else { 1.0 }, 10.0, dt);
-    a.phase += dt * speed * 0.075;
+    // Walking backwards (facing the mouse) plays the walk cycle backwards.
+    a.phase += dt * p.vel.x * p.facing * 0.075;
 
     let dead = p.dead.is_some();
     a.death = if dead { smooth(a.death, 1.0, 6.0, dt) } else { 0.0 };
@@ -434,15 +487,36 @@ pub fn update_anim_state(
 
     // Claw slash.
     let attack = keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.just_pressed(MouseButton::Left);
-    if attack && a.slash.is_none() && p.stun <= 0.0 && !dead {
+    a.attacked = attack && a.slash.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
+    if a.attacked {
         a.slash = Some(0.0);
+        a.slash_aim = p.aim;
         a.slash_id += 1;
     }
     a.slash = a.slash.map(|t| t + dt).filter(|&t| t < SLASH_TIME);
+    a.bite = a.bite.map(|t| t + dt).filter(|&t| t < BITE_TIME && !dead);
+    a.spat = a.spat.map(|t| t + dt).filter(|&t| t < SPIT_TIME);
 
-    // Eye: look ahead while moving, dart around randomly while idle.
+    // Head: turned toward the mouse (back over the shoulder when it's behind,
+    // with a little hysteresis), pitched toward it, roughly.
+    let aim = local(p.aim, p.facing);
+    let aiming = p.aim_at.is_some() && !dead && a.bite.is_none();
+    let side = match () {
+        _ if !aiming => 1.0,
+        _ if aim.x < -0.2 => -1.0,
+        _ if aim.x > 0.2 => 1.0,
+        _ => a.head_side.signum(),
+    };
+    let pitch = if aiming { Vec2::new(aim.x * side, aim.y).to_angle().clamp(HEAD_PITCH.0, HEAD_PITCH.1) * HEAD_FOLLOW } else { 0.0 };
+    a.head_side = smooth(a.head_side, side, 14.0, dt);
+    a.head_pitch = smooth(a.head_pitch, pitch, 10.0, dt);
+
+    // Eye: right on the mouse, from where the head points. Before the mouse
+    // ever shows up: look ahead while moving, dart around randomly while idle.
     a.look_timer -= dt;
-    if a.slash.is_some() || speed > 20.0 {
+    if aiming {
+        a.look_target = Vec2::from_angle(-a.head_pitch).rotate(Vec2::new(aim.x * side, aim.y));
+    } else if a.slash.is_some() || speed > 20.0 {
         a.look_target = Vec2::new(1.0, (p.vel.y * 0.0006).clamp(-0.6, 0.6)).normalize();
         a.look_timer = 0.8;
     } else if a.look_timer <= 0.0 {
@@ -464,8 +538,18 @@ fn pose_parts(
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     let bob = -(a.phase.sin().abs()) * 1.8 * a.stride;
-    let slash = a.slash.map(|t| slash_pose(t / SLASH_TIME));
-    let lunge = slash.map_or(0.0, |s| s.3);
+    // The slash's direction in the rig: the arm swings toward it, top to
+    // bottom on whichever side it is (`sweep` -1 = behind the chameleon).
+    let slash_dir = local(a.slash_aim, p.facing);
+    let sweep = if slash_dir.x < 0.0 { -1.0 } else { 1.0 };
+    let slash = a.slash.map(|t| slash_pose(t / SLASH_TIME, slash_dir.to_angle(), sweep));
+    let lunge = slash.map_or(0.0, |s| s.3) * sweep;
+    let spit = a.spat.map_or(0.0, |t| (PI * t / SPIT_TIME).sin());
+    // The head's own motions are in its frame: mirrored when it looks back.
+    let head_sign = if a.head_side < 0.0 { -1.0 } else { 1.0 };
+    // Bite: dip the head into the remains and tear at them.
+    let bite = a.bite.map_or(0.0, |t| (PI * t / BITE_TIME).sin());
+    let chew = a.bite.map_or(0.0, |t| (t * 40.0).sin() * 0.08) * bite;
 
     for (part, mut tf, mut vis) in &mut parts {
         match *part {
@@ -475,20 +559,22 @@ fn pose_parts(
                 let tilt = (p.vel.y * 0.00035).clamp(-0.25, 0.25) * a.air;
                 // Dead: rolls over belly-up.
                 tf.rotation = Quat::from_rotation_z(lerp(tilt, PI, a.death) * p.facing);
-                tf.translation.y = a.death * 6.0;
+                tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0);
                 // Blink while invulnerable.
                 let blink = p.invuln > 0.0 && p.dead.is_none() && (t * 30.0).sin() > 0.0;
                 *vis = if blink { Visibility::Hidden } else { Visibility::Inherited };
             }
             Part::Body => {
-                tf.translation.x = lunge * 4.0;
-                tf.translation.y = 2.0 + bob;
-                tf.rotation = Quat::from_rotation_z((a.phase * 2.0).sin() * 0.025 * a.stride - lunge * 0.07);
+                tf.translation.x = lunge * 4.0 + bite * 5.0 + spit * 3.0 * head_sign;
+                tf.translation.y = 2.0 + bob - bite * 3.0;
+                tf.rotation = Quat::from_rotation_z((a.phase * 2.0).sin() * 0.025 * a.stride - lunge * 0.07 - bite * 0.18);
                 tf.scale.y = 1.0 + (t * 2.2).sin() * 0.012; // breathing
             }
             Part::Head => {
                 let nod = (a.phase * 2.0).sin() * 0.05 * a.stride + (t * 1.3).sin() * 0.02;
-                tf.rotation = Quat::from_rotation_z(nod + 0.12 * a.air - lunge * 0.08);
+                let own = a.head_pitch + nod + 0.12 * a.air - lunge * 0.08 - bite * 0.45 + chew - spit * 0.15;
+                tf.rotation = Quat::from_rotation_z(own * head_sign);
+                tf.scale.x = a.head_side;
             }
             Part::Leg { front, offset, joint, swipe } => {
                 let (mut hip, mut knee) = leg_angles(front, offset, a);
@@ -517,19 +603,25 @@ fn pose_parts(
     }
 }
 
-/// Swipe pose at slash progress `u` (0..1): (blend weight, hip, knee, body lunge).
-fn slash_pose(u: f32) -> (f32, f32, f32, f32) {
+/// Swipe pose at slash progress `u` (0..1), aimed at `angle` (rig space, the
+/// arm pivoting on the shoulder) and sweeping top to bottom on that side
+/// (`sweep` 1 = in front, -1 = behind): (blend weight, hip, knee, body lunge).
+fn slash_pose(u: f32, angle: f32, sweep: f32) -> (f32, f32, f32, f32) {
     let ease = |x: f32| x * x * (3.0 - 2.0 * x);
     let w = ease((u / 0.12).min(1.0)) * (1.0 - ease(((u - 0.6) / 0.4).clamp(0.0, 1.0)));
+    // Hip 0 = the arm hangs straight down, so pointing it at `a` is `a + PI/2`.
+    // Straight ahead this is: raised to 2.6, ripped down to 0.05.
+    let raised = angle + sweep * 1.03 + PI / 2.0;
+    let ripped = angle - sweep * 1.52 + PI / 2.0;
     let (hip, knee) = if u < STRIKE.0 {
-        // Wind up: claw raised high above the head.
+        // Wind up: claw raised high over the aim.
         let k = ease(u / STRIKE.0);
-        (lerp(0.4, 2.6, k), lerp(-0.6, -1.5, k))
+        (lerp(0.4, raised, k), lerp(-0.6, -1.5, k) * sweep)
     } else {
-        // Rip down through the target, then hold the follow-through.
+        // Rip down through it, then hold the follow-through.
         let k = ((u - STRIKE.0) / (STRIKE.1 - STRIKE.0)).min(1.0);
         let k = 1.0 - (1.0 - k).powi(3);
-        (lerp(2.6, 0.05, k), lerp(-1.5, -0.1, k))
+        (lerp(raised, ripped, k), lerp(-1.5, -0.1, k) * sweep)
     };
     let lunge = (PI * ((u - 0.15) / 0.6).clamp(0.0, 1.0)).sin();
     (w, hip, knee, lunge)
@@ -556,19 +648,25 @@ fn animate_tail(
 }
 
 fn slash_wave(
-    player: Single<&ChameleonAnim>,
+    player: Single<(&Player, &ChameleonAnim)>,
     wave: Single<(&SlashWave, &mut Transform, &mut Visibility)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    let (p, a) = *player;
     let (wave, mut tf, mut vis) = wave.into_inner();
-    let k = player.slash.map_or(-1.0, |t| (t / SLASH_TIME - STRIKE.0) / 0.45);
+    // Around the shoulder, turned to the aim; mirrored behind the chameleon so
+    // it still sweeps top to bottom like the arm.
+    let dir = local(a.slash_aim, p.facing);
+    let sweep = if dir.x < 0.0 { -1.0 } else { 1.0 };
+    tf.rotation = Quat::from_rotation_z(dir.to_angle());
+    let k = a.slash.map_or(-1.0, |t| (t / SLASH_TIME - STRIKE.0) / 0.45);
     if !(0.0..1.0).contains(&k) {
         *vis = Visibility::Hidden;
         return;
     }
     // Barely there: a quick ripple that widens and fades.
     *vis = Visibility::Inherited;
-    tf.scale = Vec3::splat(0.9 + 0.25 * k);
+    tf.scale = Vec3::new(1.0, sweep, 1.0) * (0.9 + 0.25 * k);
     if let Some(mut mat) = materials.get_mut(&wave.0) {
         mat.color.set_alpha(0.55 * (1.0 - k).powf(1.3));
     }
@@ -623,6 +721,13 @@ fn earn_color(
     }
 }
 
+/// F8: every earned color is lost again (the new chameleon is white).
+fn forget_colors(mut restarted: MessageReader<Restart>, mut unlocked: ResMut<UnlockedColors>) {
+    if restarted.read().count() > 0 {
+        unlocked.0.clear();
+    }
+}
+
 /// Derives the 4 skin tones from a single base color.
 fn palette(c: Oklcha) -> [Color; 4] {
     let shadow = Oklcha { lightness: c.lightness * 0.55, ..c };
@@ -632,9 +737,39 @@ fn palette(c: Oklcha) -> [Color; 4] {
 }
 
 impl ChameleonAnim {
+    /// Slashing or eating: its mind is on something.
+    pub fn busy(&self) -> bool {
+        self.slash.is_some() || self.bite.is_some()
+    }
+
+    pub fn slashing(&self) -> bool {
+        self.slash.is_some()
+    }
+
     /// True while the claws are cutting through the air.
     pub fn striking(&self) -> bool {
         self.slash.is_some_and(|t| (STRIKE.0..=STRIKE.1).contains(&(t / SLASH_TIME)))
+    }
+
+    /// The attack key was pressed this frame (and started a slash).
+    pub fn attacked(&self) -> bool {
+        self.attacked
+    }
+
+    /// Where the current (or last) slash goes: unit, world space.
+    pub fn slash_dir(&self) -> Vec2 {
+        self.slash_aim
+    }
+
+    /// Jerk the head forward: venom was just spat.
+    pub fn spit(&mut self) {
+        self.spat = Some(0.0);
+    }
+
+    /// Turn the slash that just started into a bite.
+    pub fn bite(&mut self) {
+        self.slash = None;
+        self.bite = Some(0.0);
     }
 
     /// Tiny xorshift RNG in 0..1, good enough for eye twitches.

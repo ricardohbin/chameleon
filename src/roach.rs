@@ -23,15 +23,18 @@ use crate::{
     gore::{Bleed, Fluid},
     player::{self, Player, Respawned},
     shapes::*,
+    terrain::{Terrain, STEP_UP},
 };
 
-static SPEC: BossSpec = BossSpec {
+pub(crate) static SPEC: BossSpec = BossSpec {
     name: "THE GUTTER KING",
     hp: 12,
     radius: RADIUS,
     blood: Fluid::Yellow,
     color: Color::srgb(0.93, 0.80, 0.32),
     aggro: AGGRO,
+    // 12 hp, dashes and crash-flights.
+    food: 4.0,
 };
 /// Size of the boss relative to its drawing.
 const SCALE: f32 = 1.5;
@@ -147,7 +150,7 @@ enum BoneKind {
 }
 
 /// Spawns the roach on the arena floor, right of center, facing left.
-pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, arena: &Arena) {
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, arena: &Arena) -> Entity {
     let brown = materials.add(BROWN);
     let dark = materials.add(DARK);
     let rim = materials.add(RIM);
@@ -157,7 +160,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
     let wing = materials.add(ColorMaterial { color: WING, alpha_mode: AlphaMode2d::Blend, ..default() });
     let mats = vec![(brown.clone(), BROWN), (dark.clone(), DARK), (rim.clone(), RIM), (leg.clone(), LEG)];
 
-    let home = Vec2::new(arena.center() + 150.0, arena.floor + FOOT);
+    let home = Vec2::new(arena.home.x, arena.floor + FOOT);
     let roach = commands.spawn((Transform::from_translation(home.extend(12.0)), Visibility::default())).id();
     let mut b = Builder { commands, meshes, owner: roach };
     let rig = b.bone(Vec3::ZERO, roach, BoneKind::Rig);
@@ -310,6 +313,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             rng,
         },
     ));
+    roach
 }
 
 struct Builder<'a, 'w, 's> {
@@ -361,20 +365,31 @@ fn think(
     mut stop: ResMut<HitStop>,
     mut bleed: MessageWriter<Bleed>,
     player: Single<(&mut Player, &Transform), Without<Roach>>,
-    mut roaches: Query<(&mut Roach, &Boss, &mut Transform)>,
+    mut roaches: Query<(&mut Roach, &Boss, &mut Transform, Option<&mut boss::Sense>)>,
+    terrain: Res<Terrain>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let t = time.elapsed_secs();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
 
-    for (mut r, boss, mut tf) in &mut roaches {
+    for (mut r, boss, mut tf, sense) in &mut roaches {
         let pos = tf.translation.truncate();
         let to_player = ppos - pos;
         let alive = p.dead.is_none();
-        let aggro = alive && to_player.length() < AGGRO;
+        // Awake (the chameleon entered its lair): it hunts until the lair resets it.
+        let aggro = alive && boss.awake;
+        if let Some(mut t) = sense {
+            t.goal = aggro.then_some(ppos);
+            t.target = aggro.then_some(Vec2::new(ppos.x.clamp(r.arena.left, r.arena.right), r.arena.floor));
+            t.sees_player = terrain.raycast(pos, ppos).is_none();
+            t.path.clear();
+        }
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
-        let floor = r.arena.floor;
+        // The ground right under it (the arena is only roughly flat).
+        let arena = r.arena;
+        let ground_at = |x: f32, y: f32| terrain.surface(Vec2::new(x, y - FOOT + 2.0 * STEP_UP), 3000.0);
+        let floor = ground_at(pos.x, pos.y).unwrap_or(arena.floor);
         let touching = alive && to_player.length() < RADIUS * 0.8 + 20.0;
 
         r.state = match r.state {
@@ -399,7 +414,7 @@ fn think(
                     r.vel.y -= 1400.0 * dt;
                     // Belly-up, its back is on the floor: lower than standing.
                     let rest = floor + 12.0 * SCALE;
-                    let over_floor = (r.arena.left..r.arena.right).contains(&pos.x);
+                    let over_floor = ground_at(pos.x, pos.y).is_some();
                     if over_floor && pos.y + r.vel.y * dt <= rest && r.vel.y < 0.0 {
                         tf.translation.y = rest;
                         r.vel = Vec2::new(r.vel.x * 0.4, 0.0);
@@ -570,6 +585,7 @@ fn think(
         let mut next = tf.translation.truncate() + r.vel * dt;
         if !dead {
             next.x = next.x.clamp(r.arena.left + 40.0, r.arena.right - 40.0);
+            let floor = ground_at(next.x, pos.y).unwrap_or(floor);
             if r.grounded() {
                 next.y = floor + FOOT;
                 r.vel.y = 0.0;

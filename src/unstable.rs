@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use crate::{
     camera::Shake,
-    level::Platform,
+    level::{self, Platform, Restart},
     player::{self, Player},
     shapes::Rng,
 };
@@ -18,7 +18,16 @@ pub struct UnstablePlugin;
 
 impl Plugin for UnstablePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Tremor { next: 10.0, left: 0.0, rng: Rng(0xBADC0DE) })
+        app.insert_resource(Tremor::default())
+            .add_systems(
+                PreUpdate,
+                (|mut r: MessageReader<Restart>, mut tremor: ResMut<Tremor>| {
+                    if r.read().count() > 0 {
+                        *tremor = Tremor::default();
+                    }
+                })
+                .after(level::restart),
+            )
             .add_systems(Update, (move_platforms, update_chains).chain().before(player::move_player));
     }
 }
@@ -59,6 +68,12 @@ struct Tremor {
     next: f32,
     left: f32,
     rng: Rng,
+}
+
+impl Default for Tremor {
+    fn default() -> Self {
+        Tremor { next: 10.0, left: 0.0, rng: Rng(0xBADC0DE) }
+    }
 }
 
 fn move_platforms(
