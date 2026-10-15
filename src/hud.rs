@@ -279,7 +279,7 @@ fn update_swim_bar(
 
 /// The controls: powers only once earned.
 fn hint(defeated: &Defeated) -> String {
-    let mut s = String::from("A/D: walk   Space/W: jump   Mouse: aim   F/Left click: slash (on remains: feed)");
+    let mut s = String::from("A/D: walk   Space/W: jump   Mouse: aim   F/Left click: slash   E: eat remains");
     if defeated.dash() {
         s.push_str("   Shift/K: dash");
     }

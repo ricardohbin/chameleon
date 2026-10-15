@@ -1,9 +1,9 @@
-//! Feeding on the remains of the battle. Attacking with no living enemy in
-//! the slash's reach but a corpse there turns the slash into a bite: the
-//! corpse's food (`MobSpec::food`, `BossSpec::food`) becomes shadow health
-//! (`Player::shadow`), which slowly fills into real health ticks.
+//! Feeding on the remains of the battle. `E` with a corpse in reach bites
+//! into it: the corpse's food (`MobSpec::food`, `BossSpec::food`) becomes
+//! shadow health (`Player::shadow`), which slowly fills into real health ticks.
 //! Mob corpses are devoured whole; a boss carcass stays, picked clean, and
 //! first grows the chameleon's max health by one tick (then fills it as shadow).
+//! Until the chameleon has eaten once, a tip floats over the nearest remains.
 
 use std::f32::consts::PI;
 
@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use crate::{
     boss::Boss,
-    camera::{HitStop, Shake},
+    camera::{HitStop, MainCamera, Shake},
     chameleon::{self, ChameleonAnim},
     gore::{Bleed, Fluid, Paint},
     mobs::{Mob, State},
@@ -23,13 +23,19 @@ use crate::{
 const REACH_SLACK: f32 = 10.0;
 /// Seconds a devoured corpse takes to vanish.
 const DEVOUR_TIME: f32 = 0.3;
+/// The eating tip shows over remains this close to the chameleon (world units).
+const TIP_RANGE: f32 = 260.0;
+/// The tip floats this far above the remains (world units).
+const TIP_LIFT: f32 = 34.0;
 
 pub struct FeedingPlugin;
 
 impl Plugin for FeedingPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<Learned>();
+        app.add_systems(Startup, spawn_tip);
         app.add_systems(Update, leak_carcasses);
-        app.add_systems(Update, (feed, devour).chain().after(chameleon::update_anim_state).after(player::move_player));
+        app.add_systems(Update, (feed, devour, show_tip).chain().after(chameleon::update_anim_state).after(player::move_player));
     }
 }
 
@@ -41,7 +47,15 @@ struct Devoured(f32);
 #[derive(Component)]
 struct PickedClean;
 
-/// Something lying in reach that can be eaten.
+/// The chameleon has eaten once this session: no more tip.
+#[derive(Resource, Default)]
+struct Learned(bool);
+
+/// "E: eat" over the nearest remains, until the first meal.
+#[derive(Component)]
+struct Tip;
+
+/// Something lying around that can be eaten.
 struct Meal {
     entity: Entity,
     pos: Vec2,
@@ -50,10 +64,36 @@ struct Meal {
     boss: bool,
 }
 
+/// The remains the chameleon could eat right now (boss carcasses always,
+/// mob corpses only when hungry), nearest to `from` first.
+fn meals(
+    p: &Player,
+    from: Vec2,
+    mobs: &Query<(Entity, &Mob, &Transform), Without<Devoured>>,
+    bosses: &Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
+) -> Vec<(Meal, f32)> {
+    let mut found = Vec::new();
+    for (entity, m, tf) in mobs {
+        if matches!(m.state, State::Dead { .. }) && m.food() > 0.0 && p.hunger() > 0.0 {
+            let pos = tf.translation.truncate();
+            found.push((Meal { entity, pos, food: m.food(), fluid: m.spec.blood, boss: false }, m.spec.radius));
+        }
+    }
+    for (entity, boss, tf, picked) in bosses {
+        if boss.dead && !picked {
+            let pos = tf.translation.truncate();
+            found.push((Meal { entity, pos, food: boss.spec.food, fluid: boss.spec.blood, boss: true }, boss.spec.radius));
+        }
+    }
+    found.sort_by(|a, b| a.0.pos.distance(from).total_cmp(&b.0.pos.distance(from)));
+    found
+}
+
 fn feed(
     mut commands: Commands,
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
+    mut learned: ResMut<Learned>,
     mut bleed: MessageWriter<Bleed>,
     mut paint: MessageWriter<Paint>,
     player: Single<(&mut Player, &Transform, &mut ChameleonAnim)>,
@@ -61,45 +101,20 @@ fn feed(
     bosses: Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
 ) {
     let (mut p, ptf, mut anim) = player.into_inner();
-    if !anim.attacked() {
+    if !anim.wants_to_eat() {
         return;
     }
     let ppos = ptf.translation.truncate();
-    // The same half-disc as the slash hitbox.
-    let dir = anim.slash_dir();
+    // Within slash reach of the shoulder, on either side: the head finds it.
     let center = chameleon::slash_center(ppos, p.facing);
-    let in_reach = |pos: Vec2, radius: f32, slack: f32| {
-        (pos - center).dot(dir) > -radius * 0.5 && pos.distance(center) < chameleon::SLASH_REACH + radius + slack
+    let Some((meal, _)) = meals(&p, center, &mobs, &bosses)
+        .into_iter()
+        .find(|(m, radius)| m.pos.distance(center) < chameleon::SLASH_REACH + radius + REACH_SLACK)
+    else {
+        return;
     };
 
-    let mut meal: Option<Meal> = None;
-    let mut consider = |m: Meal| {
-        if meal.as_ref().is_none_or(|best| m.pos.distance(center) < best.pos.distance(center)) {
-            meal = Some(m);
-        }
-    };
-    for (entity, m, tf) in &mobs {
-        let pos = tf.translation.truncate();
-        let dead = matches!(m.state, State::Dead { .. });
-        if !dead && in_reach(pos, m.spec.radius, 0.0) {
-            return; // Something alive to slash first.
-        }
-        if dead && m.food() > 0.0 && in_reach(pos, m.spec.radius, REACH_SLACK) {
-            consider(Meal { entity, pos, food: m.food(), fluid: m.spec.blood, boss: false });
-        }
-    }
-    for (entity, boss, tf, picked) in &bosses {
-        let pos = tf.translation.truncate();
-        if !boss.dead && in_reach(pos, boss.spec.radius, 0.0) {
-            return;
-        }
-        if boss.dead && !picked && in_reach(pos, boss.spec.radius, REACH_SLACK) {
-            consider(Meal { entity, pos, food: boss.spec.food, fluid: boss.spec.blood, boss: true });
-        }
-    }
-    // Nothing to gain from a mob when full: slash instead (the corpse keeps).
-    let Some(meal) = meal.filter(|m| m.boss || p.hunger() > 0.0) else { return };
-
+    learned.0 = true;
     anim.bite();
     if meal.boss {
         p.max_hp += 1;
@@ -163,4 +178,57 @@ fn devour(mut commands: Commands, time: Res<Time>, mut corpses: Query<(Entity, &
             commands.entity(e).despawn();
         }
     }
+}
+
+fn spawn_tip(mut commands: Commands) {
+    commands.spawn((
+        Tip,
+        Text::new("E: eat"),
+        TextFont { font_size: FontSize::Px(18.0), ..default() },
+        TextColor(Color::NONE),
+        TextLayout::justify(Justify::Center),
+        Node { position_type: PositionType::Absolute, ..default() },
+        Visibility::Hidden,
+    ));
+}
+
+/// Until the first meal: the tip floats over the nearest remains in range,
+/// fading in, brighter once they're in reach.
+fn show_tip(
+    time: Res<Time<Real>>,
+    learned: Res<Learned>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    player: Single<(&Player, &Transform)>,
+    mobs: Query<(Entity, &Mob, &Transform), Without<Devoured>>,
+    bosses: Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
+    tip: Single<(&mut Node, &mut TextColor, &mut Visibility, &ComputedNode), With<Tip>>,
+) {
+    let (mut node, mut color, mut vis, computed) = tip.into_inner();
+    let (p, ptf) = player.into_inner();
+    let ppos = ptf.translation.truncate();
+    let center = chameleon::slash_center(ppos, p.facing);
+    let target = (!learned.0 && p.dead.is_none())
+        .then(|| meals(p, ppos, &mobs, &bosses).into_iter().next())
+        .flatten()
+        .filter(|(m, _)| m.pos.distance(ppos) < TIP_RANGE);
+    let at = target.as_ref().and_then(|(m, radius)| {
+        let reach = m.pos.distance(center) < chameleon::SLASH_REACH + radius + REACH_SLACK;
+        let above = m.pos + Vec2::Y * (radius + TIP_LIFT);
+        camera.0.world_to_viewport(camera.1, above.extend(0.0)).ok().map(|v| (v, reach))
+    });
+
+    let alpha = color.0.alpha();
+    let goal = match at {
+        Some((_, true)) => 1.0,
+        Some((_, false)) => 0.6,
+        None => 0.0,
+    };
+    let alpha = alpha + (goal - alpha) * (1.0 - (-8.0 * time.delta_secs()).exp());
+    if let Some((v, _)) = at {
+        let size = computed.size() * computed.inverse_scale_factor();
+        node.left = px(v.x - size.x * 0.5);
+        node.top = px(v.y - size.y * 0.5);
+    }
+    color.0 = Color::srgb(0.95, 0.90, 0.75).with_alpha(alpha);
+    *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
 }

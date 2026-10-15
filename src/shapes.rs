@@ -126,6 +126,20 @@ pub fn gradient_rect(size: Vec2, top: Color, bottom: Color) -> Mesh {
     build(&pos, vec![t, t, b, b], vec![0, 2, 1, 1, 2, 3])
 }
 
+/// The strip between two polylines of the same length (`top[i]` faces
+/// `bottom[i]`), shaded per vertex.
+pub fn band(top: &[Vec2], bottom: &[Vec2], shade: impl Fn(Vec2) -> f32) -> Mesh {
+    let pos: Vec<Vec2> = top.iter().zip(bottom).flat_map(|(&t, &b)| [t, b]).collect();
+    let colors = pos.iter().map(|&p| gray(shade(p))).collect();
+    let indices = (0..top.len().saturating_sub(1) as u32)
+        .flat_map(|i| {
+            let (a, b, c, d) = (2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 3);
+            [a, b, c, b, d, c]
+        })
+        .collect();
+    build(&pos, colors, indices)
+}
+
 fn gray(v: f32) -> [f32; 4] {
     [v, v, v, 1.0]
 }

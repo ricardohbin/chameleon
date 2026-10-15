@@ -24,14 +24,14 @@ const MOUTH: Color = Color::srgb(0.05, 0.04, 0.04);
 const BONE: Color = Color::srgb(0.95, 0.93, 0.88);
 const EYE_GLOW: Color = Color::srgb(1.0, 0.96, 0.85);
 const WAVE: Color = Color::srgb(0.95, 0.94, 0.90);
-const SLASH_TIME: f32 = 0.34;
-/// A bite into remains (instead of a slash, see `feeding.rs`).
+const SLASH_TIME: f32 = 0.28;
+/// A bite into remains (`E`, see `feeding.rs`).
 const BITE_TIME: f32 = 0.45;
 /// Part of the slash (as a fraction of `SLASH_TIME`) where the claws cut.
 const STRIKE: (f32, f32) = (0.3, 0.52);
 /// Slash wave, in rig units: centered on the swiping shoulder.
 const WAVE_CENTER: Vec2 = Vec2::new(24.0, -2.0);
-const WAVE_RADIUS: f32 = 52.0;
+const WAVE_RADIUS: f32 = 60.0;
 /// The slash hitbox: a half-disc of this radius (world units) around the
 /// swiping shoulder, on the side the slash is aimed at. Matches the wave.
 pub const SLASH_REACH: f32 = WAVE_RADIUS * player::SCALE * 1.15;
@@ -88,17 +88,72 @@ impl Plugin for ChameleonPlugin {
 #[derive(Resource, Default)]
 pub struct UnlockedColors(pub Vec<Color>);
 
-/// A beaten boss gives its color: the chameleon's skin turns to it for good.
+/// A beaten boss gives its color: the chameleon's skin wears it for good,
+/// alongside the colors it already had.
 #[derive(Message)]
 pub struct ColorEarned(pub Color);
 
+/// Where each earned color shows, in the order they're earned: the first is
+/// the torso, every later one takes over one more part, big ones first.
+/// Until its color is earned, a part wears the torso color's tones (tail
+/// rings hide).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Slot {
+    Torso,
+    /// Head and eyelids.
+    Head,
+    Tail,
+    Legs,
+    /// The crest along the back and the casque spikes and ridge.
+    Spikes,
+    /// The slashing stripes across the flank.
+    Stripes,
+    /// The underside of the body, with its line.
+    Belly,
+    /// Under the jaw.
+    Throat,
+    TailRings,
+    /// The sunken turret around the eye, and the brow.
+    Eye,
+    Scars,
+}
+
+/// Which shade of its slot's color a skin piece wears.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Base,
+    /// Far side, sunken parts.
+    Shadow,
+    /// Highlights (belly line, scar edges).
+    Light,
+    /// Markings (crest, stripes, casque, brow).
+    Accent,
+}
+
+/// One skin material: its slot and tone, and its current color, easing
+/// toward the target (Oklab).
+struct SkinMat {
+    slot: Slot,
+    tone: Tone,
+    handle: Handle<ColorMaterial>,
+    current: Oklaba,
+}
+
 /// Skin materials, re-tinted together by the camouflage system.
-#[derive(Resource)]
-struct SkinMaterials {
-    base: Handle<ColorMaterial>,
-    shadow: Handle<ColorMaterial>,
-    light: Handle<ColorMaterial>,
-    accent: Handle<ColorMaterial>,
+#[derive(Resource, Default)]
+struct SkinMaterials(Vec<SkinMat>);
+
+impl SkinMaterials {
+    /// The material for this slot and tone (made on first use).
+    fn get(&mut self, materials: &mut Assets<ColorMaterial>, slot: Slot, tone: Tone) -> Handle<ColorMaterial> {
+        if let Some(m) = self.0.iter().find(|m| m.slot == slot && m.tone == tone) {
+            return m.handle.clone();
+        }
+        let color = skin_color(&[], slot, tone, None);
+        let handle = materials.add(color);
+        self.0.push(SkinMat { slot, tone, handle: handle.clone(), current: color.into() });
+        handle
+    }
 }
 
 /// Animation state, lives on the player entity.
@@ -135,13 +190,12 @@ pub struct ChameleonAnim {
     head_pitch: f32,
     /// Increments on every slash, so each one hits a target only once.
     pub slash_id: u32,
-    /// Attack pressed this frame (a slash just started; feeding may turn it into a bite).
-    attacked: bool,
+    /// Eat pressed this frame, free to bite (`feeding.rs` decides if there's anything to eat).
+    eat: bool,
     /// Seconds since a bite started, `None` when not biting.
     bite: Option<f32>,
-    skin: Oklcha,
-    /// Resting skin color (white until a color is earned).
-    base_skin: Color,
+    /// Colors earned, in order: they all show on the skin (see `Slot`).
+    earned: Vec<Color>,
     /// 0 = alive, 1 = lying dead belly-up.
     death: f32,
     rng: u32,
@@ -169,7 +223,14 @@ enum Joint {
 }
 
 #[derive(Component)]
-struct Tail(Handle<Mesh>);
+struct Tail {
+    mesh: Handle<Mesh>,
+    rings: Handle<Mesh>,
+}
+
+/// The tail's rings, shown once their color is earned.
+#[derive(Component)]
+struct TailRings;
 
 /// The faint crescent left in the air by the claws.
 #[derive(Component)]
@@ -181,7 +242,19 @@ pub fn spawn_chameleon(
     materials: &mut Assets<ColorMaterial>,
     player: Entity,
 ) {
-    let [base, shadow, light, accent] = palette(DEFAULT_SKIN.into()).map(|c| materials.add(c));
+    let mut skin = SkinMaterials::default();
+    let mut mat = |slot, tone| skin.get(materials, slot, tone);
+    let base = mat(Slot::Torso, Tone::Base);
+    let head_mat = mat(Slot::Head, Tone::Base);
+    let tail_mat = mat(Slot::Tail, Tone::Base);
+    let (far_legs, near_legs) = (mat(Slot::Legs, Tone::Shadow), mat(Slot::Legs, Tone::Base));
+    let spikes_mat = mat(Slot::Spikes, Tone::Accent);
+    let stripes_mat = mat(Slot::Stripes, Tone::Accent);
+    let (belly, belly_line) = (mat(Slot::Belly, Tone::Base), mat(Slot::Belly, Tone::Light));
+    let throat = mat(Slot::Throat, Tone::Base);
+    let rings = mat(Slot::TailRings, Tone::Accent);
+    let (turret_mat, brow_mat) = (mat(Slot::Eye, Tone::Shadow), mat(Slot::Eye, Tone::Accent));
+    let (scar_dark, scar_pale) = (mat(Slot::Scars, Tone::Shadow), mat(Slot::Scars, Tone::Light));
     let mouth = materials.add(MOUTH);
     let bone = materials.add(BONE);
     let black = materials.add(Color::srgb(0.02, 0.02, 0.03));
@@ -215,7 +288,8 @@ pub fn spawn_chameleon(
         ],
         8,
     );
-    let body_mesh = fill(&body_outline, |p| 0.55 + 0.45 * ((p.y + 15.0) / 40.0).clamp(0.0, 1.0));
+    let body_shade = |p: Vec2| 0.55 + 0.45 * ((p.y + 15.0) / 40.0).clamp(0.0, 1.0);
+    let body_mesh = fill(&body_outline, body_shade);
     let body = c.part(body_mesh, &base, Vec3::new(0.0, 2.0, 0.0), rig);
     c.tag(body, Part::Body);
     c.commands.entity(body).insert(PaintTarget {
@@ -239,7 +313,7 @@ pub fn spawn_chameleon(
             [p - t * 2.6 - n * 2.0, p + t * 2.6 - n * 2.0, p + n * len + Vec2::new(-0.5 * len, 0.0)]
         })
         .collect();
-    c.part(triangles(&spikes), &accent, Vec3::new(0.0, 0.0, -0.05), body);
+    c.part(triangles(&spikes), &spikes_mat, Vec3::new(0.0, 0.0, -0.05), body);
 
     // Dark slashing stripes across the flank.
     let top_at = |x: f32| {
@@ -252,27 +326,37 @@ pub fn spawn_chameleon(
             [Vec2::new(x - 3.5, ty), Vec2::new(x + 4.0, ty), Vec2::new(x - 7.0, ty - 19.0)]
         })
         .collect();
-    c.part(triangles(&stripes), &accent, Vec3::new(0.0, 0.0, 0.1), body);
+    c.part(triangles(&stripes), &stripes_mat, Vec3::new(0.0, 0.0, 0.1), body);
 
     // Belly line and war scars.
     let stripe = smooth_open(
         &[Vec2::new(-35.0, -5.0), Vec2::new(-18.0, -9.0), Vec2::new(0.0, -10.0), Vec2::new(20.0, -8.0), Vec2::new(38.0, -3.0)],
         6,
     );
-    c.part(stroke(&stripe, |t| 1.0 + 2.2 * (PI * t).sin(), 1.0, 0.85, |_| 1.0), &light, Vec3::new(0.0, 0.0, 0.1), body);
-    c.scar(&[Vec2::new(4.0, 18.0), Vec2::new(10.0, 11.0), Vec2::new(7.0, 6.0), Vec2::new(14.0, 0.0)], &shadow, &light, body);
-    c.scar(&[Vec2::new(-20.0, 12.0), Vec2::new(-15.0, 5.0), Vec2::new(-18.0, 0.0)], &shadow, &light, body);
+    // The underside: from the belly line down to the body's edge.
+    let below = |p: Vec2, outline: &[Vec2]| {
+        let edge = outline.iter().filter(|q| q.y < 0.0).min_by(|a, b| (a.x - p.x).abs().total_cmp(&(b.x - p.x).abs()));
+        Vec2::new(p.x, edge.map_or(p.y, |q| q.y.min(p.y)))
+    };
+    let underside: Vec<Vec2> = stripe.iter().map(|&p| below(p, &body_outline)).collect();
+    c.part(band(&stripe, &underside, body_shade), &belly, Vec3::new(0.0, 0.0, 0.05), body);
+    c.part(stroke(&stripe, |t| 1.0 + 2.2 * (PI * t).sin(), 1.0, 0.85, |_| 1.0), &belly_line, Vec3::new(0.0, 0.0, 0.1), body);
+    c.scar(&[Vec2::new(4.0, 18.0), Vec2::new(10.0, 11.0), Vec2::new(7.0, 6.0), Vec2::new(14.0, 0.0)], &scar_dark, &scar_pale, body);
+    c.scar(&[Vec2::new(-20.0, 12.0), Vec2::new(-15.0, 5.0), Vec2::new(-18.0, 0.0)], &scar_dark, &scar_pale, body);
 
     // --- Tail (mesh regenerated every frame by `animate_tail`) ---
     let tail_handle = c.meshes.add(tail_mesh(1.0));
-    let tail = c.part_handle(tail_handle.clone(), &base, Vec3::new(-34.0, 3.0, -0.3), body);
-    c.commands.entity(tail).insert(Tail(tail_handle));
+    let tail = c.part_handle(tail_handle.clone(), &tail_mat, Vec3::new(-34.0, 3.0, -0.3), body);
+    let rings_handle = c.meshes.add(tail_rings(1.0));
+    let ring_e = c.part_handle(rings_handle.clone(), &rings, Vec3::new(0.0, 0.0, 0.01), tail);
+    c.commands.entity(ring_e).insert((TailRings, Visibility::Hidden));
+    c.commands.entity(tail).insert(Tail { mesh: tail_handle, rings: rings_handle });
 
     // --- Legs: far side (behind body, in shadow) then near side ---
-    c.leg(Vec3::new(28.0, -4.0, -0.5), true, PI, false, &shadow, body);
-    c.leg(Vec3::new(-20.0, -4.0, -0.5), false, 0.0, false, &shadow, body);
-    c.leg(Vec3::new(24.0, -4.0, 0.6), true, 0.0, true, &base, body);
-    c.leg(Vec3::new(-24.0, -4.0, 0.6), false, PI, false, &base, body);
+    c.leg(Vec3::new(28.0, -4.0, -0.5), true, PI, false, &far_legs, body);
+    c.leg(Vec3::new(-20.0, -4.0, -0.5), false, 0.0, false, &far_legs, body);
+    c.leg(Vec3::new(24.0, -4.0, 0.6), true, 0.0, true, &near_legs, body);
+    c.leg(Vec3::new(-24.0, -4.0, 0.6), false, PI, false, &near_legs, body);
 
     // --- Head: tall blade-like casque, heavy brow, fanged jaw ---
     let head = c.pivot(Vec3::new(38.0, 4.0, 0.2), body, Part::Head);
@@ -299,8 +383,8 @@ pub fn spawn_chameleon(
         ],
         8,
     );
-    let head_mesh = fill(&head_outline, |p| 0.6 + 0.4 * ((p.y + 12.0) / 38.0).clamp(0.0, 1.0));
-    c.part(head_mesh, &base, Vec3::ZERO, head);
+    let head_shade = |p: Vec2| 0.6 + 0.4 * ((p.y + 12.0) / 38.0).clamp(0.0, 1.0);
+    c.part(fill(&head_outline, head_shade), &head_mat, Vec3::ZERO, head);
 
     // Casque spikes and ridge.
     let casque_spikes: Vec<[Vec2; 3]> = head_outline
@@ -313,10 +397,10 @@ pub fn spawn_chameleon(
             [p - t * 2.0 - n * 1.5, p + t * 2.0 - n * 1.5, p + n * 5.0 + Vec2::new(-3.0, 0.0)]
         })
         .collect();
-    c.part(triangles(&casque_spikes), &accent, Vec3::new(0.0, 0.0, -0.05), head);
+    c.part(triangles(&casque_spikes), &spikes_mat, Vec3::new(0.0, 0.0, -0.05), head);
     let ridge = smooth_open(&[Vec2::new(-6.0, 15.0), Vec2::new(-5.0, 27.0), Vec2::new(5.0, 20.0), Vec2::new(14.0, 13.0)], 8);
-    c.part(stroke(&ridge, |t| 3.0 - 1.8 * t, 1.0, 1.0, |_| 1.0), &accent, Vec3::new(0.0, 0.0, 0.05), head);
-    c.scar(&[Vec2::new(-4.0, 21.0), Vec2::new(1.0, 15.0), Vec2::new(-1.0, 10.0)], &shadow, &light, head);
+    c.part(stroke(&ridge, |t| 3.0 - 1.8 * t, 1.0, 1.0, |_| 1.0), &spikes_mat, Vec3::new(0.0, 0.0, 0.05), head);
+    c.scar(&[Vec2::new(-4.0, 21.0), Vec2::new(1.0, 15.0), Vec2::new(-1.0, 10.0)], &scar_dark, &scar_pale, head);
 
     // Jaw: dark mouth line ending in a sneer, with fangs.
     let mouth_line = smooth_open(
@@ -331,6 +415,10 @@ pub fn spawn_chameleon(
             [Vec2::new(x - 1.1, y), Vec2::new(x + 1.1, y), Vec2::new(x + 0.3, y - len)]
         })
         .collect();
+    // The throat: under the jaw line, down to the head's edge.
+    let jaw: Vec<Vec2> = mouth_line.iter().rev().map(|&p| p - Vec2::Y * 1.2).collect();
+    let chin: Vec<Vec2> = jaw.iter().map(|&p| below(p, &head_outline)).collect();
+    c.part(band(&jaw, &chin, head_shade), &throat, Vec3::new(0.0, 0.0, 0.03), head);
     c.part(triangles(&teeth), &bone, Vec3::new(0.0, 0.0, 0.055), head);
     c.part(stroke(&mouth_line, |t| 1.9 - 0.7 * t, 1.0, 1.0, |_| 1.0), &mouth, Vec3::new(0.0, 0.0, 0.06), head);
     c.part(fill(&ellipse_pts(1.1, 0.8, 10), |_| 1.0), &mouth, Vec3::new(29.0, 2.0, 0.06), head);
@@ -338,7 +426,7 @@ pub fn spawn_chameleon(
     // Eye: sunken turret, glowing iris, vertical slit pupil, angry lid.
     let eye = c.empty(Vec3::new(11.0, 4.0, 0.1), head);
     let turret = fill(&ellipse_pts(8.0, 8.0, 40), |p| 0.9 - 0.4 * (p.length() / 8.0));
-    c.part(turret, &shadow, Vec3::ZERO, eye);
+    c.part(turret, &turret_mat, Vec3::ZERO, eye);
     c.part(Circle::new(7.0).into(), &glow, Vec3::new(0.0, 0.0, 0.005), eye);
     let cone = c.pivot(Vec3::new(0.0, 0.0, 0.01), eye, Part::EyeCone);
     let iris = fill(&ellipse_pts(4.2, 4.2, 28), |p| 1.0 - 0.3 * (p.length() / 4.2));
@@ -353,13 +441,13 @@ pub fn spawn_chameleon(
         })
         .collect();
     let lid_tf = Transform::from_xyz(0.0, 1.6, 0.04).with_rotation(Quat::from_rotation_z(-0.35));
-    let lid_e = c.part(fill(&lid, |p| 0.65 + 0.35 * (p.y / 8.6)), &base, Vec3::ZERO, eye);
+    let lid_e = c.part(fill(&lid, |p| 0.65 + 0.35 * (p.y / 8.6)), &head_mat, Vec3::ZERO, eye);
     c.commands.entity(lid_e).insert(lid_tf);
     // The blink: a disc of skin squeezing shut over the iris, top down.
     let blink = c.pivot(Vec3::new(0.0, 0.0, 0.045), eye, Part::Blink);
-    c.part(fill(&ellipse_pts(8.0, 8.0, 24), |_| 0.8), &base, Vec3::ZERO, blink);
+    c.part(fill(&ellipse_pts(8.0, 8.0, 24), |_| 0.8), &head_mat, Vec3::ZERO, blink);
     let brow = smooth_open(&[Vec2::new(-0.5, 10.5), Vec2::new(10.0, 7.8), Vec2::new(20.5, 3.8)], 6);
-    c.part(stroke(&brow, |t| 3.8 - 2.3 * t, 1.0, 1.0, |_| 1.0), &accent, Vec3::new(0.0, 0.0, 0.15), head);
+    c.part(stroke(&brow, |t| 3.8 - 2.3 * t, 1.0, 1.0, |_| 1.0), &brow_mat, Vec3::new(0.0, 0.0, 0.15), head);
 
     // Slash wave: a thin crescent around the swiping shoulder, hidden until a slash.
     let wave_mat = materials.add(ColorMaterial {
@@ -372,7 +460,7 @@ pub fn spawn_chameleon(
     let wave = c.part(wave_mesh, &wave_mat, WAVE_CENTER.extend(0.9), rig);
     c.commands.entity(wave).insert((SlashWave(wave_mat), Visibility::Hidden));
 
-    c.commands.insert_resource(SkinMaterials { base, shadow, light, accent });
+    c.commands.insert_resource(skin);
     c.commands.entity(player).insert(ChameleonAnim {
         phase: 0.0,
         stride: 0.0,
@@ -392,10 +480,9 @@ pub fn spawn_chameleon(
         head_side: 1.0,
         head_pitch: 0.0,
         slash_id: 0,
-        attacked: false,
+        eat: false,
         bite: None,
-        skin: DEFAULT_SKIN.into(),
-        base_skin: DEFAULT_SKIN,
+        earned: Vec::new(),
         death: 0.0,
         rng: 0x9E37_79B9,
     });
@@ -469,8 +556,8 @@ impl Builder<'_, '_, '_> {
     }
 }
 
-/// The spiral tail. `curl` = 1 → tight coil, 0 → nearly straight.
-fn tail_mesh(curl: f32) -> Mesh {
+/// The spiral tail's centerline, base to tip. `curl` = 1 → tight coil, 0 → nearly straight.
+fn tail_path(curl: f32) -> Vec<Vec2> {
     const N: usize = 56;
     const LEN: f32 = 100.0;
     let ds = LEN / N as f32;
@@ -483,10 +570,41 @@ fn tail_mesh(curl: f32) -> Mesh {
         angle += curl * (0.008 + 0.26 * s.powf(2.5)) * ds;
         p += Vec2::from_angle(angle) * ds;
     }
+    pts
+}
+
+/// The tail's width at `t` along it (0 = base).
+fn tail_width(t: f32) -> f32 {
+    1.2 + 10.5 * (1.0 - t).powf(0.9)
+}
+
+/// The spiral tail. `curl` = 1 → tight coil, 0 → nearly straight.
+fn tail_mesh(curl: f32) -> Mesh {
     // Left edge (perp) is the inner/belly side; add soft bands along the tail.
-    stroke(&pts, |t| 1.2 + 10.5 * (1.0 - t).powf(0.9), 0.55, 1.0, |t| {
-        1.0 - 0.55 * (0.5 + 0.5 * (t * 30.0).sin()).powi(8)
-    })
+    stroke(&tail_path(curl), tail_width, 0.55, 1.0, |t| 1.0 - 0.55 * (0.5 + 0.5 * (t * 30.0).sin()).powi(8))
+}
+
+/// Rings around the tail, thinning toward the tip, following its curl.
+fn tail_rings(curl: f32) -> Mesh {
+    let pts = tail_path(curl);
+    let last = pts.len() - 1;
+    let edge = |i: usize| {
+        let t = i as f32 / last as f32;
+        let tangent = (pts[(i + 1).min(last)] - pts[i.saturating_sub(1)]).normalize_or(Vec2::X);
+        let offset = tangent.perp() * tail_width(t) * 0.5;
+        (pts[i] + offset, pts[i] - offset)
+    };
+    let mut tris = Vec::new();
+    for start in [0.1, 0.24, 0.38, 0.52, 0.66, 0.8] {
+        let a = (start * last as f32) as usize;
+        let b = (a + (4.0 - 2.5 * start) as usize).min(last);
+        for i in a..b {
+            let ((l0, r0), (l1, r1)) = (edge(i), edge(i + 1));
+            tris.push([l0, r0, l1]);
+            tris.push([r0, r1, l1]);
+        }
+    }
+    triangles(&tris)
 }
 
 pub fn update_anim_state(
@@ -511,10 +629,11 @@ pub fn update_anim_state(
     let curl_target = if dead { 1.0 } else if !p.grounded { 0.25 } else { 1.0 - 0.55 * a.stride };
     a.curl = smooth(a.curl, curl_target, 4.0, dt);
 
-    // Claw slash.
-    let attack = keys.any_just_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.just_pressed(MouseButton::Left);
-    a.attacked = attack && a.slash.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
-    if a.attacked {
+    // Claw slash: holding the button keeps slashing, one right after another.
+    let attack = keys.any_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left);
+    let free = a.slash.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
+    a.eat = keys.just_pressed(KeyCode::KeyE) && free;
+    if attack && free && !a.eat {
         a.slash = Some(0.0);
         a.slash_aim = p.aim;
         a.slash_id += 1;
@@ -703,10 +822,16 @@ fn leg_angles(front: bool, offset: f32, a: &ChameleonAnim) -> (f32, f32) {
 fn animate_tail(
     player: Single<&ChameleonAnim>,
     tail: Single<&Tail>,
+    mut rings: Single<&mut Visibility, With<TailRings>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if let Some(mut mesh) = meshes.get_mut(&tail.0) {
+    if let Some(mut mesh) = meshes.get_mut(&tail.mesh) {
         *mesh = tail_mesh(player.curl);
+    }
+    let shown = player.earned.len() > Slot::TailRings as usize;
+    **rings = if shown { Visibility::Inherited } else { Visibility::Hidden };
+    if shown && let Some(mut mesh) = meshes.get_mut(&tail.rings) {
+        *mesh = tail_rings(player.curl);
     }
 }
 
@@ -738,29 +863,45 @@ fn slash_wave(
 /// Slowly blend the skin towards the color of the surface we stand on.
 fn camouflage(
     time: Res<Time>,
-    player: Single<(&Player, &mut ChameleonAnim)>,
-    skin: Res<SkinMaterials>,
+    player: Single<(&Player, &ChameleonAnim)>,
+    mut skin: ResMut<SkinMaterials>,
     unlocked: Res<UnlockedColors>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let (p, mut a) = player.into_inner();
-    // Blend in Oklab: hue interpolation from white (no hue) looks odd in Oklch.
-    let base: Oklaba = a.base_skin.into();
-    let target = match p.ground_color {
-        Some(c) if p.grounded && unlocked.0.contains(&c) => base.mix(&c.into(), 0.8),
-        _ => base,
-    };
-    let current: Oklaba = a.skin.into();
-    a.skin = current.mix(&target, 1.0 - (-time.delta_secs() * 1.8).exp()).into();
-    let colors = palette(a.skin);
-    for (handle, color) in [&skin.base, &skin.shadow, &skin.light, &skin.accent].into_iter().zip(colors) {
-        if let Some(mut mat) = materials.get_mut(handle) {
-            mat.color = color;
+    let (p, a) = *player;
+    let ground = p.ground_color.filter(|c| p.grounded && unlocked.0.contains(c));
+    let k = 1.0 - (-time.delta_secs() * 1.8).exp();
+    for m in &mut skin.0 {
+        // Blend in Oklab: hue interpolation from white (no hue) looks odd in Oklch.
+        m.current = m.current.mix(&skin_color(&a.earned, m.slot, m.tone, ground).into(), k);
+        if let Some(mut mat) = materials.get_mut(&m.handle) {
+            mat.color = m.current.into();
         }
     }
 }
 
-/// Takes on an earned color. The world camera is grayscale, so the whole
+/// A skin piece's color: its slot's earned color (the torso's until then; white
+/// before any), in its tone, pulled toward the `ground` color when camouflaged.
+/// A marking with a color of its own shows it bright, not darkened.
+fn skin_color(earned: &[Color], slot: Slot, tone: Tone, ground: Option<Color>) -> Color {
+    let own = (slot != Slot::Torso).then(|| earned.get(slot as usize).copied()).flatten();
+    let c = own.or(earned.first().copied()).unwrap_or(DEFAULT_SKIN);
+    let c: Oklcha = match ground {
+        Some(g) => Oklaba::from(c).mix(&g.into(), 0.8).into(),
+        None => c.into(),
+    };
+    let [base, shadow, light, accent] = palette(c);
+    match (tone, own.is_some()) {
+        (Tone::Base, _) => base,
+        (Tone::Shadow, _) => shadow,
+        (Tone::Light, false) => light,
+        (Tone::Light, true) => Oklcha { lightness: (c.lightness + 0.08).min(0.95), ..c }.into(),
+        (Tone::Accent, false) => accent,
+        (Tone::Accent, true) => Oklcha { lightness: c.lightness * 0.85, chroma: c.chroma * 1.1, ..c }.into(),
+    }
+}
+
+/// Wears an earned color, with the others. The world camera is grayscale, so the whole
 /// chameleon moves to the color layer to actually show it.
 fn earn_color(
     mut commands: Commands,
@@ -772,7 +913,9 @@ fn earn_color(
 ) {
     let (entity, mut a) = player.into_inner();
     for ColorEarned(color) in earned.read() {
-        a.base_skin = *color;
+        if !a.earned.contains(color) {
+            a.earned.push(*color);
+        }
         if !unlocked.0.contains(color) {
             unlocked.0.push(*color);
         }
@@ -814,9 +957,9 @@ impl ChameleonAnim {
         self.slash.is_some_and(|t| (STRIKE.0..=STRIKE.1).contains(&(t / SLASH_TIME)))
     }
 
-    /// The attack key was pressed this frame (and started a slash).
-    pub fn attacked(&self) -> bool {
-        self.attacked
+    /// The eat key was pressed this frame, with the mouth free.
+    pub fn wants_to_eat(&self) -> bool {
+        self.eat
     }
 
     /// Where the current (or last) slash goes: unit, world space.
@@ -830,9 +973,8 @@ impl ChameleonAnim {
         self.focus = 0.7;
     }
 
-    /// Turn the slash that just started into a bite.
+    /// Bite into remains.
     pub fn bite(&mut self) {
-        self.slash = None;
         self.bite = Some(0.0);
     }
 
@@ -853,3 +995,4 @@ fn smooth(current: f32, target: f32, rate: f32, dt: f32) -> f32 {
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
+

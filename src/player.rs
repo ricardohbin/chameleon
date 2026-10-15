@@ -8,9 +8,9 @@ use crate::{
     camera::Shake,
     chameleon,
     level::{self, Platform, Restart},
-    terrain::{Terrain, FLOOR_HEIGHT, STEP_UP},
+    terrain::{FLOOR_HEIGHT, STEP_UP, Terrain},
     terrain_art,
-    water::{Splash, Wet, Waters},
+    water::{Splash, Waters, Wet},
 };
 
 /// Size of the chameleon relative to its drawing (affects visuals and collider).
@@ -72,7 +72,7 @@ const JUMP_BUFFER: f32 = 0.12;
 const HARD_LANDING: f32 = 950.0;
 /// Falls shorter than this many storeys (`FLOOR_HEIGHT`) are harmless; from there
 /// on it costs 1 HP, plus 1 more for every further storey.
-const FALL_SAFE_FLOORS: f32 = 2.0;
+const FALL_SAFE_FLOORS: f32 = 5.0;
 /// This far below the lowest ground you fell into the abyss.
 const VOID_DEPTH: f32 = 600.0;
 /// From this share of the body under the surface you swim instead of walking.
@@ -293,11 +293,26 @@ fn restart(
     spawn(&mut commands, &mut meshes, &mut materials, &terrain, p.god);
 }
 
-fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, terrain: &Terrain, god: bool) {
+fn spawn(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    terrain: &Terrain,
+    god: bool,
+) {
     let spawn = spawn_point(terrain);
     let player = commands
         .spawn((
-            Player { facing: 1.0, safe_spot: spawn, fall_top: spawn.y - HALF.y, hp: MAX_HP, max_hp: MAX_HP, swim: 1.0, god, ..default() },
+            Player {
+                facing: 1.0,
+                safe_spot: spawn,
+                fall_top: spawn.y - HALF.y,
+                hp: MAX_HP,
+                max_hp: MAX_HP,
+                swim: 1.0,
+                god,
+                ..default()
+            },
             Transform::from_translation(spawn.extend(10.0)),
             Visibility::default(),
         ))
@@ -324,11 +339,17 @@ pub fn move_player(
     let (camera, camera_tf) = *camera;
 
     // --- Aim: the mouse, in the world ---
-    if let Some(target) = window.cursor_position().and_then(|c| camera.viewport_to_world_2d(camera_tf, c).ok()) {
+    if let Some(target) = window
+        .cursor_position()
+        .and_then(|c| camera.viewport_to_world_2d(camera_tf, c).ok())
+    {
         p.aim_at = Some(target);
     }
     let neck = chameleon::neck(tf.translation.truncate(), p.facing);
-    p.aim = p.aim_at.map_or(Vec2::ZERO, |at| at - neck).normalize_or(Vec2::new(p.facing, 0.0));
+    p.aim = p
+        .aim_at
+        .map_or(Vec2::ZERO, |at| at - neck)
+        .normalize_or(Vec2::new(p.facing, 0.0));
 
     if keys.just_pressed(KeyCode::F4) {
         p.flying = !p.flying;
@@ -345,7 +366,11 @@ pub fn move_player(
     let flying = p.flying && p.dead.is_none();
 
     // --- Water: how deep we are, first contact (splash, the fall is held) ---
-    let wet = if flying { None } else { waters.sample(&terrain, tf.translation.truncate(), HALF) };
+    let wet = if flying {
+        None
+    } else {
+        waters.sample(&terrain, tf.translation.truncate(), HALF)
+    };
     let wet_f = wet.as_ref().map_or(0.0, |w| w.fraction);
     let swimming = wet_f >= SWIM_FRACTION;
     let safe_before = p.safe_spot;
@@ -355,7 +380,11 @@ pub fn move_player(
             let protect = (w.depth / WATER_SOFT_DEPTH).clamp(0.0, 1.0);
             p.carry = (p.fall_top - (tf.translation.y - HALF.y)).max(0.0) * (1.0 - protect);
             if speed > SPLASH_SPEED {
-                splash.write(Splash { at: Vec2::new(tf.translation.x, w.level), pool: w.pool, speed });
+                splash.write(Splash {
+                    at: Vec2::new(tf.translation.x, w.level),
+                    pool: w.pool,
+                    speed,
+                });
                 if speed > HARD_LANDING * 0.6 {
                     shake.add(0.2);
                 }
@@ -385,16 +414,36 @@ pub fn move_player(
     if dir != 0.0 {
         p.facing = dir;
     }
-    let accel = if dead { GROUND_ACCEL } else if p.stun > 0.0 { AIR_ACCEL * 0.15 } else if p.grounded { GROUND_ACCEL } else { AIR_ACCEL };
+    let accel = if dead {
+        GROUND_ACCEL
+    } else if p.stun > 0.0 {
+        AIR_ACCEL * 0.15
+    } else if p.grounded {
+        GROUND_ACCEL
+    } else {
+        AIR_ACCEL
+    };
     let feet = tf.translation.truncate() - Vec2::Y * HALF.y;
     // The ground's slope (+ = uphill to the right) and how steep it is between
     // walkable (0) and unclimbable (1).
     let on_terrain = p.grounded && p.ground.is_none();
-    let slope = if on_terrain { terrain.slope_at(feet) } else { None };
+    let slope = if on_terrain {
+        terrain.slope_at(feet)
+    } else {
+        None
+    };
     let slippery = terrain.slides_at(feet);
-    let (walk, steep) = if slippery { (SLIPPERY_WALK, SLIPPERY_SLOPE) } else { (WALK_SLOPE, STEEP_SLOPE) };
+    let (walk, steep) = if slippery {
+        (SLIPPERY_WALK, SLIPPERY_SLOPE)
+    } else {
+        (WALK_SLOPE, STEEP_SLOPE)
+    };
     // Loose ground creeps downhill under you.
-    let drift = if slippery { -slope.unwrap_or(0.0) * SLIPPERY_DRIFT } else { 0.0 };
+    let drift = if slippery {
+        -slope.unwrap_or(0.0) * SLIPPERY_DRIFT
+    } else {
+        0.0
+    };
     let hardness = slope.map_or(0.0, |s| ((s.abs() - walk) / (steep - walk)).clamp(0.0, 1.0));
     // Too steep to stand on, or perched over a drop: slide (signed strength, + = right).
     let slide = match slope {
@@ -406,7 +455,9 @@ pub fn move_player(
         _ => None,
     };
     // Wading slows the walk (swimming has its own speed, below).
-    let wade = wet.as_ref().map_or(1.0, |w| 1.0 - w.kind.t().wade * (w.fraction / SWIM_FRACTION).min(1.0));
+    let wade = wet.as_ref().map_or(1.0, |w| {
+        1.0 - w.kind.t().wade * (w.fraction / SWIM_FRACTION).min(1.0)
+    });
     let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1);
     if !flying {
         let vx0 = p.vel.x;
@@ -418,15 +469,25 @@ pub fn move_player(
                 let s = slope.unwrap_or(0.0);
                 let uphill = dir * s > 0.0;
                 let effort = if uphill { 1.0 - hardness } else { 1.0 };
-                move_towards(p.vel.x, dir * top_speed * effort - s.signum() * SLOPE_PULL * hardness * hardness + drift, accel * dt)
+                move_towards(
+                    p.vel.x,
+                    dir * top_speed * effort - s.signum() * SLOPE_PULL * hardness * hardness
+                        + drift,
+                    accel * dt,
+                )
             }
-            None if drift != 0.0 && on_terrain => move_towards(p.vel.x, dir * top_speed + drift, accel * dt),
+            None if drift != 0.0 && on_terrain => {
+                move_towards(p.vel.x, dir * top_speed + drift, accel * dt)
+            }
             // Just left a slope mid-slide: keep the speed instead of braking in the air.
             None if p.slipping > 0.0 && !p.grounded && dir == 0.0 => p.vel.x,
             None => move_towards(p.vel.x, dir * top_speed, accel * dt),
         };
-        let swim_up = !dead && p.stun <= 0.0 && keys.any_pressed([KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp]);
-        let swim_down = !dead && p.stun <= 0.0 && keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
+        let swim_up = !dead
+            && p.stun <= 0.0
+            && keys.any_pressed([KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp]);
+        let swim_down =
+            !dead && p.stun <= 0.0 && keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
         if let (true, Some(w)) = (swimming, &wet) {
             let t = w.kind.t();
             p.vel.x = move_towards(vx0, dir * t.speed * (0.45 + 0.55 * p.swim), t.accel * dt);
@@ -434,13 +495,25 @@ pub fn move_player(
 
         // --- Jumping (with coyote time, buffering and variable height) ---
         let jump_keys = [KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp];
-        p.coyote = if p.grounded { COYOTE_TIME } else { p.coyote - dt };
-        p.jump_buffer = if keys.any_just_pressed(jump_keys) { JUMP_BUFFER } else { p.jump_buffer - dt };
+        p.coyote = if p.grounded {
+            COYOTE_TIME
+        } else {
+            p.coyote - dt
+        };
+        p.jump_buffer = if keys.any_just_pressed(jump_keys) {
+            JUMP_BUFFER
+        } else {
+            p.jump_buffer - dt
+        };
         if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead {
             // On steep ground the jump tilts toward the slope's normal: no hopping up walls.
             let normal = slope.map_or(Vec2::Y, |s| Vec2::new(-s, 1.0).normalize());
             let jump = Vec2::Y.lerp(normal, hardness).normalize();
-            let push = if swimming { wet.as_ref().map_or(1.0, |w| w.kind.t().jump) } else { 1.0 };
+            let push = if swimming {
+                wet.as_ref().map_or(1.0, |w| w.kind.t().jump)
+            } else {
+                1.0
+            };
             p.vel.y = jump.y * JUMP_SPEED * push;
             if hardness > 0.0 {
                 p.vel.x = jump.x * JUMP_SPEED * push;
@@ -458,7 +531,13 @@ pub fn move_player(
         p.dash_ready |= p.grounded;
         p.dash = (p.dash - dt).max(0.0);
         p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
-        if keys.any_just_pressed(DASH_KEYS) && defeated.dash() && p.dash_ready && p.dash_cooldown <= 0.0 && p.stun <= 0.0 && !dead {
+        if keys.any_just_pressed(DASH_KEYS)
+            && defeated.dash()
+            && p.dash_ready
+            && p.dash_cooldown <= 0.0
+            && p.stun <= 0.0
+            && !dead
+        {
             p.dash = DASH_TIME;
             p.dash_ready = false;
             p.dash_cooldown = DASH_COOLDOWN;
@@ -469,7 +548,12 @@ pub fn move_player(
         } else if let (true, Some(w)) = (swimming, &wet) {
             // Near the surface a jump hops out of the water (onto a ledge).
             let y = tf.translation.y;
-            if p.jump_buffer > 0.0 && !dead && p.stun <= 0.0 && y > w.level - HALF.y * 1.3 && bank_near(&terrain, tf.translation.truncate()) {
+            if p.jump_buffer > 0.0
+                && !dead
+                && p.stun <= 0.0
+                && y > w.level - HALF.y * 1.3
+                && bank_near(&terrain, tf.translation.truncate())
+            {
                 p.vel.y = JUMP_SPEED * w.kind.t().hop;
                 p.swim = (p.swim - 0.05).max(0.0);
                 p.jump_buffer = 0.0;
@@ -525,7 +609,8 @@ pub fn move_player(
         }
         if direction != Vec2::ZERO {
             // Accelerate along the pressed arrows, up to a top speed.
-            p.vel = (p.vel + direction.normalize() * FLIGHT_ACCEL * dt).clamp_length_max(FLIGHT_SPEED);
+            p.vel =
+                (p.vel + direction.normalize() * FLIGHT_ACCEL * dt).clamp_length_max(FLIGHT_SPEED);
         } else {
             // Released: brake quickly.
             p.vel *= (-FLIGHT_BRAKE * dt).exp();
@@ -557,10 +642,17 @@ pub fn move_player(
             continue;
         }
         let feet = next.y - HALF.y;
-        let climb = terrain.box_top(next, HALF).filter(|top| top - feet <= STEP_UP);
+        let climb = terrain
+            .box_top(next, HALF)
+            .filter(|top| top - feet <= STEP_UP);
         match climb {
             // (No climbing up one-way slopes.)
-            Some(top) if !flying && (was_grounded || p.vel.y <= 0.0) && slide.is_none() && !terrain.box_hits(Vec2::new(next.x, top + HALF.y), HALF) => {
+            Some(top)
+                if !flying
+                    && (was_grounded || p.vel.y <= 0.0)
+                    && slide.is_none()
+                    && !terrain.box_hits(Vec2::new(next.x, top + HALF.y), HALF) =>
+            {
                 if was_grounded {
                     p.step -= top + HALF.y - pos.y;
                 }
@@ -578,7 +670,11 @@ pub fn move_player(
         }
         let c = ptf.translation.truncate();
         if overlaps(pos, c, plat.half) {
-            pos.x = if pos.x < c.x { c.x - plat.half.x - HALF.x } else { c.x + plat.half.x + HALF.x };
+            pos.x = if pos.x < c.x {
+                c.x - plat.half.x - HALF.x
+            } else {
+                c.x + plat.half.x + HALF.x
+            };
             p.vel.x = 0.0;
         }
     }
@@ -604,10 +700,23 @@ pub fn move_player(
             break;
         }
     }
-    p.slipping = if slide.is_some() { 0.25 } else { (p.slipping - dt).max(0.0) };
+    p.slipping = if slide.is_some() {
+        0.25
+    } else {
+        (p.slipping - dt).max(0.0)
+    };
     // Walking (or sliding) down a slope: stick to it instead of hopping off every step.
-    if !flying && !p.grounded && (was_grounded || p.slipping > 0.0) && p.vel.y <= 0.0 && p.ground.is_none() {
-        let reach = if p.slipping > 0.0 { STEP_UP + p.vel.x.abs() * dt * 2.5 } else { STEP_UP };
+    if !flying
+        && !p.grounded
+        && (was_grounded || p.slipping > 0.0)
+        && p.vel.y <= 0.0
+        && p.ground.is_none()
+    {
+        let reach = if p.slipping > 0.0 {
+            STEP_UP + p.vel.x.abs() * dt * 2.5
+        } else {
+            STEP_UP
+        };
         let probe = pos - Vec2::Y * reach;
         if terrain.box_hits(probe, HALF) {
             let y = terrain.box_top(probe, HALF).unwrap_or(pos.y - HALF.y) + HALF.y;
@@ -628,7 +737,13 @@ pub fn move_player(
         }
         let top = plat.top_at(c, pos.x);
         // A little tolerance so moving platforms don't drop us (and slopes can be walked up).
-        let slack = 6.0 + plat.tilt.tan().abs() * if prev_ground == Some(entity) { 20.0 } else { 10.0 };
+        let slack = 6.0
+            + plat.tilt.tan().abs()
+                * if prev_ground == Some(entity) {
+                    20.0
+                } else {
+                    10.0
+                };
         if tilted && pos.y - HALF.y > top + 0.5 {
             // Above the slanted surface, in the corner of its box.
         } else if p.vel.y <= 0.0 && prev_bottom >= top - slack {
@@ -680,7 +795,11 @@ pub fn move_player(
         p.ground = None;
     } else if p.grounded {
         if !was_grounded && !dead {
-            let softness = if p.ground.is_none() { terrain.style_at(pos).softness() } else { 0.0 };
+            let softness = if p.ground.is_none() {
+                terrain.style_at(pos).softness()
+            } else {
+                0.0
+            };
             let floors = (p.fall_top - feet_y).max(0.0) * (1.0 - softness) / FLOOR_HEIGHT;
             if floors >= FALL_SAFE_FLOORS && !p.god {
                 p.invuln = 0.0;
@@ -788,7 +907,9 @@ fn perched(terrain: &Terrain, feet: Vec2) -> Option<f32> {
     let away = if sum / count as f32 > 0.0 { -1.0 } else { 1.0 };
     let support = sum / count as f32;
     let edge = away * HALF.x;
-    let drop = terrain.surface(feet + Vec2::new(edge, -1.0), 400.0).map_or(f32::INFINITY, |g| feet.y - g);
+    let drop = terrain
+        .surface(feet + Vec2::new(edge, -1.0), 400.0)
+        .map_or(f32::INFINITY, |g| feet.y - g);
     (drop > (edge - support).abs() * STEEP_SLOPE).then_some(away * 0.3)
 }
 
@@ -798,7 +919,9 @@ fn land_on_terrain(p: &mut Player, terrain: &Terrain, pos: Vec2) {
     p.ground_color = Some(terrain_art::ground_color(terrain.style_at(pos)));
     // Safe to come back to if there's ground under both edges.
     let feet = pos.y - HALF.y - 1.0;
-    if terrain.solid_at(Vec2::new(pos.x - HALF.x, feet)) && terrain.solid_at(Vec2::new(pos.x + HALF.x, feet)) {
+    if terrain.solid_at(Vec2::new(pos.x - HALF.x, feet))
+        && terrain.solid_at(Vec2::new(pos.x + HALF.x, feet))
+    {
         p.safe_spot = pos;
     }
 }
