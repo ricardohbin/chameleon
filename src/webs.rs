@@ -134,7 +134,7 @@ fn stick(
     let (p, tf) = &mut *player;
     p.webbed = most(tf.translation.truncate(), player_body());
     for (mut m, tf) in &mut mobs {
-        let spider = m.kind == MobKind::Spider || matches!(m.state, State::Dead { .. });
+        let spider = matches!(m.kind, MobKind::Spider | MobKind::Spiderling) || matches!(m.state, State::Dead { .. });
         m.webbed = if spider { 0.0 } else { most(tf.translation.truncate(), Vec2::splat(m.spec.radius * 0.5)) };
     }
 }

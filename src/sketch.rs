@@ -22,8 +22,9 @@ pub enum Cell {
     Back,
 }
 
-/// The sketch color (RGB, ±2) that marks the dragonfly boss.
+/// The sketch colors (RGB, ±2) that mark the dragonfly and spider bosses.
 const DRAGONFLY_MARK: [u8; 3] = [0xd1, 0xb0, 0xc6];
+const SPIDER_MARK: [u8; 3] = [0x7f, 0x9f, 0xd6];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
@@ -34,6 +35,8 @@ pub enum MarkerKind {
     Wasp,
     /// Dusty pink `#d1b0c6` (`DRAGONFLY_MARK`, the dragonfly's own color): the dragonfly boss.
     Dragonfly,
+    /// Dusty blue `#7f9fd6` (`SPIDER_MARK`, the spider's own color): the spider boss.
+    Spider,
 }
 
 pub struct Marker {
@@ -75,9 +78,14 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
             continue;
         }
         let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-        // Its pink is nearly gray, so it's matched by color, not by saturation.
-        if DRAGONFLY_MARK.iter().zip([r, g, b]).all(|(m, c)| (*m as i32 - c).abs() <= 2) {
+        // Their colors are nearly gray, so they're matched by color, not by saturation.
+        let is = |mark: [u8; 3]| mark.iter().zip([r, g, b]).all(|(m, c)| (*m as i32 - c).abs() <= 2);
+        if is(DRAGONFLY_MARK) {
             marks[i] = Some(MarkerKind::Dragonfly);
+            continue;
+        }
+        if is(SPIDER_MARK) {
+            marks[i] = Some(MarkerKind::Spider);
             continue;
         }
         if max - min > 100 {
@@ -191,6 +199,7 @@ fn unbake(packed: &[u8]) -> Result<Sketch, String> {
             2 => MarkerKind::Roach,
             3 => MarkerKind::Wasp,
             4 => MarkerKind::Dragonfly,
+            5 => MarkerKind::Spider,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

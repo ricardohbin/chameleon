@@ -6,6 +6,12 @@
 //!   and `screenshots/world-diff.png`. `diff <old> <new>` compares any two
 //!   sketches (.aseprite or baked).
 //!
+//! - `cargo run -- mark <boss> <x,y>`: paints a boss marker into
+//!   `assets/world.aseprite` at sketch pixels `x,y` from the origin (as the diff
+//!   prints them), on a new layer of its own (the user's layers are left as
+//!   they are), after backing the file up beside it. Bosses: spider,
+//!   dragonfly, wasp, roach.
+//!
 //! Both versions are aligned on their origin markers, so resizing or extending
 //! the canvas doesn't count as a change. Coordinates in the report are sketch
 //! pixels relative to the origin (y down).
@@ -29,6 +35,7 @@ pub fn run_cli() -> bool {
     let result = match std::env::args().nth(1).as_deref() {
         Some("bake") => bake(),
         Some("diff") => diff(),
+        Some("mark") => mark(),
         _ => return false,
     };
     if let Err(e) = result {
@@ -419,6 +426,7 @@ impl<'a> Diff<'a> {
             MarkerKind::Roach => [255, 230, 0],
             MarkerKind::Wasp => [0, 255, 0],
             MarkerKind::Dragonfly => [255, 120, 200],
+            MarkerKind::Spider => [90, 140, 255],
         };
         for m in &self.markers {
             if let MarkerChange::Moved(k, at, _) | MarkerChange::Removed(k, at) = m {
@@ -439,7 +447,7 @@ impl<'a> Diff<'a> {
 /// Pairs markers of the same kind, nearest first.
 fn diff_markers(old: &View, new: &View) -> Vec<MarkerChange> {
     let mut out = Vec::new();
-    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly] {
+    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly, MarkerKind::Spider] {
         let mut a: Vec<Vec2> = old.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         let mut b: Vec<Vec2> = new.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         while !a.is_empty() && !b.is_empty() {
@@ -531,4 +539,131 @@ fn crc32(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// `mark <boss> <x,y>`: a 5×5 marker of the boss's sketch color at `x,y` (sketch
+/// pixels from the origin marker), on a new top layer "marker: <boss>".
+fn mark() -> Result<(), String> {
+    let usage = "usage: mark <spider|dragonfly|wasp|roach> <x,y>  (sketch px from the origin, as `diff` prints them)";
+    let mut args = std::env::args().skip(2);
+    let boss = args.next().ok_or(usage)?;
+    let (kind, rgb) = match boss.as_str() {
+        "spider" => (MarkerKind::Spider, [0x7f, 0x9f, 0xd6]),
+        "dragonfly" => (MarkerKind::Dragonfly, [0xd1, 0xb0, 0xc6]),
+        "wasp" => (MarkerKind::Wasp, [0, 255, 0]),
+        "roach" => (MarkerKind::Roach, [255, 230, 0]),
+        _ => return Err(usage.into()),
+    };
+    let at = args.next().ok_or(usage)?;
+    let (x, y) = at.split_once(',').ok_or(usage)?;
+    let rel = IVec2::new(x.trim().parse().map_err(|_| usage)?, y.trim().parse().map_err(|_| usage)?);
+
+    let file = path(ASEPRITE);
+    let bytes = std::fs::read(&file).map_err(|e| format!("{ASEPRITE}: {e}"))?;
+    let sketch = sketch::decode(&bytes)?;
+    if let Some(old) = sketch.markers.iter().find(|m| m.kind == kind) {
+        return Err(format!("the sketch already has a {boss} marker (canvas px {:.0}, {:.0}): move or erase it in Aseprite", old.at.x, old.at.y));
+    }
+    // The same origin the game uses (the first origin marker).
+    let origin = sketch.markers.iter().find(|m| m.kind == MarkerKind::Origin).ok_or("the sketch has no origin marker")?.at.floor().as_ivec2();
+    let center = origin + rel;
+    if center.cmplt(IVec2::splat(2)).any() || center.cmpge(sketch.size - 2).any() {
+        return Err(format!("{at} is off the canvas"));
+    }
+
+    let out = add_marker_layer(&bytes, &format!("marker: {boss}"), center - 2, 5, rgb)?;
+    // It must read back with the marker where asked, and nothing else changed.
+    let check = sketch::decode(&out)?;
+    let got = check.markers.iter().find(|m| m.kind == kind).ok_or("the new marker doesn't read back")?;
+    if (got.at - (center.as_vec2() + 0.5)).length() > 1.0 || check.size != sketch.size || check.slices.len() != sketch.slices.len() {
+        return Err("the edited sketch doesn't read back as expected; nothing was written".into());
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let backup = format!("{file}.bak-{stamp}");
+    std::fs::write(&backup, &bytes).map_err(|e| format!("{backup}: {e}"))?;
+    std::fs::write(&file, &out).map_err(|e| format!("{ASEPRITE}: {e}"))?;
+    println!("marked {boss} at {at} from the origin (canvas px {}, {}) on a new layer \"marker: {boss}\"", center.x, center.y);
+    println!("backup: {backup}");
+    Ok(())
+}
+
+/// The .aseprite file with a new top-level layer `name` holding one cel: a
+/// `size`² square of `rgb` at canvas `corner`. Only the first frame changes:
+/// the layer chunk goes after the last layer, the cel at the end (drawn last).
+fn add_marker_layer(data: &[u8], name: &str, corner: IVec2, size: u16, rgb: [u8; 3]) -> Result<Vec<u8>, String> {
+    let u16_at = |p: usize| u16::from_le_bytes([data[p], data[p + 1]]);
+    let u32_at = |p: usize| u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]);
+    if data.len() < 144 || u16_at(4) != 0xA5E0 || u16_at(12) != 32 {
+        return Err("not an RGBA .aseprite file".into());
+    }
+    let frame = 128;
+    let frame_len = u32_at(frame) as usize;
+    if u16_at(frame + 4) != 0xF1FA || frame + frame_len > data.len() {
+        return Err("bad first frame".into());
+    }
+    let chunks = match u32_at(frame + 12) as usize {
+        0 => u16_at(frame + 6) as usize,
+        n => n,
+    };
+    // Find the end of the last layer chunk, counting the layers.
+    let (mut pos, mut layers, mut after_layers) = (frame + 16, 0u16, frame + 16);
+    for _ in 0..chunks {
+        let len = u32_at(pos) as usize;
+        if len < 6 || pos + len > frame + frame_len {
+            return Err("bad chunk".into());
+        }
+        if u16_at(pos + 4) == 0x2004 {
+            layers += 1;
+            after_layers = pos + len;
+        }
+        pos += len;
+    }
+
+    let mut layer = Vec::new();
+    layer.extend(3u16.to_le_bytes()); // visible | editable
+    layer.extend(0u16.to_le_bytes()); // normal layer
+    layer.extend(0u16.to_le_bytes()); // top level
+    layer.extend([0u8; 4]); // default size (ignored)
+    layer.extend(0u16.to_le_bytes()); // blend: normal
+    layer.push(255); // opacity
+    layer.extend([0u8; 3]);
+    layer.extend((name.len() as u16).to_le_bytes());
+    layer.extend(name.as_bytes());
+
+    let pixels: Vec<u8> = (0..size as usize * size as usize).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect();
+    let mut cel = Vec::new();
+    cel.extend(layers.to_le_bytes()); // the new layer's index
+    cel.extend((corner.x as i16).to_le_bytes());
+    cel.extend((corner.y as i16).to_le_bytes());
+    cel.push(255); // opacity
+    cel.extend(2u16.to_le_bytes()); // compressed image
+    cel.extend(0i16.to_le_bytes()); // z-index
+    cel.extend([0u8; 5]);
+    cel.extend(size.to_le_bytes());
+    cel.extend(size.to_le_bytes());
+    cel.extend(miniz_oxide::deflate::compress_to_vec_zlib(&pixels, 6));
+
+    let chunk = |kind: u16, body: &[u8]| {
+        let mut c = Vec::with_capacity(body.len() + 6);
+        c.extend(((body.len() + 6) as u32).to_le_bytes());
+        c.extend(kind.to_le_bytes());
+        c.extend(body);
+        c
+    };
+    let frame_end = frame + frame_len;
+    let mut out = Vec::with_capacity(data.len() + 256);
+    out.extend(&data[..after_layers]);
+    out.extend(chunk(0x2004, &layer));
+    out.extend(&data[after_layers..frame_end]);
+    out.extend(chunk(0x2005, &cel));
+    out.extend(&data[frame_end..]);
+
+    let added = out.len() - data.len();
+    let n = chunks + 2;
+    out[frame..frame + 4].copy_from_slice(&((frame_len + added) as u32).to_le_bytes());
+    out[frame + 6..frame + 8].copy_from_slice(&(n.min(0xFFFF) as u16).to_le_bytes());
+    out[frame + 12..frame + 16].copy_from_slice(&(n as u32).to_le_bytes());
+    let total = out.len() as u32;
+    out[0..4].copy_from_slice(&total.to_le_bytes());
+    Ok(out)
 }

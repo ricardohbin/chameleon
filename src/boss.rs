@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use crate::{
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    dragonfly,
+    dragonfly, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -66,7 +66,7 @@ impl Plugin for BossPlugin {
 
 /// The bosses beaten so far, in order. Each one gives a power for good: the
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
-/// air spin. F8 forgets them.
+/// air spin, the spider walking on walls. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -91,6 +91,11 @@ impl Defeated {
     pub fn spin(&self) -> bool {
         self.0.contains(&BossKind::Dragonfly)
     }
+
+    /// Pushing into a wall: walking on it.
+    pub fn climb(&self) -> bool {
+        self.0.contains(&BossKind::Spider)
+    }
 }
 
 /// A boss was just killed (its power is earned now).
@@ -104,6 +109,7 @@ impl BossKind {
             BossKind::Roach => "DASH  (Shift / K)",
             BossKind::Wasp => "VENOM SPIT  (Right click / G)",
             BossKind::Dragonfly => "AIR SPIN  (attack in the air)",
+            BossKind::Spider => "WALL WALK  (push into a wall, W / S)",
         }
     }
 }
@@ -119,10 +125,11 @@ pub enum BossKind {
     Wasp,
     Roach,
     Dragonfly,
+    Spider,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 3] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly];
+    pub const ALL: [BossKind; 4] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -130,6 +137,7 @@ impl BossKind {
             BossKind::Roach => terrain.roach,
             BossKind::Wasp => terrain.wasp,
             BossKind::Dragonfly => terrain.dragonfly,
+            BossKind::Spider => terrain.spider,
         }
     }
 
@@ -141,11 +149,12 @@ impl BossKind {
             BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
             BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
             BossKind::Dragonfly => dragonfly::spawn(commands, meshes, materials, &arena),
+            BossKind::Spider => spider::spawn(commands, meshes, materials, &arena, terrain),
         };
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let arena_rect = match self {
             BossKind::Roach => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
-            BossKind::Wasp | BossKind::Dragonfly => chamber(terrain, marker, 70),
+            BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
         let region = terrain
@@ -224,6 +233,7 @@ impl Arena {
             BossKind::Roach => terrain.roach.unwrap_or(fallback),
             BossKind::Wasp => terrain.wasp.unwrap_or(fallback + Vec2::Y * 230.0),
             BossKind::Dragonfly => terrain.dragonfly.unwrap_or(fallback + Vec2::Y * 230.0),
+            BossKind::Spider => terrain.spider.unwrap_or(fallback + Vec2::Y * 230.0),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.

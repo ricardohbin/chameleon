@@ -289,6 +289,9 @@ fn hint(defeated: &Defeated) -> String {
     if defeated.spin() {
         s.push_str("   Attack in the air: spin");
     }
+    if defeated.climb() {
+        s.push_str("   Walls: climb (W/S), Space: leap off");
+    }
     s
 }
 

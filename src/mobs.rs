@@ -116,6 +116,8 @@ pub enum MobKind {
     Rat,
     /// Spider on a silk thread from a ceiling: drops on the chameleon, climbs back.
     Spider,
+    /// Hatched from the spider boss's eggs: small, quick, swarms at the chameleon.
+    Spiderling,
 }
 
 impl MobKind {
@@ -131,6 +133,7 @@ impl MobKind {
             MobKind::Nest => &NEST,
             MobKind::Rat => &RAT,
             MobKind::Spider => &SPIDER,
+            MobKind::Spiderling => &SPIDERLING,
         }
     }
 }
@@ -411,6 +414,28 @@ static SPIDER: MobSpec = MobSpec {
     food: 0.5,
 };
 
+static SPIDERLING: MobSpec = MobSpec {
+    moves: Moves::Walk,
+    hp: 1,
+    scale: 1.1,
+    radius: 11.0,
+    foot: 6.0 * 1.1,
+    blood: Fluid::Blue,
+    speed: 110.0,
+    sense: 520.0,
+    windup: 0.3,
+    attack_speed: 420.0,
+    attack_time: 0.45,
+    recover: 0.7,
+    leash: 700.0,
+    damage: 1,
+    stubborn: false,
+    initiative: 0.2,
+    veteran: true,
+    // Hatched, not found: nothing to farm.
+    food: 0.0,
+};
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum State {
     Idle,
@@ -575,7 +600,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -591,7 +616,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
                     a.floor + 600.0,
                 ))],
                 // Her home and the whole chamber she fights in.
-                BossKind::Wasp | BossKind::Dragonfly => vec![
+                BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider => vec![
                     Zone::Circle(a.home, WASP_CLEAR),
                     Zone::Rect(Rect::new(a.left - 400.0, a.floor - 250.0, a.right + 400.0, a.home.y.max(a.floor) + 500.0)),
                 ],
@@ -692,6 +717,13 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
             (MobKind::Spider, 0.25),
             (MobKind::Flea, 0.2),
             (MobKind::Rat, 0.2),
+        ],
+        // Its webs: spiders everywhere, and what gets caught in them.
+        BossKind::Spider => vec![
+            (MobKind::Spider, 0.4),
+            (MobKind::Fly, 0.25),
+            (MobKind::Rat, 0.2),
+            (MobKind::Flea, 0.15),
         ],
     }
 }

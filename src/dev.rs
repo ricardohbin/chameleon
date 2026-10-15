@@ -48,6 +48,9 @@ impl Plugin for DevPlugin {
         if std::env::var("PINK").is_ok() {
             app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Dragonfly));
         }
+        if std::env::var("BLUE").is_ok() {
+            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Spider));
+        }
         if std::env::var("TOUR").is_ok() {
             app.add_systems(Update, tour.after(player::move_player).before(camera::follow_player));
         }
@@ -196,6 +199,9 @@ fn tour(
     }
     if let Some(p) = terrain.dragonfly {
         stops.push(("dragonfly".into(), p, 1.0));
+    }
+    if let Some(p) = terrain.spider {
+        stops.push(("spider".into(), p, 1.0));
     }
     let slug = |name: &str| name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
     for a in &terrain.areas {

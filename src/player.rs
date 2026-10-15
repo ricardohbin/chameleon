@@ -45,6 +45,13 @@ const DASH_SPEED: f32 = 1100.0;
 const DASH_TIME: f32 = 0.25;
 const DASH_COOLDOWN: f32 = 0.45;
 const DASH_KEYS: [KeyCode; 3] = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::KeyK];
+/// Wall walking (earned by beating the spider): pushing into a tall wall
+/// gets the chameleon on it; W/S walk up and down at `CLIMB_SPEED`, Space
+/// leaps off (`WALL_LEAP`), pushing away lets go. After letting go it can't
+/// grab a wall again for `CLIMB_LOCK`.
+const CLIMB_SPEED: f32 = 170.0;
+const WALL_LEAP: Vec2 = Vec2::new(380.0, 640.0);
+const CLIMB_LOCK: f32 = 0.25;
 /// Anywhere else, slopes (rise per run) up to `WALK_SLOPE` (45°) are walked
 /// normally; above it, walking uphill gets harder and the slope pulls you
 /// down, until `STEEP_SLOPE` (60°), where sliding is unavoidable. Jumps tilt
@@ -137,6 +144,9 @@ pub struct Player {
     pub step: f32,
     /// Seconds left of sliding momentum (kept through the hops down a steep slope).
     pub slipping: f32,
+    /// On a wall (wall walking): which side it is on (-1 left, 1 right).
+    pub climbing: Option<f32>,
+    climb_lock: f32,
     /// Seconds left of the current dash.
     pub dash: f32,
     dash_ready: bool,
@@ -463,6 +473,30 @@ pub fn move_player(
         1.0 - w.kind.t().wade * (w.fraction / SWIM_FRACTION).min(1.0)
     });
     let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1);
+
+    // --- Wall walking: push into a wall to get on it ---
+    p.climb_lock = (p.climb_lock - dt).max(0.0);
+    let here = tf.translation.truncate();
+    let wall = |side: f32| terrain.box_hits(here + Vec2::X * side * 3.0, HALF);
+    // A real wall, not a step to walk up.
+    let tall = |side: f32| terrain.box_hits(here + Vec2::new(side * 3.0, STEP_UP + 4.0), HALF);
+    let can_climb = defeated.climb() && !flying && !swimming && !dead && p.stun <= 0.0;
+    if let Some(side) = p.climbing {
+        if !can_climb || dir == -side || p.dash > 0.0 {
+            p.climbing = None;
+            p.climb_lock = CLIMB_LOCK;
+        } else if !wall(side) {
+            // Over the top: a hop onto the ledge (off the bottom: just let go).
+            p.climbing = None;
+            if p.vel.y > 0.0 {
+                p.vel = Vec2::new(side * 180.0, 330.0);
+            }
+        }
+    } else if can_climb && p.climb_lock <= 0.0 && dir != 0.0 && wall(dir) && tall(dir) {
+        p.climbing = Some(dir);
+        p.vel = Vec2::ZERO;
+    }
+    let climbing = p.climbing;
     if !flying {
         let vx0 = p.vel.x;
         p.vel.x = match slide {
@@ -509,7 +543,7 @@ pub fn move_player(
         } else {
             p.jump_buffer - dt
         };
-        if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead {
+        if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead && climbing.is_none() {
             // On steep ground the jump tilts toward the slope's normal: no hopping up walls.
             let normal = slope.map_or(Vec2::Y, |s| Vec2::new(-s, 1.0).normalize());
             let jump = Vec2::Y.lerp(normal, hardness).normalize();
@@ -565,6 +599,18 @@ pub fn move_player(
                 p.ground = None;
             }
             p.vel.y = swim_dy(&p, w, y, (swim_up, swim_down), dead, dt);
+        } else if let Some(side) = climbing {
+            // On the wall: W/S (arrows) walk up and down it, Space leaps off.
+            let up = keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) as i32 - keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) as i32;
+            p.vel = Vec2::new(side * 60.0, up as f32 * CLIMB_SPEED * (1.0 - 0.55 * p.webbed).max(0.1));
+            p.facing = side;
+            if keys.just_pressed(KeyCode::Space) {
+                p.vel = Vec2::new(-side * WALL_LEAP.x, WALL_LEAP.y);
+                p.facing = -side;
+                p.climbing = None;
+                p.climb_lock = CLIMB_LOCK;
+                p.jump_buffer = 0.0;
+            }
         } else {
             p.vel.y = (p.vel.y - GRAVITY * dt).max(-MAX_FALL);
         }
@@ -789,6 +835,10 @@ pub fn move_player(
     // Soft ground (`Style::softness`) shortens the fall; platforms are hard; water
     // takes the fall (`carry`: all of it if deep enough).
     let feet_y = pos.y - HALF.y;
+    // Holding on to a wall: no fall builds up.
+    if p.climbing.is_some() {
+        p.fall_top = feet_y;
+    }
     if wet_f > 0.0 {
         p.fall_top = feet_y + p.carry;
         p.safe_spot = safe_before;

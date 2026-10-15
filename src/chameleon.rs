@@ -229,6 +229,8 @@ pub struct ChameleonAnim {
     earned: Vec<Color>,
     /// 0 = alive, 1 = lying dead belly-up.
     death: f32,
+    /// 0 = upright, 1 = on a wall (turned head up, belly to the wall).
+    climb: f32,
     rng: u32,
 }
 
@@ -534,6 +536,7 @@ pub fn spawn_chameleon(
         bite: None,
         earned: Vec::new(),
         death: 0.0,
+        climb: 0.0,
         rng: 0x9E37_79B9,
     });
 }
@@ -666,14 +669,23 @@ pub fn update_anim_state(
 ) {
     let dt = time.delta_secs();
     let (mut p, mut a) = player.into_inner();
-    let speed = p.vel.x.abs();
+    let on_wall = p.climbing.is_some();
+    // On a wall it walks up and down it.
+    let speed = if on_wall { p.vel.y.abs() } else { p.vel.x.abs() };
+    a.climb = smooth(a.climb, if on_wall { 1.0 } else { 0.0 }, 14.0, dt);
 
     // Swimming: the legs paddle (the walk cycle at its own pace), more when tired.
     let paddle = if p.swimming && p.dead.is_none() { 0.35 + 0.65 * (p.vel.length() / 170.0).min(1.0) } else { 0.0 };
     a.stride = smooth(a.stride, if paddle > 0.0 { paddle } else { (speed / 260.0).min(1.0) }, 8.0, dt);
-    a.air = smooth(a.air, if p.grounded || paddle > 0.0 { if paddle > 0.0 { 0.35 } else { 0.0 } } else { 1.0 }, 10.0, dt);
+    a.air = smooth(a.air, if p.grounded || paddle > 0.0 || on_wall { if paddle > 0.0 { 0.35 } else { 0.0 } } else { 1.0 }, 10.0, dt);
     // Walking backwards (facing the mouse) plays the walk cycle backwards.
-    a.phase += if paddle > 0.0 { dt * 9.0 * (0.6 + 0.4 * paddle) } else { dt * p.vel.x * p.facing * 0.075 };
+    a.phase += if paddle > 0.0 {
+        dt * 9.0 * (0.6 + 0.4 * paddle)
+    } else if on_wall {
+        dt * p.vel.y * 0.075
+    } else {
+        dt * p.vel.x * p.facing * 0.075
+    };
 
     let dead = p.dead.is_some();
     a.death = if dead { smooth(a.death, 1.0, 6.0, dt) } else { 0.0 };
@@ -797,7 +809,9 @@ fn pose_parts(
                     let k = t / SPIN_TIME;
                     -2.0 * PI * k * k * (3.0 - 2.0 * k)
                 });
-                tf.rotation = Quat::from_rotation_z((lerp(tilt, PI, a.death) + spin) * p.facing);
+                // On a wall: turned a quarter, head up, belly against it.
+                let wall = 0.5 * PI * a.climb;
+                tf.rotation = Quat::from_rotation_z((lerp(tilt, PI, a.death) + spin + wall) * p.facing);
                 tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0) + player::RIG_DROP;
                 // Blink while invulnerable.
                 let blink = p.invuln > 0.0 && p.dead.is_none() && (t * 30.0).sin() > 0.0;

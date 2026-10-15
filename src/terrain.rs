@@ -130,6 +130,7 @@ pub struct Terrain {
     /// The flying bosses: where they were drawn.
     pub wasp: Option<Vec2>,
     pub dragonfly: Option<Vec2>,
+    pub spider: Option<Vec2>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -182,6 +183,7 @@ impl Terrain {
             roach: None,
             wasp: None,
             dragonfly: None,
+            spider: None,
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -193,6 +195,7 @@ impl Terrain {
         t.roach = marker(MarkerKind::Roach).map(|p| t.rest(to_world(p)));
         t.wasp = marker(MarkerKind::Wasp).map(to_world);
         t.dragonfly = marker(MarkerKind::Dragonfly).map(to_world);
+        t.spider = marker(MarkerKind::Spider).map(to_world);
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();

@@ -33,6 +33,8 @@ const RAT_SKIN: Color = Color::srgb(0.66, 0.50, 0.48);
 const SPIDER_BODY: Color = Color::srgb(0.10, 0.09, 0.09);
 const SPIDER_MARK: Color = Color::srgb(0.62, 0.10, 0.08);
 const SILK: Color = Color::srgba(0.92, 0.92, 0.90, 0.55);
+/// The spider boss's blue, on its brood.
+const SPIDERLING_MARK: Color = Color::srgb_u8(0x7f, 0x9f, 0xd6);
 /// A nest hangs this far (in its drawing units) below the ceiling.
 pub const NEST_STALK: f32 = 22.0;
 /// Mobs are drawn between the player (10) and the bosses (12).
@@ -108,6 +110,7 @@ pub fn spawn(
         MobKind::Nest => nest(&mut b, materials, rig),
         MobKind::Rat => rat(&mut b, materials, rig),
         MobKind::Spider => spider(&mut b, materials, rig, root),
+        MobKind::Spiderling => spiderling(&mut b, materials, rig),
     };
     commands.entity(root).insert(Mob::new(kind, at, mats, parent));
 }
@@ -425,6 +428,34 @@ fn spider(b: &mut Builder, materials: &mut Assets<ColorMaterial>, rig: Entity, r
         b.part(stroke(&fang, |t| 0.9 - 0.5 * t, 1.0, 1.0, |_| 1.0), &body, Vec3::new(0.0, 0.0, 0.01), head);
     }
     vec![(body, SPIDER_BODY), (mark, SPIDER_MARK)]
+}
+
+/// A spiderling walking, side view, facing +X, feet at y ≈ -6: a round
+/// abdomen with a blue spot, the small front body, eight legs (four a side,
+/// grouped on three bones for the walk).
+fn spiderling(b: &mut Builder, materials: &mut Assets<ColorMaterial>, rig: Entity) -> Vec<(Handle<ColorMaterial>, Color)> {
+    let body = materials.add(SPIDER_BODY);
+    let mark = materials.add(SPIDERLING_MARK);
+    let eye = materials.add(Color::WHITE);
+    // (pair, hip x, reach): the front pair carries two legs.
+    let legs = [(0, 2.5, 6.5), (0, 1.5, 5.0), (1, 0.5, 2.0), (2, -0.5, -4.5)];
+    for near in [false, true] {
+        let z = if near { 0.05 } else { -0.2 };
+        let bones: Vec<Entity> = (0..3).map(|pair| b.bone(Vec3::new(0.0, 0.0, z), rig, BoneKind::Leg { pair, near })).collect();
+        for (pair, x, reach) in legs {
+            let x = x + if near { 0.0 } else { 0.8 };
+            let path = smooth_open(&[Vec2::new(x, 0.5), Vec2::new(x + reach * 0.45, 4.5), Vec2::new(x + reach, -6.0)], 4);
+            b.part(stroke(&path, |t| 0.9 - 0.4 * t, 1.0, 0.8, |_| 1.0), &body, Vec3::ZERO, bones[pair]);
+        }
+    }
+    b.part(fill(&ellipse_pts(5.0, 4.2, 18), |p| 0.6 + 0.4 * ((p.y + 4.2) / 8.4)), &body, Vec3::new(-4.5, 1.5, 0.1), rig);
+    b.part(fill(&ellipse_pts(1.6, 1.3, 10), |_| 1.0), &mark, Vec3::new(-4.8, 3.0, 0.12), rig);
+    let head = b.bone(Vec3::new(2.2, 0.5, 0.15), rig, BoneKind::Head);
+    b.part(fill(&ellipse_pts(3.0, 2.4, 14), |p| 0.7 + 0.3 * ((p.y + 2.4) / 4.8)), &body, Vec3::ZERO, head);
+    b.part(fill(&ellipse_pts(0.5, 0.5, 6), |_| 1.0), &eye, Vec3::new(2.0, 0.8, 0.02), head);
+    let fang = [Vec2::new(2.6, -1.4), Vec2::new(3.2, -3.0)];
+    b.part(stroke(&fang, |t| 0.8 - 0.4 * t, 1.0, 1.0, |_| 1.0), &body, Vec3::new(0.0, 0.0, 0.01), head);
+    vec![(body, SPIDER_BODY), (mark, SPIDERLING_MARK)]
 }
 
 /// A small wasp, facing +X, centered on its thorax.
