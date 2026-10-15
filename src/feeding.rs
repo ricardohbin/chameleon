@@ -16,6 +16,7 @@ use crate::{
     gore::{Bleed, Fluid, Paint},
     mobs::{Mob, State},
     player::{self, Player},
+    shapes::Rng,
 };
 
 /// Remains count as in reach a bit further than a hit (they lie on the ground).
@@ -27,6 +28,7 @@ pub struct FeedingPlugin;
 
 impl Plugin for FeedingPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Update, leak_carcasses);
         app.add_systems(Update, (feed, devour).chain().after(chameleon::update_anim_state).after(player::move_player));
     }
 }
@@ -125,6 +127,30 @@ fn feed(
     paint.write(Paint { amount: (2.0 * big) as u32, fluid: meal.fluid });
     shake.add(0.12 * big);
     stop.add(0.04);
+}
+
+/// A boss carcass nobody has eaten yet keeps spurting its blood now and then.
+fn leak_carcasses(
+    time: Res<Time>,
+    mut rng: Local<Option<Rng>>,
+    mut bleed: MessageWriter<Bleed>,
+    bosses: Query<(&Boss, &Transform), Without<PickedClean>>,
+) {
+    let dt = time.delta_secs();
+    let rng = rng.get_or_insert(Rng(0x9E37_79B9));
+    for (boss, tf) in &bosses {
+        if boss.dead && rng.chance(dt * 0.6) {
+            bleed.write(Bleed {
+                pos: tf.translation.truncate(),
+                dir: Vec2::Y,
+                spread: 1.0,
+                speed: 220.0,
+                amount: 6,
+                fluid: boss.spec.blood,
+                sticky: true,
+            });
+        }
+    }
 }
 
 fn devour(mut commands: Commands, time: Res<Time>, mut corpses: Query<(Entity, &mut Devoured, &mut Transform)>) {

@@ -49,6 +49,7 @@ impl Plugin for BossPlugin {
                     restart_on_reload,
                     lairs,
                     slash_bosses,
+                    tick_poise,
                     reset_on_respawn,
                     flash_bosses,
                     update_status,
@@ -242,6 +243,12 @@ pub struct Boss {
     pub dead: bool,
     /// Woken by the chameleon entering its lair (asleep, it stays home).
     pub awake: bool,
+    /// Waiting for its introduction (it must be on screen first): no health bar yet.
+    pub staged: bool,
+    /// Hits taken lately (it fades): enough of them and it stops flinching and hits back.
+    pressure: f32,
+    /// Time left in which hits don't stagger it.
+    armor: f32,
     /// Last slash that hit it (one hit per slash).
     hit_by: u32,
     /// 1 = white flash after a hit, fades to 0.
@@ -251,8 +258,14 @@ pub struct Boss {
 }
 
 impl Boss {
+    /// A boss that introduces itself: it hides its health bar until it does.
+    pub fn staged(mut self) -> Self {
+        self.staged = true;
+        self
+    }
+
     pub fn new(spec: &'static BossSpec, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>) -> Self {
-        Self { spec, hp: spec.hp, home, dead: false, awake: false, hit_by: 0, flash: 0.0, mats }
+        Self { spec, hp: spec.hp, home, dead: false, awake: false, staged: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
     }
 
     /// Second phase: below half health.
@@ -261,12 +274,32 @@ impl Boss {
     }
 }
 
+/// Hits in a row (they fade) that make a boss stop flinching and answer.
+const POISE_HITS: f32 = 3.0;
+/// Hits fade out at this rate (per second).
+const POISE_FADE: f32 = 0.8;
+/// After answering, it shrugs off hits (no stagger) for this long.
+const ARMOR_TIME: f32 = 2.0;
+
 /// Sent when a boss is slashed. `dir` points away from the chameleon.
 #[derive(Message)]
 pub struct BossHit {
     pub boss: Entity,
     pub dir: Vec2,
     pub killed: bool,
+    /// The blow staggers it (else it keeps doing what it was doing).
+    pub stagger: bool,
+    /// Too many hits in a row: it answers with an attack or gets out of reach.
+    pub retaliate: bool,
+}
+
+/// Hits fade and the armor wears off.
+fn tick_poise(time: Res<Time>, mut bosses: Query<&mut Boss>) {
+    let dt = time.delta_secs();
+    for mut b in &mut bosses {
+        b.pressure = (b.pressure - POISE_FADE * dt).max(0.0);
+        b.armor = (b.armor - dt).max(0.0);
+    }
 }
 
 /// Anything a boss spawns outside its body (projectiles, gibs): cleared when swapping bosses.
@@ -475,7 +508,23 @@ fn slash_bosses(
         let killed = boss.hp <= 0;
         boss.dead = killed;
         let fluid = boss.spec.blood;
-        hits.write(BossHit { boss: e, dir: (dir + Vec2::Y * 0.3).normalize(), killed });
+        // A flurry doesn't keep it flinching: after a few hits it shrugs off
+        // the next ones for a while and answers.
+        let (stagger, retaliate) = if killed {
+            (true, false)
+        } else if boss.armor > 0.0 {
+            (false, false)
+        } else {
+            boss.pressure += 1.0;
+            if boss.pressure >= POISE_HITS {
+                boss.pressure = 0.0;
+                boss.armor = ARMOR_TIME;
+                (false, true)
+            } else {
+                (true, false)
+            }
+        };
+        hits.write(BossHit { boss: e, dir: (dir + Vec2::Y * 0.3).normalize(), killed, stagger, retaliate });
 
         // The gush: a fan of blood along the cut, and (slashed) a backsplash right onto the chameleon.
         let gush = Bleed { pos, dir: dir + Vec2::Y * 0.35, spread: 0.8, speed: 650.0, amount: if slashed { 60 } else { 30 }, fluid, sticky: true };
@@ -559,7 +608,7 @@ fn update_status(
         status.name = boss.spec.name;
         status.color = boss.spec.color;
         status.health = boss.hp.max(0) as f32 / boss.spec.hp as f32;
-        status.engaged = p.dead.is_none() && !boss.dead;
+        status.engaged = p.dead.is_none() && !boss.dead && !boss.staged;
     }
 }
 

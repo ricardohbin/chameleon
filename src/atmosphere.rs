@@ -35,7 +35,7 @@ impl Plugin for AtmospherePlugin {
             .init_resource::<Glare>()
             .insert_resource(Lightning { next: 3.0, since: 99.0, rng: Rng(0xF1A5) })
             .add_systems(Startup, (setup_backdrop, spawn_lightning, spawn_particles))
-            .add_systems(Update, (drift_particles, animate_smoke, animate_fire, lightning))
+            .add_systems(Update, (drift_particles, animate_smoke, animate_fire, lightning, tint_sky))
             .add_systems(PostUpdate, (rebuild_backdrop, parallax).chain().before(TransformSystems::Propagate));
     }
 }
@@ -73,6 +73,10 @@ struct Fire {
     seed: f32,
     base_alpha: f32,
 }
+
+/// The sky gradient, tinted by the region the camera is in.
+#[derive(Component)]
+struct Sky;
 
 #[derive(Component)]
 struct Flash;
@@ -268,6 +272,7 @@ fn spawn_backdrop(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials:
 
     // Sky, glued to the screen and tall enough for any zoom: dark smoke-choked
     // top, burning horizon, hazy dark ground below it (seen from deep pits).
+    let sky_mat = materials.add(Color::WHITE);
     let sky = gradient_column(
         60000.0,
         &[
@@ -279,13 +284,12 @@ fn spawn_backdrop(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials:
             (-30000.0, haze),
         ],
     );
-    layer(commands, meshes, sky, &white, Vec2::ZERO, -100.0, Vec2::ONE);
+    let id = layer(commands, meshes, sky, &sky_mat, Vec2::ZERO, -100.0, Vec2::ONE);
+    commands.entity(id).insert(Sky);
 
-    // A pale, sick sun behind the haze.
-    for (r, a) in [(120.0, 0.06), (80.0, 0.12), (46.0, 0.85)] {
-        let mat = blend(materials, Color::srgba(0.95, 0.88, 0.80, a));
-        layer(commands, meshes, Circle::new(r).into(), &mat, Vec2::new(-220.0, 150.0), -99.0, Vec2::new(0.97, 1.0));
-    }
+    // The farthest layer, almost fixed to the sky: a hazy skyline that follows
+    // the region, with wide gaps showing the sky between its pieces.
+    far_pieces(commands, meshes, materials, &horizon, &mut rng, &span, &seen_from);
 
     // Ruined skylines, far to near, each on its own hazy ground. `screen_y`:
     // where its ground line shows, relative to the camera, standing on the ground.
@@ -894,5 +898,150 @@ fn parallax(
         let p = layer.origin + cam * layer.factor;
         tf.translation.x = p.x;
         tf.translation.y = p.y;
+    }
+}
+
+/// How each region colors the sky behind it (multiplies the gradient).
+fn sky_tint(style: Style) -> Vec3 {
+    match style {
+        Style::Concrete => Vec3::new(1.0, 1.0, 1.0),
+        Style::Trash => Vec3::new(1.1, 1.0, 0.6),
+        Style::Sewer | Style::Treatment => Vec3::new(0.65, 1.05, 0.8),
+        Style::Park => Vec3::new(0.85, 1.05, 0.7),
+        Style::Mall => Vec3::new(1.05, 0.7, 1.1),
+        Style::Dam => Vec3::new(0.65, 0.85, 1.2),
+        _ => Vec3::new(0.8, 0.8, 0.85),
+    }
+}
+
+fn tint_sky(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    camera: Single<&Transform, With<MainCamera>>,
+    sky: Single<&MeshMaterial2d<ColorMaterial>, With<Sky>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut current: Local<Option<Vec3>>,
+) {
+    let target = sky_tint(terrain.style_at(camera.translation.truncate()));
+    let now = current.get_or_insert(target);
+    *now += (target - *now) * (1.0 - (-1.5 * time.delta_secs()).exp());
+    if let Some(mut m) = materials.get_mut(&sky.0) {
+        m.color = Color::linear_rgb(now.x, now.y, now.z);
+    }
+}
+
+/// Distant silhouettes in the style of each region, far and hazy, with gaps
+/// between them so the sky shows through.
+fn far_pieces(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    horizon: &Horizon,
+    rng: &mut Rng,
+    span: &impl Fn(f32) -> (f32, f32),
+    seen_from: &impl Fn(f32, Vec2) -> Style,
+) {
+    let factor = Vec2::new(0.96, 0.97);
+    let mat = materials.add(Color::srgb(0.30, 0.21, 0.18));
+    let (mut x, extent) = span(factor.x);
+    while x < extent {
+        let style = seen_from(x, factor);
+        let origin = horizon.anchor(x, factor, -40.0);
+        // Pieces stand on a foot reaching well below the screen.
+        let footed = |mut top: Vec<Vec2>| {
+            let last = top.len() - 1;
+            top[0].y = -900.0;
+            top[last].y = -900.0;
+            fill(&top, |p| 0.85 + 0.15 * (p.y / 300.0).clamp(0.0, 1.0))
+        };
+        let (w, meshes_out): (f32, Vec<Mesh>) = match style {
+            Style::Concrete | Style::Mall => {
+                // A cluster of thin broken towers.
+                let w = rng.range(120.0, 260.0);
+                let n = 2 + rng.below(3);
+                let towers = (0..n)
+                    .map(|i| {
+                        let tw = rng.range(26.0, 50.0);
+                        let th = rng.range(160.0, 400.0);
+                        let mut o = ruin_outline(rng, tw, th);
+                        for p in &mut o {
+                            p.x += -w / 2.0 + w * (i as f32 + 0.5) / n as f32;
+                        }
+                        footed(o)
+                    })
+                    .collect();
+                (w, towers)
+            }
+            Style::Trash | Style::Sinkhole => {
+                // Mounds of junk, sometimes with a tall chimney of smoke.
+                let w = rng.range(280.0, 520.0);
+                let h = rng.range(70.0, 150.0);
+                let mut pts = vec![Vec2::new(-w / 2.0, 0.0)];
+                let mut px = -w / 2.0;
+                while px < w / 2.0 {
+                    let edge = 1.0 - (px / (w / 2.0)).abs().powi(2);
+                    pts.push(Vec2::new(px, h * (0.2 + 0.8 * edge) * rng.range(0.75, 1.0)));
+                    px += rng.range(16.0, 34.0);
+                }
+                pts.push(Vec2::new(w / 2.0, 0.0));
+                (w, vec![footed(pts)])
+            }
+            Style::Sewer | Style::Treatment | Style::Subway => {
+                // Cooling towers and tall stacks.
+                let w = rng.range(160.0, 320.0);
+                let (h, r) = (rng.range(120.0, 220.0), rng.range(36.0, 60.0));
+                let tower = vec![Vec2::new(-r, 0.0), Vec2::new(-r * 0.62, h * 0.55), Vec2::new(-r * 0.72, h), Vec2::new(r * 0.72, h), Vec2::new(r * 0.62, h * 0.55), Vec2::new(r, 0.0)];
+                let mut v = vec![footed(tower)];
+                let sx = rng.range(r + 40.0, w);
+                let sh = rng.range(220.0, 340.0);
+                v.push(fill(&[Vec2::new(sx - 9.0, -900.0), Vec2::new(sx + 9.0, -900.0), Vec2::new(sx + 6.0, sh), Vec2::new(sx - 6.0, sh)], |_| 1.0));
+                (w + 40.0, v)
+            }
+            Style::Park => {
+                // Soft hills with a few dead trees.
+                let w = rng.range(420.0, 800.0);
+                let h = rng.range(60.0, 130.0);
+                let hill: Vec<Vec2> = (0..=16)
+                    .map(|i| {
+                        let t = i as f32 / 16.0;
+                        Vec2::new(-w / 2.0 + w * t, h * (std::f32::consts::PI * t).sin().powf(0.8))
+                    })
+                    .collect();
+                let mut v = vec![footed(hill)];
+                for _ in 0..2 + rng.below(3) {
+                    let tx = rng.range(-w / 3.0, w / 3.0);
+                    let th = rng.range(70.0, 130.0);
+                    let trunk = smooth_open(&[Vec2::new(tx, h * 0.6), Vec2::new(tx + rng.range(-8.0, 8.0), h * 0.6 + th * 0.5), Vec2::new(tx + rng.range(-25.0, 25.0), h * 0.6 + th)], 5);
+                    v.push(stroke(&trunk, |t| 4.0 * (1.0 - t) + 1.0, 1.0, 1.0, |_| 1.0));
+                }
+                (w, v)
+            }
+            Style::Dam => {
+                // Cold jagged mountains.
+                let w = rng.range(420.0, 800.0);
+                let h = rng.range(200.0, 380.0);
+                let mut pts = vec![Vec2::new(-w / 2.0, 0.0)];
+                let mut px = -w / 2.0;
+                while px < w / 2.0 {
+                    let edge = 1.0 - (px / (w / 2.0)).abs();
+                    pts.push(Vec2::new(px, h * edge.powf(0.9) * rng.range(0.6, 1.0)));
+                    px += rng.range(30.0, 70.0);
+                }
+                pts.push(Vec2::new(w / 2.0, 0.0));
+                (w, vec![footed(pts)])
+            }
+            _ => {
+                // Underground regions: a faint crag, rarely seen.
+                let w = rng.range(300.0, 500.0);
+                let h = rng.range(80.0, 160.0);
+                let pts = vec![Vec2::new(-w / 2.0, 0.0), Vec2::new(-w * 0.2, h), Vec2::new(0.0, h * 0.6), Vec2::new(w * 0.25, h * 0.9), Vec2::new(w / 2.0, 0.0)];
+                (w, vec![footed(pts)])
+            }
+        };
+        for mesh in meshes_out {
+            layer(commands, meshes, mesh, &mat, origin + Vec2::X * w / 2.0, -98.0, factor);
+        }
+        // Wide, uneven gaps: the sky shows through between pieces.
+        x += w + rng.range(120.0, 700.0);
     }
 }

@@ -6,6 +6,13 @@
 //! twice, then dive at the chameleon. Below half health it gets enraged:
 //! faster, spits fans of three, dives after every spit. On death its wings
 //! and abdomen tear off; the rest falls, leaks, and stays where it lands.
+//! It does not attack on sight: the first time it is in view it recoils,
+//! then rears up and taunts (a face-off). Come close and it attacks at once.
+//! Its attacks are prepared: the spit and the dive (which it coils up for) are
+//! committed to where the chameleon stood, so moving away makes them miss. The
+//! dive is a composite: the body hurts anywhere along the pass, the sting only
+//! if the chameleon is where it was aimed. After a flurry of hits it stops
+//! flinching and answers (see `boss.rs`).
 //! Health, getting hit and the death spectacle live in `boss.rs`.
 
 use std::f32::consts::PI;
@@ -14,7 +21,7 @@ use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
     boss::{self, Arena, Boss, BossHit, BossSpec, BossStuff},
-    camera::{self, HitStop, Shake},
+    camera::{self, HitStop, MainCamera, Shake},
     chameleon,
     gore::{Bleed, Fluid},
     level::Platform,
@@ -47,7 +54,24 @@ const SPITS_BEFORE_DIVE: u32 = 2;
 const VENOM_SPEED: f32 = 480.0;
 const VENOM_GRAVITY: f32 = 380.0;
 const VENOM_DAMAGE: i32 = 1;
+/// The sting counts only if the chameleon is this close to the spot it was aimed at.
+const STING_TIGHT: f32 = 70.0;
 const STING_DAMAGE: i32 = 2;
+/// The body hurts anywhere along the dive.
+const BODY_DAMAGE: i32 = 1;
+/// How long it coils before a dive.
+const COIL_TIME: f32 = 0.55;
+/// How far the chameleon can stray from where an attack was aimed before it is wasted.
+const PLAN_SLACK: f32 = 160.0;
+/// Chance a spit goes wild when the chameleon is `PLAN_SLACK` or more off.
+const MISFIRE: f32 = 0.6;
+/// The face-off: a startled recoil, then the taunt.
+const TAUNT_RECOIL: f32 = 0.45;
+const TAUNT_TIME: f32 = 2.0;
+/// The chameleon this close cuts the taunt short.
+const TAUNT_BREAK: f32 = 240.0;
+/// How far inside the screen edge (px) it must be to count as in view.
+const SCREEN_MARGIN: f32 = 60.0;
 /// How close to walls its body gets.
 const BODY_CLEARANCE: f32 = 22.0;
 /// Navigation grid cells (in sketch pixels) and the clearance needed to fly through one.
@@ -106,6 +130,14 @@ struct Wasp {
     replan: f32,
     /// How long it has been looking for a dive lane.
     dive_wait: f32,
+    /// A flurry of hits: answer with an attack or get away (see `BossHit::retaliate`).
+    retaliate: bool,
+    /// Where the chameleon was when it committed to the attack it is preparing.
+    plan: Vec2,
+    /// Pitch (nose up positive) toward the spot it is aiming at.
+    aim: f32,
+    /// It has faced the chameleon off (until the lair resets it).
+    introduced: bool,
 }
 
 /// What a spot is for.
@@ -123,7 +155,11 @@ enum Want {
 enum State {
     Hover,
     Aim(f32),
+    /// Curling up to dive at the spot in `plan`.
+    Coil(f32),
     Dive(f32),
+    /// The face-off before the fight.
+    Taunt(f32),
     Hurt(f32),
     Dead {
         t: f32,
@@ -418,7 +454,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
 
     let mut rng = Rng(0x5EED_1234);
     commands.entity(wasp).insert((
-        Boss::new(&SPEC, home, mats),
+        Boss::new(&SPEC, home, mats).staged(),
         Wasp {
             vel: Vec2::ZERO,
             state: State::Hover,
@@ -433,6 +469,10 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             path: Vec::new(),
             replan: 0.0,
             dive_wait: 0.0,
+            retaliate: false,
+            plan: Vec2::ZERO,
+            aim: 0.0,
+            introduced: false,
         },
     ));
     wasp
@@ -496,7 +536,8 @@ fn think(
     venom: Res<VenomAssets>,
     mut bleed: MessageWriter<Bleed>,
     player: Single<(&mut Player, &Transform), Without<Wasp>>,
-    mut wasps: Query<(Entity, &mut Wasp, &Boss, &mut Transform, Option<&mut boss::Sense>)>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut wasps: Query<(Entity, &mut Wasp, &mut Boss, &mut Transform, Option<&mut boss::Sense>)>,
     platforms: Query<(&Platform, &Transform), (Without<Wasp>, Without<Player>)>,
     terrain: Res<Terrain>,
     mut nav: Local<Nav>,
@@ -506,13 +547,29 @@ fn think(
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
 
-    for (e, mut w, boss, mut tf, mut sense) in &mut wasps {
+    for (e, mut w, mut boss, mut tf, mut sense) in &mut wasps {
         let pos = tf.translation.truncate();
         let to_player = ppos - pos;
         let alive = p.dead.is_none();
         // Awake (the chameleon entered its lair): it hunts until the lair resets it.
-        let aggro = alive && boss.awake;
+        let hunting = alive && boss.awake;
+        // It only fights once it has faced the chameleon off (in view).
+        let aggro = hunting && w.introduced;
         let enraged = boss.enraged();
+        let on_screen = match (camera.0.world_to_viewport(camera.1, pos.extend(0.0)), camera.0.logical_viewport_size()) {
+            (Ok(v), Some(size)) => v.x > SCREEN_MARGIN && v.y > SCREEN_MARGIN && v.x < size.x - SCREEN_MARGIN && v.y < size.y - SCREEN_MARGIN,
+            _ => false,
+        };
+        if !w.introduced {
+            boss.staged = true;
+            if hunting && on_screen && matches!(w.state, State::Hover | State::Hurt(_)) {
+                // First sight: startled, then the face-off.
+                w.introduced = true;
+                boss.staged = false;
+                w.state = State::Taunt(0.0);
+                shake.add(0.2);
+            }
+        }
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
         let wobble = Vec2::new(
             (t * 1.3 + w.seed).sin() * 25.0,
@@ -569,6 +626,27 @@ fn think(
                     }
                 }
             }
+        }
+
+        // Hit too many times in a row: it dives or spits back at once, or darts out of reach.
+        if std::mem::take(&mut w.retaliate) && matches!(w.state, State::Hover | State::Aim(_) | State::Hurt(_) | State::Coil(_) | State::Taunt(_)) {
+            let near = to_player.length() < DIVE_RANGE.2;
+            let sees = terrain.raycast(pos, ppos).is_none();
+            w.replan = 0.0;
+            w.path.clear();
+            w.plan = ppos;
+            w.state = if near && dive_lane(&terrain, pos, ppos) && w.rng.chance(0.5) {
+                w.spits = 0;
+                w.vel = to_player.normalize_or(Vec2::NEG_Y) * 150.0;
+                State::Dive(0.0)
+            } else if near && sees && w.rng.chance(0.5) {
+                State::Aim(0.0)
+            } else {
+                // Out of reach, up and away.
+                w.vel = (-to_player.normalize_or(Vec2::X) + Vec2::Y * 0.5).normalize() * SPEED * 2.0;
+                w.cooldown = w.cooldown.max(0.6);
+                State::Hover
+            };
         }
 
         w.state = match w.state {
@@ -656,15 +734,39 @@ fn think(
                     State::Hurt(s + dt)
                 }
             }
+            State::Coil(s) => {
+                // Pulls back and curls up, the stinger pointing at the spot it committed to.
+                w.facing = if w.plan.x >= pos.x { 1.0 } else { -1.0 };
+                let to = w.plan - pos;
+                w.aim = to.y.atan2(to.x.abs().max(1.0)).clamp(-1.2, 0.6);
+                w.vel = w.vel.lerp(-to.normalize_or(Vec2::X) * 40.0, 1.0 - (-6.0 * dt).exp());
+                let coil = if enraged { COIL_TIME * 0.75 } else { COIL_TIME };
+                if !alive {
+                    State::Hover
+                } else if s >= coil {
+                    w.vel = to.normalize_or(Vec2::NEG_Y) * 150.0;
+                    State::Dive(0.0)
+                } else {
+                    State::Coil(s + dt)
+                }
+            }
             State::Dive(s) => {
-                let dir = to_player.normalize_or(Vec2::NEG_Y);
                 let max = if enraged {
                     DIVE_SPEED * 1.25
                 } else {
                     DIVE_SPEED
                 };
+                // Committed to where the chameleon was (it follows a little): once
+                // past that spot it flies straight on, whatever the chameleon does.
+                let target = w.plan.lerp(ppos, 0.25);
+                let to_target = target - pos;
+                let dir = if to_target.dot(w.vel) < 0.0 || to_target.length() < 40.0 {
+                    w.vel.normalize_or(to_target.normalize_or(Vec2::NEG_Y))
+                } else {
+                    to_target.normalize()
+                };
                 w.vel = (w.vel + dir * 1400.0 * dt).clamp_length_max(max);
-                w.facing = side;
+                w.facing = if w.vel.x.abs() > 10.0 { w.vel.x.signum() } else { side };
                 // Look ahead: a wall coming up (the chameleon ducked away)
                 // means pulling out, not stinging the wall.
                 let ahead = pos + w.vel.normalize_or_zero() * (BODY_CLEARANCE + w.vel.length() * 0.08);
@@ -673,11 +775,14 @@ fn think(
                 if !alive {
                     State::Hover
                 } else if to_player.length() < RADIUS + 15.0 {
+                    // The body hurts wherever it hits; the sting only if it guessed right.
+                    let sting = (ppos - w.plan).length() < STING_TIGHT;
+                    let damage = BODY_DAMAGE + if sting { STING_DAMAGE } else { 0 };
                     boss::hurt_player(
                         &mut p,
                         ppos,
                         pos,
-                        STING_DAMAGE,
+                        damage,
                         &mut bleed,
                         (&mut shake, &mut stop),
                     );
@@ -686,13 +791,42 @@ fn think(
                     w.cooldown = 1.2;
                     w.replan = 0.0;
                     State::Hover
-                } else if t > 1.3 || (!near && terrain.clearance(ahead) < BODY_CLEARANCE * 0.75) {
+                } else if s > 1.3 || (!near && terrain.clearance(ahead) < BODY_CLEARANCE * 0.75) {
                     w.vel *= 0.4;
                     w.cooldown = 1.0;
                     w.replan = 0.0;
                     State::Hover
                 } else {
                     State::Dive(s + dt)
+                }
+            }
+            State::Taunt(s) => {
+                // Hangs in the air facing the chameleon, rearing up.
+                w.facing = side;
+                let look = ppos - pos;
+                w.aim = look.y.atan2(look.x.abs().max(1.0)).clamp(-1.0, 0.6);
+                w.vel = w.vel.lerp(Vec2::new(0.0, (t * 2.0 + w.seed).sin() * 12.0), 1.0 - (-6.0 * dt).exp());
+                if s < TAUNT_RECOIL + 0.5 && s + dt >= TAUNT_RECOIL + 0.5 {
+                    // The roar, as it comes up.
+                    shake.add(0.25);
+                }
+                if !alive {
+                    State::Hover
+                } else if to_player.length() < TAUNT_BREAK {
+                    // Reached for it: straight to the attack, no panic.
+                    w.plan = ppos;
+                    if dive_lane(&terrain, pos, ppos) {
+                        w.spits = 0;
+                        State::Coil(0.0)
+                    } else {
+                        State::Aim(0.0)
+                    }
+                } else if s >= TAUNT_TIME {
+                    w.cooldown = w.rng.range(0.4, 0.8);
+                    w.replan = 0.0;
+                    State::Hover
+                } else {
+                    State::Taunt(s + dt)
                 }
             }
             State::Hover | State::Aim(_) => {
@@ -753,8 +887,13 @@ fn think(
                         let mouth = pos + Vec2::new(w.facing * 18.0, -2.0) * SCALE;
                         // Enraged: a fan of three.
                         let fan: &[f32] = if enraged { &[-0.2, 0.0, 0.2] } else { &[0.0] };
+                        // Aimed where the chameleon was; the further it has moved
+                        // since, the likelier the shot goes wild.
+                        let off = ((ppos - w.plan).length() / PLAN_SLACK).min(1.0);
+                        let wild = if w.rng.chance(off * MISFIRE) { w.rng.range(-0.5, 0.5) } else { 0.0 };
+                        let at = w.plan.lerp(ppos, 0.25);
                         for &a in fan {
-                            spit(&mut commands, &venom, mouth, ppos, a);
+                            spit(&mut commands, &venom, mouth, at, a + wild);
                         }
                         w.spits += 1;
                         w.cooldown = if enraged {
@@ -772,9 +911,9 @@ fn think(
                             w.spits = 0;
                             w.dive_wait = 0.0;
                             w.path.clear();
-                            // Lined up with the lane, so it flies the lane it checked.
-                            w.vel = to_player.normalize_or(Vec2::NEG_Y) * w.vel.length().min(150.0);
-                            State::Dive(0.0)
+                            // Commits to where the chameleon is, and coils up for it.
+                            w.plan = ppos;
+                            State::Coil(0.0)
                         } else {
                             w.dive_wait += dt;
                             if w.dive_wait > DIVE_PATIENCE {
@@ -786,7 +925,10 @@ fn think(
                         }
                     }
                     // Only start aiming with a clear shot (the perch has one).
-                    _ if aggro && w.cooldown <= 0.0 && sees => State::Aim(0.0),
+                    _ if aggro && w.cooldown <= 0.0 && sees => {
+                        w.plan = ppos;
+                        State::Aim(0.0)
+                    }
                     _ => State::Hover,
                 }
             }
@@ -845,7 +987,9 @@ fn on_hit(mut hits: MessageReader<BossHit>, mut wasps: Query<&mut Wasp>) {
             let spin = -hit.dir.x.signum() * w.rng.range(10.0, 14.0);
             w.state = State::Dead { t: 0.0, angle: 0.0, spin, landed: false };
             w.dismember = true;
-        } else {
+        } else if hit.retaliate {
+            w.retaliate = true;
+        } else if hit.stagger {
             w.vel = hit.dir * 450.0;
             w.state = State::Hurt(0.0);
             w.cooldown = w.cooldown.max(0.6);
@@ -940,6 +1084,7 @@ fn reset_on_respawn(
             continue;
         }
         w.state = State::Hover;
+        w.introduced = false;
         w.vel = Vec2::ZERO;
         w.spits = 0;
         w.cooldown = 1.5;
@@ -992,7 +1137,24 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
             State::Aim(s) => (s / AIM_TIME).min(1.0),
             _ => 0.0,
         };
-        let jitter = aim * (tt * 70.0).sin() * 0.06;
+        // Coiling for a dive, and the face-off (recoil, then rearing up).
+        let coil = match w.state {
+            State::Coil(s) => (s / COIL_TIME).min(1.0),
+            _ => 0.0,
+        };
+        let rear = match w.state {
+            State::Taunt(s) => {
+                let k = ((s - TAUNT_RECOIL) / 0.8).clamp(0.0, 1.0);
+                k * k * (3.0 - 2.0 * k)
+            }
+            _ => 0.0,
+        };
+        let recoil = match w.state {
+            State::Taunt(s) if s < TAUNT_RECOIL => (PI * s / TAUNT_RECOIL).sin(),
+            _ => 0.0,
+        };
+        let tense = aim.max(coil).max(rear);
+        let jitter = tense * (tt * 70.0).sin() * 0.06;
         match bone.kind {
             BoneKind::Rig => {
                 let target = w.facing * SCALE;
@@ -1003,6 +1165,10 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
                     State::Dive(_) => {
                         Quat::from_rotation_z((w.vel.y * 0.0015).clamp(-0.6, 0.6) * w.facing)
                     }
+                    // Nose toward the spot it is about to dive at.
+                    State::Coil(_) => Quat::from_rotation_z(w.aim * 0.7 * coil + jitter),
+                    // Flinches back, then rears up with its head on the chameleon.
+                    State::Taunt(_) => Quat::from_rotation_z(0.5 * rear - 0.25 * recoil + jitter),
                     _ => Quat::from_rotation_z(
                         (-w.vel.x * w.facing * 0.0008).clamp(-0.3, 0.3) + jitter,
                     ),
@@ -1013,7 +1179,7 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
                     tf.rotation = Quat::from_rotation_z(-0.6);
                     tf.scale.y = 1.0;
                 } else {
-                    let flap = (tt * 95.0 + if front { 0.0 } else { 1.3 }).sin();
+                    let flap = (tt * 95.0 * (1.0 + 0.5 * tense) + if front { 0.0 } else { 1.3 }).sin();
                     tf.rotation = Quat::from_rotation_z(0.15 + flap * 0.45);
                     tf.scale.y = 0.55 + 0.45 * flap.abs();
                 }
@@ -1022,6 +1188,8 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
                 let pump = (tt * 6.0).sin() * 0.07;
                 let curl = match w.state {
                     State::Dive(_) => 0.9, // stinger forward
+                    State::Coil(_) => 0.9 * coil + 0.2, // curls up, stinger leveled at the spot
+                    State::Taunt(_) => 0.6 * rear + 0.4 * recoil,
                     State::Dead { .. } => 0.3,
                     _ => 0.5 * aim,
                 };
@@ -1029,7 +1197,9 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
             }
             BoneKind::Head => {
                 // Rears back while aiming, snaps forward to spit.
-                let rear = if aim > 0.0 {
+                let rear = if coil > 0.0 || rear > 0.0 || recoil > 0.0 {
+                    0.4 * coil + 0.4 * rear - 0.3 * recoil
+                } else if aim > 0.0 {
                     0.35 * aim
                 } else {
                     (tt * 2.0).sin() * 0.05
@@ -1039,6 +1209,8 @@ fn animate(time: Res<Time>, wasps: Query<&Wasp>, mut bones: Query<(&Bone, &mut T
             BoneKind::Mandible { side } => {
                 let open = 0.15
                     + 0.55 * aim
+                    + 0.5 * coil
+                    + 0.6 * rear
                     + if matches!(w.state, State::Dive(_)) {
                         0.5
                     } else {

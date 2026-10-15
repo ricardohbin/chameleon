@@ -51,6 +51,19 @@ const MAX_PER_AREA: usize = 16;
 const MIN_GAP: f32 = 150.0;
 /// Room a drone needs around its spot.
 const FLY_ROOM: f32 = 6.0 * PX;
+/// Veterans' shock lasts this share of a green mob's.
+const VETERAN_REFLEX: f32 = 0.3;
+/// A mob hurt this near (px) rallies the veterans around it at once.
+const RALLY_RANGE: f32 = 420.0;
+/// Share of mobs that snap out of the shock much sooner than the rest.
+/// Panic from being touched in shock: extra seconds of shock, up to this much in all.
+const PANIC_EXTRA: f32 = 0.7;
+const PANIC_CAP: f32 = 3.0;
+const QUICK_SHARE: f32 = 0.15;
+/// Busy with its own affairs, a mob only spots the chameleon this close (as a share of its sense).
+const UNAWARE_RANGE: f32 = 0.75;
+/// An aware mob that hasn't seen the chameleon for this long is caught off guard again.
+const FORGET: f32 = 4.0;
 /// Flies per swarm.
 const SWARM: usize = 4;
 /// A spider rests this far below its ceiling, and its thread reaches this far at most.
@@ -167,6 +180,12 @@ pub struct MobSpec {
     pub damage: i32,
     /// Its attack isn't interrupted by hits.
     pub stubborn: bool,
+    /// How slowly it reacts to the chameleon turning up (seconds in shock,
+    /// before the mob-to-mob spread): bigger is slower.
+    pub initiative: f32,
+    /// A seasoned fighter: keeps its head when surprised (reacts much sooner,
+    /// never panics or bolts) and rallies when mobs near it are attacked.
+    pub veteran: bool,
     /// Shadow health its remains give when eaten (`feeding.rs`), in health ticks.
     /// Rule of thumb: a quarter tick per hit point, more for what makes it
     /// dangerous (hard to hit, packs that hit your back, ranged venom, stubborn
@@ -196,6 +215,8 @@ static ROACHLING: MobSpec = MobSpec {
     leash: 260.0,
     damage: 1,
     stubborn: false,
+    initiative: 1.0,
+    veteran: false,
     // 2 hp, a telegraphed charge.
     food: 0.5,
 };
@@ -212,6 +233,8 @@ static SEWER_ROACH: MobSpec = MobSpec {
     recover: 1.5,
     leash: 300.0,
     stubborn: true,
+    initiative: 1.4,
+    veteran: true,
     // 4 hp, charges through hits.
     food: 1.25,
     ..ROACHLING
@@ -232,6 +255,8 @@ static FLY: MobSpec = MobSpec {
     leash: 380.0,
     damage: 1,
     stubborn: false,
+    initiative: 1.5,
+    veteran: false,
     // 1 hp, a swarm of 4 makes a tick.
     food: 0.25,
 };
@@ -252,6 +277,8 @@ static FLEA: MobSpec = MobSpec {
     leash: 320.0,
     damage: 1,
     stubborn: false,
+    initiative: 0.7,
+    veteran: false,
     // 2 hp, erratic leaps.
     food: 0.5,
 };
@@ -271,6 +298,8 @@ static DRONE: MobSpec = MobSpec {
     leash: 300.0,
     damage: 1,
     stubborn: false,
+    initiative: 0.8,
+    veteran: false,
     // 2 hp, dives.
     food: 0.5,
 };
@@ -290,6 +319,8 @@ static GRUB: MobSpec = MobSpec {
     leash: 160.0,
     damage: 1,
     stubborn: false,
+    initiative: 1.8,
+    veteran: false,
     // 3 hp but slow and easy.
     food: 0.5,
 };
@@ -309,6 +340,8 @@ static SOLDIER: MobSpec = MobSpec {
     leash: 0.0,
     damage: 1,
     stubborn: true,
+    initiative: 1.1,
+    veteran: true,
     // 3 hp, venom from afar, stubborn.
     food: 1.0,
 };
@@ -328,6 +361,8 @@ static NEST: MobSpec = MobSpec {
     leash: 0.0,
     damage: 0,
     stubborn: true,
+    initiative: 0.0,
+    veteran: false,
     // 4 hp, harmless itself, full of larvae.
     food: 0.75,
 };
@@ -349,6 +384,8 @@ static RAT: MobSpec = MobSpec {
     leash: 380.0,
     damage: 1,
     stubborn: false,
+    initiative: 0.6,
+    veteran: false,
     // 2 hp, packs of 3 ambushing your back.
     food: 0.5,
 };
@@ -368,6 +405,8 @@ static SPIDER: MobSpec = MobSpec {
     leash: 0.0,
     damage: 1,
     stubborn: false,
+    initiative: 0.4,
+    veteran: false,
     // 2 hp, ambush from above.
     food: 0.5,
 };
@@ -381,6 +420,27 @@ pub enum State {
     Recover(f32),
     Hurt(f32),
     Dead { t: f32, landed: bool },
+}
+
+/// What a mob makes of the chameleon: caught by surprise, it freezes up,
+/// flees or scatters for a moment before it starts fighting.
+#[derive(Clone, Copy, PartialEq)]
+enum Notice {
+    /// Hasn't seen it (or lost it long ago).
+    Unaware,
+    /// Just saw it: no attacks yet, `left` seconds of the given reaction.
+    Shock { left: f32, how: Shock },
+    Aware,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Shock {
+    Freeze,
+    Flee,
+    /// Touched while in shock: bolts from the chameleon, harder than a flee.
+    Panic,
+    /// Bolts off at this angle.
+    Scatter(f32),
 }
 
 #[derive(Component)]
@@ -418,6 +478,11 @@ pub struct Mob {
     /// Its own materials (to flash) with their base colors.
     mats: Vec<(Handle<ColorMaterial>, Color)>,
     rng: Rng,
+    notice: Notice,
+    /// Where it saw the chameleon when it began preparing its attack.
+    plan: Vec2,
+    /// Seconds without seeing the chameleon, once aware.
+    lost: f32,
     /// Rats: their state of mind (`rat.rs`).
     rat: rat::Mind,
 }
@@ -447,6 +512,10 @@ impl Mob {
             flash: 0.0,
             mats,
             rng,
+            // Drones from a nest are born angry.
+            plan: home,
+            notice: if parent.is_some() { Notice::Aware } else { Notice::Unaware },
+            lost: 0.0,
             rat: rat::Mind::default(),
         }
     }
@@ -727,6 +796,8 @@ fn slash_mobs(
             }
         }
     }
+    // Where mobs were hurt: the veterans around them are on guard at once.
+    let mut rally: Vec<Vec2> = Vec::new();
     for (e, aim, slashed) in struck {
         let Ok((_, mut m, tf)) = mobs.get_mut(e) else { continue };
         if matches!(m.state, State::Dead { .. }) {
@@ -739,6 +810,8 @@ fn slash_mobs(
         }
         m.hp -= 1;
         m.flash = 1.0;
+        m.notice = Notice::Aware;
+        rally.push(tf.translation.truncate());
         let fluid = m.spec.blood;
         let dir = (aim + Vec2::Y * 0.3).normalize();
         // Knocked away sideways from the chameleon, whichever way the blow came.
@@ -778,6 +851,14 @@ fn slash_mobs(
             }
             shake.add(0.15);
             stop.add(0.05);
+        }
+    }
+    if !rally.is_empty() {
+        for (_, mut o, tf) in &mut mobs {
+            let q = tf.translation.truncate();
+            if o.spec.veteran && !matches!(o.state, State::Dead { .. }) && o.notice != Notice::Aware && rally.iter().any(|r| r.distance(q) < RALLY_RANGE) {
+                o.notice = Notice::Aware;
+            }
         }
     }
 }
@@ -838,8 +919,11 @@ fn think(
                 tf.translation.x = next.x;
                 tf.translation.y = next.y;
             }
-            if td < 2.5 && m.rng.chance(dt * 8.0) {
-                bleed.write(Bleed { pos, dir: Vec2::Y, spread: 1.0, speed: 120.0, amount: 1, fluid: spec.blood, sticky: true });
+            // Leaks hard at first, then spurts now and then until it is eaten.
+            let rate = if td < 2.5 { 8.0 } else { 0.5 };
+            if m.rng.chance(dt * rate) {
+                let (amount, speed) = if td < 2.5 { (1, 120.0) } else { (3, 160.0) };
+                bleed.write(Bleed { pos, dir: Vec2::Y, spread: 1.0, speed, amount, fluid: spec.blood, sticky: true });
             }
             m.state = State::Dead { t: td + dt, landed };
             continue;
@@ -856,7 +940,7 @@ fn think(
         let dist = to_player.length();
         let side = if to_player.x >= 0.0 { 1.0 } else { -1.0 };
         let in_view = || terrain.raycast(pos, ppos).is_none();
-        let sees = alive
+        let seen = alive
             && dist < spec.sense
             && match spec.moves {
                 Moves::Walk => to_player.y.abs() < 90.0 && (ppos.x - m.home.x).abs() < spec.leash + 120.0,
@@ -868,6 +952,7 @@ fn think(
                 _ => in_view(),
             };
         let touching = alive && dist < spec.radius + 16.0;
+        let sees = notice(m, seen, seen && dist < spec.sense * if spec.veteran { 1.0 } else { UNAWARE_RANGE }, touching, p.vel.length(), dt);
         let ease = |rate: f32| 1.0 - (-rate * dt).exp();
 
         if spec.moves == Moves::Pack {
@@ -961,12 +1046,25 @@ fn think(
             // Hoppers only crouch on the ground.
             State::Idle if sees && !m.airborne => {
                 m.facing = side;
-                if spec.moves == Moves::Swarm { State::Attack(0.0) } else { State::Windup(0.0) }
+                if spec.moves == Moves::Swarm {
+                    State::Attack(0.0)
+                } else {
+                    m.plan = ppos;
+                    State::Windup(0.0)
+                }
             }
             State::Idle => {
-                idle(m, pos, t, dt);
-                // Watches the chameleon coming.
-                m.facing = if alive && dist < spec.sense * 1.4 && spec.moves != Moves::Swarm {
+                let shock = match m.notice {
+                    Notice::Shock { how, .. } => Some(how),
+                    _ => None,
+                };
+                match shock {
+                    Some(how) => flinch(m, how, to_player, dt),
+                    None => idle(m, pos, t, dt),
+                }
+                // Watches the chameleon coming (running off, it looks where it goes).
+                let bolting = matches!(shock, Some(Shock::Flee | Shock::Panic | Shock::Scatter(_))) && m.vel.x.abs() > 8.0;
+                m.facing = if alive && dist < spec.sense * 1.4 && spec.moves != Moves::Swarm && !bolting {
                     side
                 } else if m.vel.x.abs() > 8.0 {
                     m.vel.x.signum()
@@ -1092,6 +1190,90 @@ fn think(
     }
 }
 
+/// How far (px) the chameleon can stray from where an attack was planned
+/// before the plan is worthless.
+const PLAN_SLACK: f32 = 120.0;
+/// Chance an attack falls apart when the chameleon is `PLAN_SLACK` or more off.
+const MISFIRE: f32 = 0.9;
+
+/// Surprise: whether the mob has made up its mind to fight. The first sight
+/// of the chameleon puts it in shock for a while (each mob its own time, from
+/// its initiative; a few are quick, and a fast arrival stuns them longer),
+/// then it turns aware. Only a hit snaps it out of it; bumping into it makes
+/// it panic and run from you, for longer. Until then they go about their business
+/// and only notice the chameleon from fairly close (`spotted`).
+fn notice(m: &mut Mob, seen: bool, spotted: bool, touched: bool, speed: f32, dt: f32) -> bool {
+    match m.notice {
+        Notice::Unaware if spotted => {
+            let mut left = m.spec.initiative * m.rng.range(0.7, 2.0);
+            if m.rng.chance(QUICK_SHARE) {
+                left *= 0.25;
+            }
+            // Something crashing in from nowhere takes longer to make sense of.
+            left *= 1.0 + (speed / 500.0).min(2.0);
+            if m.spec.veteran {
+                left *= VETERAN_REFLEX;
+            }
+            let how = match m.rng.below(10) {
+                _ if m.spec.veteran => Shock::Freeze,
+                0..=3 => Shock::Freeze,
+                4..=6 => Shock::Flee,
+                _ => Shock::Scatter(m.rng.range(0.0, 2.0 * PI)),
+            };
+            m.notice = if left > 0.0 { Notice::Shock { left, how } } else { Notice::Aware };
+            m.lost = 0.0;
+            false
+        }
+        Notice::Unaware => false,
+        Notice::Shock { left, how } => {
+            if touched && m.spec.veteran {
+                // Bumped: it does not panic, it fights.
+                m.notice = Notice::Aware;
+                return seen;
+            }
+            if touched {
+                // Bumped while stunned: panic, and a longer one.
+                m.notice = Notice::Shock { left: (left + PANIC_EXTRA).min(PANIC_CAP), how: Shock::Panic };
+                return false;
+            }
+            m.notice = if left <= dt { Notice::Aware } else { Notice::Shock { left: left - dt, how } };
+            m.notice == Notice::Aware && seen
+        }
+        Notice::Aware => {
+            m.lost = if seen { 0.0 } else { m.lost + dt };
+            if m.lost > FORGET {
+                m.notice = Notice::Unaware;
+            }
+            seen
+        }
+    }
+}
+
+/// Caught by surprise: stands stock still, runs from the chameleon, or bolts
+/// somewhere at random.
+fn flinch(m: &mut Mob, how: Shock, to_player: Vec2, dt: f32) {
+    let spec = m.spec;
+    let ease = |rate: f32| 1.0 - (-rate * dt).exp();
+    let run = match how {
+        Shock::Freeze => Vec2::ZERO,
+        Shock::Flee | Shock::Panic => -to_player.normalize_or_zero(),
+        Shock::Scatter(a) => Vec2::from_angle(a),
+    };
+    let rush = if how == Shock::Panic { 1.8 } else { 1.0 };
+    match spec.moves {
+        Moves::Fly => m.vel = m.vel.lerp(run * spec.speed * 1.6 * rush, ease(6.0)),
+        // Flies never hold still.
+        Moves::Swarm if run == Vec2::ZERO => {}
+        Moves::Swarm => m.vel = m.vel.lerp(run * spec.speed * 2.0 * rush, ease(8.0)),
+        Moves::Walk => {
+            let dir = if run.x == 0.0 { 0.0 } else { run.x.signum() };
+            m.vel.x += (dir * spec.speed * 2.0 * rush - m.vel.x) * ease(10.0);
+        }
+        Moves::Hop if !m.airborne => m.vel = Vec2::ZERO,
+        _ => {}
+    }
+}
+
 /// Minding its own business.
 fn idle(m: &mut Mob, pos: Vec2, t: f32, dt: f32) {
     let spec = m.spec;
@@ -1147,7 +1329,22 @@ fn idle(m: &mut Mob, pos: Vec2, t: f32, dt: f32) {
 /// The telegraph is over: charge, dive, leap or spit.
 fn attack(m: &mut Mob, pos: Vec2, ppos: Vec2, deeds: &mut Deeds) -> State {
     let spec = m.spec;
+    // The attack was prepared against where the chameleon was: it only follows
+    // a little. The further it has moved since, the worse the attack goes, up
+    // to tripping over itself (and being open for a moment).
+    let off = ((ppos - m.plan).length() / PLAN_SLACK).min(1.0);
+    if m.rng.chance(off * MISFIRE) {
+        m.vel = match spec.moves {
+            Moves::Walk => Vec2::new(m.facing * spec.attack_speed * 0.25, 0.0),
+            _ => Vec2::ZERO,
+        };
+        return State::Recover(-spec.recover * 0.5);
+    }
+    let ppos = m.plan.lerp(ppos, 0.2);
     let to = ppos - pos;
+    if spec.moves == Moves::Walk {
+        m.facing = if to.x >= 0.0 { 1.0 } else { -1.0 };
+    }
     match spec.moves {
         Moves::Walk => m.vel = Vec2::new(m.facing * spec.attack_speed, 0.0),
         Moves::Fly | Moves::Swarm => m.vel = to.normalize_or(Vec2::new(m.facing, 0.0)) * spec.attack_speed,

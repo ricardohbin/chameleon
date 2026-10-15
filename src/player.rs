@@ -15,8 +15,12 @@ use crate::{
 
 /// Size of the chameleon relative to its drawing (affects visuals and collider).
 pub const SCALE: f32 = 0.7;
-/// Half extents of the player's collision box (feet are at `-HALF.y`).
-pub const HALF: Vec2 = Vec2::new(30.0 * SCALE, 26.0 * SCALE);
+/// Half extents of the player's collision box (its bottom is at `-HALF.y`).
+/// In rig units it spans from the elbow/knee (-14) up to just inside the back
+/// (22), so the feet sink into the ground and no corner pokes out of the sprite.
+pub const HALF: Vec2 = Vec2::new(30.0 * SCALE, 18.0 * SCALE);
+/// The rig's origin relative to the collider center (the box center is at rig y = +4).
+pub const RIG_DROP: f32 = -4.0 * SCALE;
 /// Starting max health (each boss carcass eaten adds a tick, see `feeding.rs`).
 pub const MAX_HP: i32 = 5;
 /// Invulnerable (and blinking) for this long after a hit.
@@ -293,7 +297,7 @@ fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Ass
     let spawn = spawn_point(terrain);
     let player = commands
         .spawn((
-            Player { facing: 1.0, safe_spot: spawn, hp: MAX_HP, max_hp: MAX_HP, swim: 1.0, god, ..default() },
+            Player { facing: 1.0, safe_spot: spawn, fall_top: spawn.y - HALF.y, hp: MAX_HP, max_hp: MAX_HP, swim: 1.0, god, ..default() },
             Transform::from_translation(spawn.extend(10.0)),
             Visibility::default(),
         ))

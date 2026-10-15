@@ -4,7 +4,7 @@
 //! bone-like hierarchy, so it can be animated procedurally:
 //! walk cycle, curling tail, darting eye, claw slash and camouflage.
 //!
-//! Local coordinates: the chameleon faces +X, origin = player collider center.
+//! Local coordinates: the chameleon faces +X, origin = `player::RIG_DROP` below the player collider center.
 
 use std::f32::consts::PI;
 
@@ -48,7 +48,7 @@ const BLINK_TIME: f32 = 0.16;
 
 /// A rig point (rig units, facing +X) in the world, for a chameleon at `ppos` facing `facing`.
 fn rig_to_world(ppos: Vec2, facing: f32, at: Vec2) -> Vec2 {
-    ppos + Vec2::new(at.x * facing, at.y) * player::SCALE
+    ppos + Vec2::new(at.x * facing, at.y) * player::SCALE + Vec2::Y * player::RIG_DROP
 }
 
 /// The swiping shoulder: the slash arcs around it (center of the slash hitbox).
@@ -615,7 +615,7 @@ fn pose_parts(
                 let tilt = (p.vel.y * 0.00035).clamp(-0.25, 0.25) * a.air;
                 // Dead: rolls over belly-up.
                 tf.rotation = Quat::from_rotation_z(lerp(tilt, PI, a.death) * p.facing);
-                tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0);
+                tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0) + player::RIG_DROP;
                 // Blink while invulnerable.
                 let blink = p.invuln > 0.0 && p.dead.is_none() && (t * 30.0).sin() > 0.0;
                 *vis = if blink { Visibility::Hidden } else { Visibility::Inherited };
