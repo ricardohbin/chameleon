@@ -84,7 +84,7 @@ Controls: `A/D` or arrows = walk (the **body faces where it walks**; the **head 
 
 - **The world is a sketch** (`assets/world.aseprite`, 4096×2048 RGBA). Colors, not layer names, carry meaning:
   white = solid, dark gray (Multiply layer over white) = passable structure / interiors, black = air,
-  **magenta cross = world origin (0,0)**, red = player spawn, yellow = Gutter King, green = Venom Mother, cyan = Razorwing (dragonfly; magenta is taken by the origin, so not pink).
+  **magenta cross = world origin (0,0)**, red = player spawn, yellow = Gutter King, green = Venom Mother, dusty pink `#d1b0c6` = Razorwing (dragonfly; its own color, matched exactly ±2 in `sketch::decode` since it's too unsaturated for the channel test).
   Slices are prefixed: **"region: …"** = areas (art `Style` by keyword, boss lair) and **"feature: …"** = special
   spots described in words, handled by keywords (`terrain.features`): "slippery"/"sliding"/"one way down" → slide-only
   slopes; "fall apart"/"crumbl" → junk debris while sliding (`features.rs`); "dash" gaps → no bridge, the player's dash

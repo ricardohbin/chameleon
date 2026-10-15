@@ -418,7 +418,7 @@ impl<'a> Diff<'a> {
             MarkerKind::Player => [255, 40, 40],
             MarkerKind::Roach => [255, 230, 0],
             MarkerKind::Wasp => [0, 255, 0],
-            MarkerKind::Dragonfly => [0, 255, 255],
+            MarkerKind::Dragonfly => [255, 120, 200],
         };
         for m in &self.markers {
             if let MarkerChange::Moved(k, at, _) | MarkerChange::Removed(k, at) = m {

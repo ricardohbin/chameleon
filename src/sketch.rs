@@ -22,6 +22,9 @@ pub enum Cell {
     Back,
 }
 
+/// The sketch color (RGB, ±2) that marks the dragonfly boss.
+const DRAGONFLY_MARK: [u8; 3] = [0xd1, 0xb0, 0xc6];
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// The reference point: world (0, 0).
@@ -29,7 +32,7 @@ pub enum MarkerKind {
     Player,
     Roach,
     Wasp,
-    /// Cyan: the dragonfly boss.
+    /// Dusty pink `#d1b0c6` (`DRAGONFLY_MARK`, the dragonfly's own color): the dragonfly boss.
     Dragonfly,
 }
 
@@ -72,13 +75,17 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
             continue;
         }
         let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        // Its pink is nearly gray, so it's matched by color, not by saturation.
+        if DRAGONFLY_MARK.iter().zip([r, g, b]).all(|(m, c)| (*m as i32 - c).abs() <= 2) {
+            marks[i] = Some(MarkerKind::Dragonfly);
+            continue;
+        }
         if max - min > 100 {
             marks[i] = match (r > 160, g > 160, b > 160) {
                 (true, false, false) => Some(MarkerKind::Player),
                 (true, false, true) => Some(MarkerKind::Origin),
                 (true, true, false) => Some(MarkerKind::Roach),
                 (false, true, false) => Some(MarkerKind::Wasp),
-                (false, true, true) => Some(MarkerKind::Dragonfly),
                 _ => None,
             };
             continue;
