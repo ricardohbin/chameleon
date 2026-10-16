@@ -1,7 +1,7 @@
 //! Sound effects, recorded by the user (`assets/audio/*.m4a`, AAC), embedded in
 //! the binary like the world sketch. Everything is one-shot and non-spatial:
 //! the claw slash, blood when an enemy is hit (two takes, alternated at random),
-//! a death cry when a boss falls, each boss's calls (now and then while it fights),
+//! the chameleon's hurt cry and its death, a death cry when a boss falls, each boss's calls (now and then while it fights),
 //! and the air-spin whoosh (the Razorwing's, and the chameleon's once earned).
 
 use std::collections::{HashMap, HashSet};
@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use crate::{
     boss::{Boss, BossHit, BossKind, Lair},
     chameleon::ChameleonAnim,
+    player::Player,
     dragonfly,
     shapes::Rng,
 };
@@ -23,7 +24,7 @@ impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Sfx>()
             .add_systems(Startup, load)
-            .add_systems(Update, (slash, hits, voices, whoosh, play).chain());
+            .add_systems(Update, (slash, hits, wounds, voices, whoosh, play).chain());
     }
 }
 
@@ -33,6 +34,8 @@ pub enum Sfx {
     Slash,
     Blood,
     BossDeath,
+    Hurt,
+    PlayerDeath,
     Whoosh,
 }
 
@@ -47,6 +50,8 @@ struct Clips {
     spider: Handle<AudioSource>,
     centipede: Handle<AudioSource>,
     airblow: Handle<AudioSource>,
+    hurt: Handle<AudioSource>,
+    player_death: Handle<AudioSource>,
 }
 
 fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
@@ -61,6 +66,8 @@ fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         spider: add(include_bytes!("../assets/audio/spider.m4a")),
         centipede: add(include_bytes!("../assets/audio/centipede.m4a")),
         airblow: add(include_bytes!("../assets/audio/airblow.m4a")),
+        hurt: add(include_bytes!("../assets/audio/hurt.m4a")),
+        player_death: add(include_bytes!("../assets/audio/player-death.m4a")),
     });
 }
 
@@ -81,6 +88,23 @@ fn hits(mut hits: MessageReader<BossHit>, mut sfx: MessageWriter<Sfx>) {
             sfx.write(Sfx::BossDeath);
         }
     }
+}
+
+/// Shortest time between two hurt cries (the live rail shocks again and again).
+const HURT_GAP: f32 = 0.3;
+
+/// The chameleon hit (`Player::wounds` went up), or killed by it.
+fn wounds(time: Res<Time<Real>>, player: Single<&Player>, mut last: Local<(u32, bool)>, mut quiet: Local<f32>, mut sfx: MessageWriter<Sfx>) {
+    let (wounds, dead) = (player.wounds, player.dead.is_some());
+    *quiet -= time.delta_secs();
+    if dead && !last.1 {
+        sfx.write(Sfx::PlayerDeath);
+    } else if wounds > last.0 && !dead && *quiet <= 0.0 {
+        sfx.write(Sfx::Hurt);
+        *quiet = HURT_GAP;
+    }
+    // A fresh chameleon (F8, respawn) starts counting again from 0.
+    *last = (wounds, dead);
 }
 
 /// Seconds of silence between a boss's calls (random in this range), counted
@@ -157,6 +181,8 @@ fn play(mut commands: Commands, clips: Res<Clips>, mut sfx: MessageReader<Sfx>, 
             Sfx::Slash => (&clips.slash, 0.7, 0.08),
             Sfx::Blood => (&clips.blood[rng.below(2)], 0.8, 0.1),
             Sfx::BossDeath => (&clips.death, 1.0, 0.0),
+            Sfx::Hurt => (&clips.hurt, 0.9, 0.08),
+            Sfx::PlayerDeath => (&clips.player_death, 1.0, 0.0),
             Sfx::Whoosh => (&clips.airblow, 0.8, 0.06),
         };
         commands.spawn((
@@ -175,7 +201,7 @@ mod tests {
     /// Every embedded clip decodes (an unsupported format would panic in game).
     #[test]
     fn clips_decode() {
-        let clips: [&'static [u8]; 10] = [
+        let clips: [&'static [u8]; 12] = [
             include_bytes!("../assets/audio/slash.m4a"),
             include_bytes!("../assets/audio/blood1.m4a"),
             include_bytes!("../assets/audio/blood2.m4a"),
@@ -185,6 +211,8 @@ mod tests {
             include_bytes!("../assets/audio/dragonfly.m4a"),
             include_bytes!("../assets/audio/spider.m4a"),
             include_bytes!("../assets/audio/centipede.m4a"),
+            include_bytes!("../assets/audio/hurt.m4a"),
+            include_bytes!("../assets/audio/player-death.m4a"),
             include_bytes!("../assets/audio/airblow.m4a"),
         ];
         for bytes in clips {

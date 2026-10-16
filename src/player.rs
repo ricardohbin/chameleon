@@ -131,6 +131,8 @@ pub struct Player {
     pub digest: f32,
     /// Seconds left of post-hit invulnerability.
     pub invuln: f32,
+    /// Blows taken so far (each `hurt` / `shock` that landed): `sound.rs` hears the hits.
+    pub wounds: u32,
     /// Seconds left untouchable in the middle of an attack (the air spin): like
     /// `invuln`, without the blinking.
     pub guard: f32,
@@ -192,6 +194,7 @@ impl Player {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
+        self.wounds += 1;
         // The tick being digested is lost whole; the rest start filling again.
         self.shadow = (self.shadow - 1.0).max(0.0);
         self.digest = 0.0;
@@ -215,6 +218,7 @@ impl Player {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
+        self.wounds += 1;
         self.shadow = (self.shadow - 1.0).max(0.0);
         self.digest = 0.0;
         self.vel.y = self.vel.y.max(170.0);
