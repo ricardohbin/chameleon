@@ -90,6 +90,18 @@ pub fn adjust_contrast(keys: Res<ButtonInput<KeyCode>>, mut contrast: ResMut<Con
     info!("ground / interior contrast {:+.2} stops", contrast.0);
 }
 
+/// Gray interiors fade out over their colored copy as it is revealed (after `apply_contrast`,
+/// which resets their tint).
+pub fn fade_backs(mut backs: Query<(&FadeBack, &mut Sprite)>, vines: Query<&crate::regrowth::Vine>) {
+    for (fade, mut sprite) in &mut backs {
+        let Ok(vine) = vines.get(fade.0) else { continue };
+        let alpha = 1.0 - vine.shown;
+        if (sprite.color.alpha() - alpha).abs() > 0.001 {
+            sprite.color.set_alpha(alpha);
+        }
+    }
+}
+
 /// Tints the tile layers: new ones, or all of them when the contrast changed.
 pub fn apply_contrast(contrast: Res<Contrast>, mut sprites: Query<(&Layer, &mut Sprite)>) {
     for (&layer, mut sprite) in &mut sprites {
@@ -198,7 +210,17 @@ impl Fields {
 /// A tile being painted on another thread (`TerrainPart`, so a reload drops it
 /// and the painting is cancelled).
 #[derive(Component)]
-pub struct TileTask(Task<(Image, Image, [Option<Image>; 5])>, IVec2);
+pub struct TileTask(Task<Painted>, IVec2);
+
+/// A painted tile: its ground (front), its interiors (back), the ground again in the colors of
+/// the bosses that ruled it (`tinted`), and its interiors in color (`back_tinted`, the mall's shops
+/// in the King Rat's red).
+type Painted = (Image, Image, [Option<Image>; 5], Option<Image>);
+
+/// A tile's gray interiors over a colored copy on the underlay (`camera::underlay_layer`):
+/// they fade out as that copy (the `Vine` `.0`) is revealed.
+#[derive(Component)]
+pub struct FadeBack(Entity);
 
 /// A flat stand-in for the tile starting at grid cell `.0`, so the ground
 /// around the player shows on the very first frame; it goes when the painted
@@ -334,7 +356,7 @@ pub fn finish_tiles(
     }
     let extent = TILE as f32 * PX;
     for (e, mut task, tf) in &mut tasks {
-        if let Some((front, back, tinted)) = check_ready(&mut task.0) {
+        if let Some((front, back, tinted, back_tinted)) = check_ready(&mut task.0) {
             for (stand_in, _) in placeholders.iter().filter(|(_, p)| p.0 == task.1) {
                 commands.entity(stand_in).try_despawn();
             }
@@ -345,6 +367,23 @@ pub fn finish_tiles(
                     Transform::from_xyz(0.0, 0.0, Z_BACK),
                 ))
                 .id();
+            // The mall's shops in the King Rat's red, under the world: the gray ones fade over it.
+            if let (Some(red), Some(home)) = (back_tinted, terrain.rat) {
+                let dist = (tf.translation.truncate().distance(home) - extent * 0.5).max(0.0);
+                let material = colors.add(ColorMaterial { texture: Some(images.add(red)), alpha_mode: AlphaMode2d::Blend, color: Color::WHITE.with_alpha(0.0), ..default() });
+                let vine = commands
+                    .spawn((
+                        Mesh2d(meshes.add(Rectangle::new(extent, extent))),
+                        MeshMaterial2d(material.clone()),
+                        Transform::from_xyz(0.0, 0.0, Z_BACK + 0.001),
+                        crate::camera::underlay_layer(),
+                        Visibility::Hidden,
+                        crate::regrowth::Vine { boss: BossKind::Rat, dist, stem: material.clone(), leaf: material, shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
+                        ChildOf(e),
+                    ))
+                    .id();
+                commands.entity(back).insert(FadeBack(vine));
+            }
             commands
                 .entity(e)
                 .try_remove::<TileTask>()
@@ -379,7 +418,7 @@ pub fn finish_tiles(
 }
 
 /// The tile's solid ground (front) and its interiors (back), as two images.
-fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 5]) {
+fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
     let px = TILE as usize * TEX;
     // Two extra texel rows above each tile, to find the lit top edges.
     const PAD: usize = 2;
@@ -393,6 +432,8 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 5]
     // tiles and marble) and the Reaper (cyan: the mall's checkered floors) again, in their colors
     // (only if the tile has any).
     let mut tinted: [Option<Vec<u8>>; 5] = [None, None, None, None, None];
+    // The mall's shops (interiors) in the King Rat's red.
+    let mut back_tinted: Option<Vec<u8>> = None;
     for j in 0..px {
         for i in 0..px {
             let u = x0 as f32 + (i as f32 + 0.5) / TEX as f32;
@@ -405,6 +446,11 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 5]
             for n in 0..4 {
                 front[k + n] = to_u8(f[n]);
                 back[k + n] = to_u8(b[n]);
+            }
+            if b[3] > 0.0 && c.fields.style(u, v) == Style::Mall {
+                let [r, g, bl] = shade([b[0], b[1], b[2]], 2f32.powf(-DEFAULT_CONTRAST / 2.0), &SHOP_RED);
+                let data = back_tinted.get_or_insert_with(|| vec![0u8; px * px * 4]);
+                data[k..k + 4].copy_from_slice(&[to_u8(r), to_u8(g), to_u8(bl), to_u8(b[3])]);
             }
             if f[3] > 0.0 {
                 let (which, [r, g, b]) = match c.fields.style(u, v) {
@@ -430,7 +476,7 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 5]
             RenderAssetUsages::RENDER_WORLD,
         )
     };
-    (image(front), image(back), tinted.map(|t| t.map(image)))
+    (image(front), image(back), tinted.map(|t| t.map(image)), back_tinted.map(image))
 }
 
 /// The sewer's and the dump's ground once the Gutter King's yellow is back: brick and junk
@@ -445,6 +491,8 @@ const BRICK_BROWN: [(f32, Rgb); 4] = [(0.0, [0.07, 0.04, 0.03]), (0.22, [0.26, 0
 const SOIL_BROWN: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.01]), (0.22, [0.22, 0.13, 0.06]), (0.55, [0.48, 0.31, 0.16]), (1.0, [0.78, 0.60, 0.40])];
 /// The subway once the King Rat's red is back: oxblood glazed tile and rosy marble.
 const TILE_RED: [(f32, Rgb); 4] = [(0.0, [0.07, 0.02, 0.02]), (0.22, [0.27, 0.07, 0.07]), (0.55, [0.62, 0.20, 0.19]), (1.0, [0.90, 0.62, 0.56])];
+/// The mall's shops (its interiors) once the King Rat's red is back: deep red storefronts.
+const SHOP_RED: [(f32, Rgb); 4] = [(0.0, [0.05, 0.01, 0.01]), (0.22, [0.24, 0.05, 0.05]), (0.55, [0.55, 0.14, 0.13]), (1.0, [0.85, 0.45, 0.40])];
 /// The mall once the Reaper's cyan is back: glossy teal checker tiles, aqua highlights.
 const TILE_CYAN: [(f32, Rgb); 4] = [(0.0, [0.01, 0.06, 0.07]), (0.22, [0.04, 0.22, 0.25]), (0.55, [0.12, 0.55, 0.60]), (1.0, [0.62, 0.95, 0.96])];
 

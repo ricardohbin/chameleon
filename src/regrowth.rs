@@ -146,7 +146,7 @@ pub struct Vine {
     pub lit: f32,
 }
 
-fn regrow(
+pub(crate) fn regrow(
     time: Res<Time<Virtual>>,
     defeated: Res<Defeated>,
     glare: Res<Glare>,

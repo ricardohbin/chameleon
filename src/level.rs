@@ -113,7 +113,7 @@ impl Plugin for LevelPlugin {
             .init_resource::<terrain_art::Contrast>()
             .add_systems(
                 Update,
-                (terrain_art::finish_tiles, terrain_props::place_props, (terrain_art::adjust_contrast, terrain_art::apply_contrast).chain()),
+                (terrain_art::finish_tiles, terrain_props::place_props, (terrain_art::adjust_contrast, terrain_art::apply_contrast, terrain_art::fade_backs.after(crate::regrowth::regrow)).chain()),
             )
             .add_message::<Restart>()
             .add_message::<NewGame>()

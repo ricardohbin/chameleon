@@ -38,6 +38,15 @@ pub fn backdrop_layer() -> RenderLayers {
     RenderLayers::layer(BACKDROP_LAYER)
 }
 
+/// Render layer drawn in color *under* the world, by its own camera (after the backdrop):
+/// interiors that have earned a color back (`terrain_art`). The gray interior over it fades
+/// out as the color comes in, so the gray world (mobs, props, bosses) still draws on top.
+pub const UNDERLAY_LAYER: usize = 3;
+
+pub fn underlay_layer() -> RenderLayers {
+    RenderLayers::layer(UNDERLAY_LAYER)
+}
+
 /// The backdrop camera (a child of the main one).
 #[derive(Component)]
 pub struct BackdropCamera;
@@ -199,11 +208,20 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
     // Backdrop: same view, drawn before the world (which doesn't clear), its own grading.
     commands.spawn((
         Camera2d,
-        Camera { order: -1, ..default() },
+        Camera { order: -2, ..default() },
         projection(),
         backdrop_layer(),
         BackdropCamera,
         backdrop_grading(0.0),
+        Transform::default(),
+        ChildOf(main),
+    ));
+    // Underlay: same view, between the backdrop and the world, keeps its colors.
+    commands.spawn((
+        Camera2d,
+        Camera { order: -1, clear_color: ClearColorConfig::None, ..default() },
+        projection(),
+        underlay_layer(),
         Transform::default(),
         ChildOf(main),
     ));
