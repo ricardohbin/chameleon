@@ -4,7 +4,20 @@
 
 use std::f32::consts::PI;
 
+mod mall;
+mod catacombs;
+pub(crate) mod bunker;
+mod sewer;
+mod sinkhole;
+mod dam;
+
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
+
+mod treatment;
+mod subway;
+
+pub(crate) use subway::{KNOT_BALL, KNOT_FOOT};
+mod cave;
 
 use crate::{
     boss,
@@ -64,6 +77,24 @@ enum BoneKind {
     Tail,
     /// A spider's silk, from its body up to the ceiling (a unit-long strip, scaled).
     Thread,
+    /// The mall's mantises and moths (`mob_art/mall.rs`).
+    Mall(mall::Bone),
+    /// The treatment plant mobs' own bones (`mob_art/treatment.rs`).
+    Treatment(treatment::Bone),
+    /// The subway's vermin (`mob_art/subway.rs`).
+    Subway(subway::Bone),
+    /// The catacomb kin's own bones (`mob_art/catacombs.rs`).
+    Crypt(catacombs::Bone),
+    /// The bunker beetles' own parts (`mob_art/bunker.rs`).
+    Bunker(bunker::Part),
+    /// The old sewer's mobs (`mob_art/sewer.rs`).
+    Sewer(sewer::Part),
+    /// The sunken street's own bones (`sinkhole.rs`).
+    Sinkhole(sinkhole::Part),
+    /// The broken dam's mobs (`mob_art/dam.rs`).
+    Dam(dam::Bone),
+    /// The cave system's vermin (`mob_art/cave.rs`).
+    Cave(cave::Bone),
 }
 
 struct Builder<'a, 'w, 's> {
@@ -93,7 +124,7 @@ pub fn spawn(
     kind: MobKind,
     at: Vec2,
     parent: Option<Entity>,
-) {
+) -> Entity {
     let root = commands.spawn((Transform::from_translation(at.extend(Z)), Visibility::default())).id();
     let mut b = Builder { commands, meshes, owner: root };
     let rig = b.bone(Vec3::ZERO, root, BoneKind::Rig);
@@ -111,8 +142,41 @@ pub fn spawn(
         MobKind::Rat => rat(&mut b, materials, rig),
         MobKind::Spider => spider(&mut b, materials, rig, root),
         MobKind::Spiderling => spiderling(&mut b, materials, rig),
+        MobKind::MantisNymph => mall::mantis(&mut b, materials, rig, false),
+        MobKind::MantisHatchling => mall::mantis(&mut b, materials, rig, true),
+        MobKind::GhostMantis => mall::ghost(&mut b, materials, rig),
+        MobKind::NeonMoth => mall::moth(&mut b, materials, rig),
+        MobKind::Ootheca => mall::ootheca(&mut b, materials, rig),
+        MobKind::Naiad => treatment::naiad(&mut b, materials, rig, root),
+        MobKind::Siphon => treatment::siphon(&mut b, materials, rig),
+        MobKind::SumpLeech => treatment::sump_leech(&mut b, materials, rig),
+        MobKind::PlagueTick => subway::tick(&mut b, materials, rig),
+        MobKind::BallastMole => subway::mole(&mut b, materials, rig),
+        MobKind::RatKnot => subway::knot(&mut b, materials, rig),
+        MobKind::CryptJumper => catacombs::jumper(&mut b, materials, rig, root),
+        MobKind::GraveTrapdoor => catacombs::trapdoor(&mut b, materials, rig, root),
+        MobKind::OssuaryWolf => catacombs::wolf(&mut b, materials, rig),
+        MobKind::Bonestrider => catacombs::strider(&mut b, materials, rig, root),
+        MobKind::Wireworm => bunker::wireworm(&mut b, materials, rig),
+        MobKind::Bombardier => bunker::bombardier(&mut b, materials, rig),
+        MobKind::Ramhorn => bunker::ramhorn(&mut b, materials, rig),
+        MobKind::Sexton => bunker::sexton(&mut b, materials, rig),
+        MobKind::BileLeech => sewer::leech(&mut b, materials, rig),
+        MobKind::GulletToad => sewer::toad(&mut b, materials, rig),
+        MobKind::PlagueBloat => sewer::bloat(&mut b, materials, rig),
+        MobKind::DrainNewt => sewer::newt(&mut b, materials, rig),
+        MobKind::Locust => sinkhole::locust(&mut b, materials, rig),
+        MobKind::RubbleCricket => sinkhole::cricket(&mut b, materials, rig),
+        MobKind::MoleCricket => sinkhole::mole_cricket(&mut b, materials, rig, root, kind.spec().foot),
+        MobKind::WreckKatydid => sinkhole::katydid(&mut b, materials, rig),
+        MobKind::GalleryLouse | MobKind::SeepLeech | MobKind::SpillwayCrab | MobKind::RubbleHermit => dam::body(&mut b, materials, rig, kind),
+        MobKind::Hundredfoot => cave::hundredfoot(&mut b, materials, root),
+        MobKind::Curlback => cave::curlback(&mut b, materials, rig),
+        MobKind::Burrowling => cave::burrowling(&mut b, materials, rig),
+        MobKind::Broodcoil => cave::broodcoil(&mut b, materials, rig),
     };
     commands.entity(root).insert(Mob::new(kind, at, mats, parent));
+    root
 }
 
 /// A cockroach, facing +X, feet at y ≈ -6.8. The sewer kind is darker, with a banded back.
@@ -578,6 +642,46 @@ pub fn dismember(mut commands: Commands, mut mobs: Query<&mut Mob>, bones: Query
             BoneKind::Head if m.kind == MobKind::Grub => (Vec2::new(f * 170.0, 380.0), 6.0, blood),
             BoneKind::Abdomen => (Vec2::new(-f * 120.0, 300.0), -5.0, blood),
             BoneKind::Tail => (Vec2::new(-f * 200.0, 340.0), 12.0, blood),
+            BoneKind::Mall(k) => match mall::tear(k, m) {
+                Some(torn) => torn,
+                None => continue,
+            },
+            BoneKind::Treatment(tb) => match treatment::torn(tb, m) {
+                Some(torn) => torn,
+                None => continue,
+            },
+            BoneKind::Subway(k) => match subway::tear(k, &m) {
+                subway::Tear::Off { vel, spin, bleeds } => (vel, spin, bleeds),
+                subway::Tear::Gone => {
+                    commands.entity(e).despawn();
+                    continue;
+                }
+                subway::Tear::Stay => continue,
+            },
+            BoneKind::Crypt(c) => match catacombs::tear(c, m) {
+                Some(torn) => torn,
+                None => continue,
+            },
+            BoneKind::Bunker(part) => match bunker::torn(part, &m) {
+                Some(fling) => fling,
+                None => continue,
+            },
+            BoneKind::Sewer(part) => match sewer::torn(part, m) {
+                Some(torn) => torn,
+                None => continue,
+            },
+            BoneKind::Sinkhole(part) => match sinkhole::torn(part, f, blood) {
+                Some(torn) => torn,
+                None => continue,
+            },
+            BoneKind::Dam(b) => match dam::torn(b, m) {
+                Some(gib) => gib,
+                None => continue,
+            },
+            BoneKind::Cave(part) => match cave::tear(part, m) {
+                Some(torn) => torn,
+                None => continue,
+            },
             _ => continue,
         };
         commands.entity(e).remove::<MobBone>().insert(MobStuff);
@@ -594,6 +698,13 @@ pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform)>, mut bones: Quer
     for (bone, mut tf) in &mut bones {
         let Ok((m, mtf)) = mobs.get(bone.owner) else { continue };
         let tt = t + m.seed;
+        if bunker::animate(bone.kind, m, &mut tf, tt, dt) {
+            continue;
+        }
+        if sinkhole::draws(m.kind) {
+            sinkhole::animate(bone.kind, m, &mut tf, tt, dt);
+            continue;
+        }
         let (dead, landed) = match m.state {
             State::Dead { t, landed } => (Some(t), landed),
             _ => (None, false),
@@ -604,6 +715,12 @@ pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform)>, mut bones: Quer
         let flies = m.spec.flies();
         let moves = m.spec.moves;
         match bone.kind {
+            BoneKind::Rig if treatment::draws(m.kind) => treatment::rig(m, &mut tf, tt, dt),
+            BoneKind::Treatment(tb) => treatment::animate(tb, m, &mut tf, tt),
+            BoneKind::Rig if mobs::sewer::owns(moves) => sewer::rig(m, &mut tf, tt, dt),
+            BoneKind::Sewer(part) => sewer::animate(part, m, &mut tf, tt),
+            BoneKind::Rig if matches!(moves, Moves::Cave(_)) => cave::rig(m, &mut tf, windup, tt, dt),
+            BoneKind::Cave(part) => cave::animate(part, m, mtf, &mut tf, windup, tt),
             BoneKind::Rig => {
                 let s = m.spec.scale;
                 tf.scale.x += (m.facing * s - tf.scale.x) * (1.0 - (-18.0 * dt).exp());
@@ -707,6 +824,10 @@ pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform)>, mut bones: Quer
                 tf.rotation = Quat::from_rotation_z(to.to_angle() - PI / 2.0);
                 tf.scale = Vec3::new(1.0, if alive { to.length() } else { 0.001 }, 1.0);
             }
+            BoneKind::Mall(k) => mall::animate(k, m, &mut tf, t, dt),
+            BoneKind::Subway(k) => subway::animate(k, m, &mut tf, tt),
+            BoneKind::Crypt(c) => catacombs::animate(c, m, mtf, &mut tf, tt, dt),
+            BoneKind::Dam(b) => dam::pose(b, m, &mut tf, tt, dt),
             BoneKind::Sway => {
                 // Swings gently; shudders when a drone crawls out or it's hit.
                 let shudder = match m.state {
@@ -716,6 +837,9 @@ pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform)>, mut bones: Quer
                 let hang = if dead.is_some() { 0.0 } else { (tt * 0.9).sin() * 0.05 + shudder };
                 tf.rotation = Quat::from_rotation_z(hang);
             }
+            // Posed by `bunker::animate` above.
+            BoneKind::Bunker(_) => {}
+            BoneKind::Sinkhole(_) => {}
         }
     }
 }

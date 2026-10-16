@@ -116,7 +116,7 @@ fn player_body() -> Vec2 {
     Vec2::new(player::HALF.x * 0.6, player::HALF.y)
 }
 
-fn stick(
+pub(crate) fn stick(
     webs: Query<(&Web, &GlobalTransform)>,
     curtains: Query<&Curtain>,
     mut player: Single<(&mut Player, &Transform)>,
@@ -134,7 +134,7 @@ fn stick(
     let (p, tf) = &mut *player;
     p.webbed = most(tf.translation.truncate(), player_body());
     for (mut m, tf) in &mut mobs {
-        let spider = matches!(m.kind, MobKind::Spider | MobKind::Spiderling) || matches!(m.state, State::Dead { .. });
+        let spider = matches!(m.kind, MobKind::Spider | MobKind::Spiderling | MobKind::CryptJumper | MobKind::GraveTrapdoor | MobKind::OssuaryWolf) || matches!(m.state, State::Dead { .. });
         m.webbed = if spider { 0.0 } else { most(tf.translation.truncate(), Vec2::splat(m.spec.radius * 0.5)) };
     }
 }

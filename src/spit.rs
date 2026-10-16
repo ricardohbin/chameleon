@@ -119,7 +119,7 @@ pub fn move_spit(
             .map(|(e, _, _)| e)
             .chain(
                 mobs.iter()
-                    .filter(|(_, m, mtf)| !matches!(m.state, State::Dead { .. }) && near(mtf.translation.truncate(), m.spec.radius))
+                    .filter(|(_, m, mtf)| !matches!(m.state, State::Dead { .. }) && !m.untouchable() && near(mtf.translation.truncate(), m.spec.radius))
                     .map(|(e, _, _)| e),
             )
             .next();

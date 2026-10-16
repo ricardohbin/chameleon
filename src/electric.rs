@@ -216,7 +216,7 @@ fn shock_mobs(
         *t > 0.0 && mobs.contains(*e)
     });
     for (e, mut m, tf) in &mut mobs {
-        if matches!(m.state, State::Dead { .. }) || zapped.contains_key(&e) {
+        if matches!(m.state, State::Dead { .. }) || m.dug_in() || zapped.contains_key(&e) {
             continue;
         }
         let pos = tf.translation.truncate();

@@ -234,6 +234,13 @@ fn load(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials:
 }
 
 /// An orb web of radius `r`: spokes and a spiral of rings.
+/// `x` kept `margin` inside `span`; a span too narrow for the margin (a sketch edit
+/// can shrink the arena) gives its middle instead of panicking like `f32::clamp`.
+fn clamp_span(x: f32, span: (f32, f32), margin: f32) -> f32 {
+    let (lo, hi) = (span.0 + margin, span.1 - margin);
+    if lo <= hi { x.clamp(lo, hi) } else { (span.0 + span.1) * 0.5 }
+}
+
 fn orb_web(r: f32) -> Mesh {
     let mut tris = Vec::new();
     let spokes = 12;
@@ -434,7 +441,7 @@ fn think(
         // while it hunts, home otherwise (never off its floor).
         if hung {
             let want = if aggro { ppos.x } else { boss.home.x };
-            let want = want.clamp(s.span.0 + 60.0, s.span.1 - 60.0);
+            let want = clamp_span(want, s.span, 60.0);
             let speed = if matches!(s.state, State::Brace(_)) { 0.0 } else { CRAWL * if enraged { 1.25 } else { 1.0 } };
             let next = s.anchor.x + (want - s.anchor.x).clamp(-speed * dt, speed * dt);
             if let Some(top) = ceiling(&terrain, next, s.floor) {
@@ -588,7 +595,7 @@ fn think(
                 // Shuffles toward the chameleon a little, on its floor.
                 let want = if aggro && to_player.x.abs() > BITE_REACH * 0.6 { side * 70.0 } else { 0.0 };
                 s.vel.x = s.vel.x + (want - s.vel.x) * (1.0 - (-6.0 * dt).exp());
-                let x = (pos.x + s.vel.x * dt).clamp(s.span.0 + 40.0, s.span.1 - 40.0);
+                let x = clamp_span(pos.x + s.vel.x * dt, s.span, 40.0);
                 if !terrain.box_hits(Vec2::new(x, pos.y + 10.0), Vec2::new(30.0, 20.0)) {
                     tf.translation.x = x;
                 }

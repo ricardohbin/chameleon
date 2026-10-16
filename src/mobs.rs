@@ -10,6 +10,18 @@
 //!   crawl and lunge, soldiers that stand guard and spit venom, and paper
 //!   nests hanging from ceilings that release drones.
 //!
+//! The other regions have ecosystems of their own, matched to their (present
+//! or future) boss and to the place, whoever owns the slice (`menu`): each in
+//! `mobs/<region>.rs` (specs, minds, AI, placement) with its art in
+//! `mob_art/<region>.rs`: the broken dam (`dam`, crab), the water treatment
+//! plant (`treatment`, dragonfly), the old sewer (`sewer`, frog), the cave
+//! system (`cave`, centipede), the catacombs (`catacombs`, spider), the subway
+//! (`subway`, rat), the shopping center (`mall`, mantis), the sinkhole street
+//! (`sinkhole`, grasshopper) and the cold war bunker (`bunker`, beetle). They
+//! hook into the shared code by their `Moves` (a dispatch in `think`, `site`,
+//! the knockback in `slash_mobs`); `Mob::untouchable` gathers those that can't
+//! be hit while buried or hidden, and armored ones glance blows in `slash_mobs`.
+//!
 //! The slice with the player spawn is left empty (a calm start), and so are
 //! both bosses' arenas. Placement is deterministic (seeded per slice name) and
 //! the count scales with the slice size. Nobody strays more than `leash` from
@@ -22,7 +34,16 @@ use std::{collections::HashMap, f32::consts::PI};
 
 use bevy::prelude::*;
 
+mod mall;
+pub(crate) mod catacombs;
+pub(crate) mod bunker;
+pub(crate) mod dam;
+pub(crate) mod cave;
 mod rat;
+pub(crate) mod treatment;
+mod subway;
+pub(crate) mod sewer;
+pub(crate) mod sinkhole;
 
 use crate::{
     boss::{self, Arena, BossKind},
@@ -86,12 +107,14 @@ impl Plugin for MobPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_glob).add_systems(
             Update,
-            (rebuild, slash_mobs, think, nests, move_globs, mob_art::dismember, mob_art::animate, flash_mobs)
+            (rebuild, slash_mobs, think, subway::split, nests, cave::hatch, catacombs::hatch, bunker::balls, move_globs, mob_art::dismember, mob_art::animate, flash_mobs)
                 .chain()
                 .after(player::move_player)
                 .after(chameleon::update_anim_state)
                 .after(spit::move_spit),
         );
+        treatment::build(app);
+        sewer::plugin(app);
     }
 }
 
@@ -119,6 +142,76 @@ pub enum MobKind {
     Spider,
     /// Hatched from the spider boss's eggs: small, quick, swarms at the chameleon.
     Spiderling,
+    /// Mall: still-hunting mantis nymph; guards, out-reaches the claw (`mobs/mall.rs`).
+    MantisNymph,
+    /// Mall: ghost mantis disguised as dead leaves; flares and pounces.
+    GhostMantis,
+    /// Mall: moth circling dead neon; spirals around the chameleon and darts.
+    NeonMoth,
+    /// Mall: mantis egg case on a dangling cable: hatches hatchlings.
+    Ootheca,
+    /// Mall: hatched from an ootheca; hops and leaps.
+    MantisHatchling,
+    /// Dragonfly nymph buried in the treatment plant's sludge: shoots its jaw along the floor.
+    Naiad,
+    /// Plant mosquito: latches on the chameleon's back and drinks.
+    Siphon,
+    /// Ceiling leech of the treatment plant: drops caustic that leaves burning puddles.
+    SumpLeech,
+    /// Subway: rat tick, leaps on the chameleon and rides it, feeding, then bites.
+    PlagueTick,
+    /// Subway: naked mole rat tunneling under the floor, erupts under the chameleon.
+    BallastMole,
+    /// Subway: rats knotted by their tails into a ball that rolls at the chameleon.
+    RatKnot,
+    /// Catacombs: jumping spider, stalks in darts and pounces in an arc.
+    CryptJumper,
+    /// Catacombs: hides under a lid in the floor, lunges out at passers-by.
+    GraveTrapdoor,
+    /// Catacombs: wolf spider hunting in sprints, sheds the brood on its back when hit.
+    OssuaryWolf,
+    /// Catacombs: harvestman on long stilts, drops its body on the chameleon.
+    Bonestrider,
+    /// Bunker: click-beetle larva under the floor; tunnels under the chameleon, bursts up.
+    Wireworm,
+    /// Bunker: backs in rear first, sprays a scalding cone behind it.
+    Bombardier,
+    /// Bunker: rhinoceros beetle, armored front, charges; dazed by walls, slow to turn.
+    Ramhorn,
+    /// Bunker: burying beetle, shoves rolling balls of carrion and rubble.
+    Sexton,
+    /// Old sewer: a leech that springs on the chameleon, rides it and drinks.
+    BileLeech,
+    /// Old sewer: a toad that lashes its tongue and yanks the chameleon in.
+    GulletToad,
+    /// Old sewer: a poison-swollen toad that belches violet clouds.
+    PlagueBloat,
+    /// Old sewer: a newt creeping along ceilings that drops on the chameleon.
+    DrainNewt,
+    /// Sunken street: locust, in bands that line up and sweep across.
+    Locust,
+    /// Sunken street: chirps a call to its neighbors, banks its leaps off walls.
+    RubbleCricket,
+    /// Sunken street: tunnels under the soil, bursts out under the chameleon.
+    MoleCricket,
+    /// Sunken street: a dead leaf on the wrecks until it leaps and glides down.
+    WreckKatydid,
+    /// Broken dam: giant isopod on the ceilings: drops on the chameleon, rolls at it as a ball.
+    GalleryLouse,
+    /// Broken dam: inches along, lunges and latches on, drinking (slows the chameleon).
+    SeepLeech,
+    /// Broken dam: crab guarding its face with its crusher claw; snaps.
+    SpillwayCrab,
+    /// Broken dam: hermit crab in a lump of concrete, hidden among the rubble; slams.
+    RubbleHermit,
+    /// Cave centipede: crawls along floors, walls and ceilings; drops, springs or rushes.
+    Hundredfoot,
+    /// Armored millipede: rolls up into a ball and bowls at the chameleon.
+    Curlback,
+    /// The Burrower's brood: travels inside the rock, bursts out under the chameleon.
+    Burrowling,
+    /// Mother centipede coiled around her eggs: lashes out, hatches hundredfoots.
+    Broodcoil,
 }
 
 impl MobKind {
@@ -135,6 +228,41 @@ impl MobKind {
             MobKind::Rat => &RAT,
             MobKind::Spider => &SPIDER,
             MobKind::Spiderling => &SPIDERLING,
+            MobKind::MantisNymph => &mall::MANTIS_NYMPH,
+            MobKind::GhostMantis => &mall::GHOST_MANTIS,
+            MobKind::NeonMoth => &mall::NEON_MOTH,
+            MobKind::Ootheca => &mall::OOTHECA,
+            MobKind::MantisHatchling => &mall::MANTIS_HATCHLING,
+            MobKind::Naiad => &treatment::NAIAD,
+            MobKind::Siphon => &treatment::SIPHON,
+            MobKind::SumpLeech => &treatment::SUMP_LEECH,
+            MobKind::PlagueTick => &subway::PLAGUE_TICK,
+            MobKind::BallastMole => &subway::BALLAST_MOLE,
+            MobKind::RatKnot => &subway::RAT_KNOT,
+            MobKind::CryptJumper => &catacombs::CRYPT_JUMPER,
+            MobKind::GraveTrapdoor => &catacombs::GRAVE_TRAPDOOR,
+            MobKind::OssuaryWolf => &catacombs::OSSUARY_WOLF,
+            MobKind::Bonestrider => &catacombs::BONESTRIDER,
+            MobKind::Wireworm => &bunker::WIREWORM,
+            MobKind::Bombardier => &bunker::BOMBARDIER,
+            MobKind::Ramhorn => &bunker::RAMHORN,
+            MobKind::Sexton => &bunker::SEXTON,
+            MobKind::BileLeech => &sewer::BILE_LEECH,
+            MobKind::GulletToad => &sewer::GULLET_TOAD,
+            MobKind::PlagueBloat => &sewer::PLAGUE_BLOAT,
+            MobKind::DrainNewt => &sewer::DRAIN_NEWT,
+            MobKind::Locust => &sinkhole::LOCUST,
+            MobKind::RubbleCricket => &sinkhole::RUBBLE_CRICKET,
+            MobKind::MoleCricket => &sinkhole::MOLE_CRICKET,
+            MobKind::WreckKatydid => &sinkhole::WRECK_KATYDID,
+            MobKind::GalleryLouse => &dam::LOUSE,
+            MobKind::SeepLeech => &dam::LEECH,
+            MobKind::SpillwayCrab => &dam::CRAB,
+            MobKind::RubbleHermit => &dam::HERMIT,
+            MobKind::Hundredfoot => &cave::HUNDREDFOOT,
+            MobKind::Curlback => &cave::CURLBACK,
+            MobKind::Burrowling => &cave::BURROWLING,
+            MobKind::Broodcoil => &cave::BROODCOIL,
         }
     }
 }
@@ -158,6 +286,52 @@ pub enum Moves {
     Pack,
     /// Hangs from a ceiling on a thread; drops and climbs.
     Dangle,
+    /// Still-hunts on the ground: sways, creeps, strikes far ahead (`mobs/mall.rs`).
+    Stalk,
+    /// Flutters around a light or the chameleon's head; darts (`mobs/mall.rs`).
+    Flutter,
+    /// Buried in the floor; rears out and strikes along it (`treatment.rs`).
+    Mire,
+    /// Hovers, lunges and latches on the chameleon (`treatment.rs`).
+    Siphon,
+    /// Loops along ceilings; drops things (`treatment.rs`).
+    Inchworm,
+    /// Leaps on the chameleon and holds on (`subway.rs`).
+    Latch,
+    /// Tunnels under the ground, erupts from it (`subway.rs`).
+    Burrow,
+    /// Rolls along the ground with momentum (`subway.rs`).
+    Tumble,
+    /// The catacombs' kin: each kind its own mind (`mobs/catacombs.rs`).
+    Crypt,
+    /// Tunnels under the floor; bursts up out of it (`mobs/bunker.rs`).
+    Bore,
+    /// Inches along the ground, springs onto the chameleon and holds on (`sewer.rs`).
+    Leech,
+    /// Sits and hops; shoots its tongue to grab and pull (`sewer.rs`).
+    TongueLash,
+    /// Waddles; swells and belches poison clouds (`sewer.rs`).
+    Belch,
+    /// Creeps upside down along ceilings, drops, then hunts on the ground (`sewer.rs`).
+    CeilingCreep,
+    /// Flies in a band that lines up beside the chameleon and sweeps across (`sinkhole.rs`).
+    BandSweep,
+    /// Leaps, clings to walls and kicks off them; calls its neighbors (`sinkhole.rs`).
+    WallKick,
+    /// Lives under the ground, comes out to bite (`sinkhole.rs`).
+    Tunnel,
+    /// Lies still, leaps, and glides down on open wings (`sinkhole.rs`).
+    LeafGlide,
+    /// Crawls upside down along a ceiling; drops, then rolls on the floor (`dam.rs`).
+    Cling,
+    /// Inches along the ground; lunges and latches on (`dam.rs`).
+    Inch,
+    /// Scuttles about with a guard up in front; snaps (`dam.rs`).
+    Scuttle,
+    /// Hides in a shell among the rubble; ambushes and slams (`dam.rs`).
+    Shell,
+    /// The cave system's own ways (`mobs/cave.rs`).
+    Cave(cave::Gait),
 }
 
 pub struct MobSpec {
@@ -199,7 +373,7 @@ pub struct MobSpec {
 
 impl MobSpec {
     pub fn flies(&self) -> bool {
-        matches!(self.moves, Moves::Fly | Moves::Swarm)
+        matches!(self.moves, Moves::Fly | Moves::Swarm | Moves::Flutter)
     }
 }
 
@@ -511,6 +685,24 @@ pub struct Mob {
     lost: f32,
     /// Rats: their state of mind (`rat.rs`).
     rat: rat::Mind,
+    /// Mall mantises and moths: their state of mind (`mall.rs`).
+    pub(crate) mall: mall::Mind,
+    /// Treatment plant mobs: their state of mind (`treatment.rs`).
+    pub(crate) treatment: treatment::Mind,
+    /// The subway's vermin: their state of mind (`subway.rs`).
+    subway: subway::Mind,
+    /// Catacomb kin: their state of mind (`catacombs.rs`).
+    pub(crate) catacombs: catacombs::Mind,
+    /// Bunker beetles: their state of mind (`bunker.rs`).
+    pub(crate) bunker: bunker::Mind,
+    /// Old sewer mobs: their state of mind (`sewer.rs`).
+    pub(crate) sewer: sewer::Mind,
+    /// Sunken street mobs: their state of mind (`sinkhole.rs`).
+    pub(crate) sinkhole: sinkhole::Mind,
+    /// Broken dam mobs: their state of mind (`dam.rs`).
+    pub(crate) dam: dam::Mind,
+    /// Cave mobs: their state of mind (`cave.rs`).
+    pub(crate) cave: cave::Mind,
 }
 
 impl Mob {
@@ -543,12 +735,31 @@ impl Mob {
             notice: if parent.is_some() { Notice::Aware } else { Notice::Unaware },
             lost: 0.0,
             rat: rat::Mind::default(),
+            mall: mall::Mind::new(kind),
+            treatment: treatment::Mind::default(),
+            subway: subway::Mind::default(),
+            catacombs: catacombs::Mind::default(),
+            bunker: bunker::Mind::default(),
+            sewer: sewer::Mind::default(),
+            sinkhole: sinkhole::Mind::default(),
+            dam: dam::Mind::default(),
+            cave: cave::Mind::default(),
         }
+    }
+
+    /// Out of reach of claw and spit: buried, dug in, hidden in its hole.
+    pub fn untouchable(&self) -> bool {
+        self.hidden() || self.dug_in() || self.in_soil() || catacombs::hidden(self) || bunker::buried(self)
     }
 
     /// Shadow health its remains give.
     pub fn food(&self) -> f32 {
         if self.parent.is_some() { 0.0 } else { self.spec.food }
+    }
+
+    /// Out of reach under the ground: blows and spit pass over it.
+    pub fn in_soil(&self) -> bool {
+        sinkhole::hidden(self)
     }
 
     /// 0..1 through the attack telegraph.
@@ -674,6 +885,9 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
                     let ok = rest.filter(|&f| fits(terrain, f, kind.spec()));
                     placed.push((kind, ok.map_or(at, |f| f + Vec2::Y * kind.spec().foot)));
                 }
+            } else if kind == MobKind::Locust {
+                // A band, stacked up from the spot.
+                placed.extend(sinkhole::band(terrain, at).into_iter().map(|q| (kind, q)));
             } else {
                 placed.push((kind, at));
             }
@@ -693,6 +907,20 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
 
 /// The ecosystem of a region of `boss`: kinds and their share of the mobs.
 pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
+    // Regions with an ecosystem of their own (`mobs/<region>.rs`), whoever owns
+    // them; the Gutter King keeps his own sewers.
+    match style {
+        Style::Dam => return dam::menu(),
+        Style::Treatment => return treatment::menu(),
+        Style::Sewer if boss != BossKind::Roach => return sewer::menu(),
+        Style::Cave => return cave::menu(),
+        Style::Catacombs => return catacombs::menu(),
+        Style::Subway => return subway::menu(),
+        Style::Mall => return mall::menu(),
+        Style::Sinkhole => return sinkhole::menu(),
+        Style::Bunker => return bunker::menu(),
+        _ => {}
+    }
     match boss {
         BossKind::Roach => {
             // Sewers breed the big ones.
@@ -727,13 +955,10 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
             (MobKind::Spider, 0.15),
             (MobKind::Rat, 0.1),
         ],
-        // The fields: hopping and crawling things.
-        BossKind::Grasshopper => vec![
-            (MobKind::Flea, 0.35),
-            (MobKind::Grub, 0.25),
-            (MobKind::Fly, 0.2),
-            (MobKind::Rat, 0.2),
-        ],
+        // Its kin, wherever it lives (`mobs/sinkhole.rs`).
+        BossKind::Grasshopper => sinkhole::menu(),
+        // The old sewer: the frog's brood (toads, bloats, newts), the leeches in
+        // its muck, the flies it eats, and the sewer's own rats and roaches.
         // The marsh: what a frog eats, and what dares eat it.
         BossKind::Frog => vec![
             (MobKind::Fly, 0.35),
@@ -758,7 +983,7 @@ fn site(terrain: &Terrain, kind: MobKind, p: Vec2, rect: Rect) -> Option<Vec2> {
         return None;
     }
     match spec.moves {
-        Moves::Fly | Moves::Swarm => {
+        Moves::Fly | Moves::Swarm | Moves::Flutter | Moves::BandSweep => {
             let open = terrain.clearance(p) >= FLY_ROOM;
             // Over some ground, not out in the void.
             (open && terrain.surface(p, 500.0).is_some()).then_some(p)
@@ -778,7 +1003,12 @@ fn site(terrain: &Terrain, kind: MobKind, p: Vec2, rect: Rect) -> Option<Vec2> {
             }
             None
         }
-        Moves::Walk | Moves::Hop | Moves::Perch | Moves::Pack => {
+        Moves::Mire | Moves::Siphon | Moves::Inchworm => treatment::site(terrain, spec, p, rect),
+        Moves::Crypt => catacombs::site(terrain, kind, p, rect),
+        Moves::CeilingCreep => sewer::ceiling_site(terrain, p, rect, spec),
+        Moves::Cling => dam::ceiling_site(terrain, p, rect, spec),
+        Moves::Cave(gait) => cave::site(terrain, gait, p, rect, spec),
+        Moves::Walk | Moves::Hop | Moves::Perch | Moves::Pack | Moves::Stalk | Moves::Latch | Moves::Burrow | Moves::Tumble | Moves::Bore | Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::WallKick | Moves::Tunnel | Moves::LeafGlide | Moves::Inch | Moves::Scuttle | Moves::Shell => {
             let feet = Vec2::new(p.x, terrain.surface(p, rect.height())?);
             let (left, right) = terrain.flat_span(feet, 24.0);
             (rect.contains(feet) && fits(terrain, feet, spec) && right - left >= 12.0 * PX).then_some(feet + Vec2::Y * spec.foot)
@@ -849,7 +1079,7 @@ fn slash_mobs(
     if anim.striking() {
         for (e, m, tf) in &mobs {
             let pos = tf.translation.truncate();
-            if !matches!(m.state, State::Dead { .. }) && m.hit_by != anim.slash_id && anim.reaches(ppos, p.facing, pos, m.spec.radius) {
+            if !matches!(m.state, State::Dead { .. }) && !m.untouchable() && m.hit_by != anim.slash_id && anim.reaches(ppos, p.facing, pos, m.spec.radius) {
                 struck.push((e, anim.blow_dir(ppos, pos), true));
             }
         }
@@ -858,16 +1088,51 @@ fn slash_mobs(
     let mut rally: Vec<Vec2> = Vec::new();
     for (e, aim, slashed) in struck {
         let Ok((_, mut m, tf)) = mobs.get_mut(e) else { continue };
-        if matches!(m.state, State::Dead { .. }) {
+        if matches!(m.state, State::Dead { .. }) || m.untouchable() {
             continue;
         }
         let pos = tf.translation.truncate();
         let radius = m.spec.radius;
         if slashed {
             m.hit_by = anim.slash_id;
+            // A mantis on guard parries a slash from the front.
+            if mall::parries(&mut m, pos, ppos) {
+                shake.add(0.12);
+                stop.add(0.06);
+                continue;
+            }
+        }
+        // Buried, or glancing off armor.
+        match bunker::parry(&mut m, pos, ppos) {
+            bunker::Parry::Open => {}
+            bunker::Parry::Hidden => continue,
+            bunker::Parry::Armor => {
+                shake.add(0.12);
+                stop.add(0.04);
+                continue;
+            }
+        }
+        // Claw guards and shells.
+        if !p.god && dam::glances(&mut m, pos, ppos, aim) {
+            shake.add(0.1);
+            stop.add(0.03);
+            continue;
+        }
+        // Cave mobs: out of reach in the rock, or rolled up in their armor.
+        match cave::blow(&mut m, pos.x - ppos.x) {
+            cave::Blow::Lands => {}
+            cave::Blow::Misses => continue,
+            cave::Blow::Glances => {
+                shake.add(0.08);
+                stop.add(0.03);
+                continue;
+            }
         }
         m.hp -= 1;
         m.flash = 1.0;
+        if m.spec.moves == Moves::Crypt {
+            catacombs::struck(&mut m);
+        }
         m.notice = Notice::Aware;
         sfx.write(Sfx::Blood);
         rally.push(tf.translation.truncate());
@@ -898,13 +1163,21 @@ fn slash_mobs(
             let busy = matches!(m.state, State::Attack(_) | State::Windup(_));
             if !(busy && m.spec.stubborn) {
                 m.vel = match m.spec.moves {
-                    Moves::Fly | Moves::Swarm => dir * 300.0,
+                    Moves::Fly | Moves::Swarm | Moves::Flutter | Moves::BandSweep => dir * 300.0,
                     Moves::Walk | Moves::Pack => Vec2::new(side * 280.0, 0.0),
-                    Moves::Hop => {
+                    Moves::Stalk => Vec2::new(side * 180.0, 0.0),
+                    Moves::Hop | Moves::Latch | Moves::WallKick | Moves::LeafGlide => {
                         m.airborne = true;
                         Vec2::new(side * 260.0, 220.0)
                     }
-                    Moves::Perch | Moves::Hang | Moves::Dangle => Vec2::ZERO,
+                    Moves::Siphon => dir * 300.0,
+                    Moves::Perch | Moves::Hang | Moves::Dangle | Moves::Mire | Moves::Inchworm | Moves::Bore | Moves::Tunnel => Vec2::ZERO,
+                    // Heavy, or half in the ground.
+                    Moves::Burrow | Moves::Tumble => Vec2::new(side * 140.0, 0.0),
+                    Moves::Crypt => catacombs::knock(&mut m, side),
+                    Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::CeilingCreep => sewer::knock(&mut m, side),
+                    Moves::Cling | Moves::Inch | Moves::Scuttle | Moves::Shell => dam::knock(&m.dam, m.kind, side),
+                    Moves::Cave(_) => Vec2::new(side * 220.0, 0.0),
                 };
                 m.state = State::Hurt(0.0);
             }
@@ -929,6 +1202,8 @@ struct Deeds {
     bites: Vec<(Vec2, i32)>,
     /// Venom spat: (from, velocity).
     spits: Vec<(Vec2, Vec2)>,
+    /// Crickets called from here (`sinkhole::hear`).
+    calls: Vec<Vec2>,
 }
 
 fn think(
@@ -950,6 +1225,8 @@ fn think(
     let ppos = ptf.translation.truncate();
     let alive = p.dead.is_none();
     let mut deeds = Deeds::default();
+    let bands = sinkhole::Bands::new(mobs.iter().map(|(m, tf)| (m, tf.translation.truncate())));
+    let floor = |from: Vec2, to: Vec2, foot: f32| boss::floor(&terrain, platforms.iter(), from, to, foot);
 
     for (mut m, mut tf) in &mut mobs {
         let m = &mut *m;
@@ -1008,11 +1285,64 @@ fn think(
                 Moves::Pack => to_player.y.abs() < 220.0 && (ppos.x - m.home.x).abs() < spec.leash + 200.0 && in_view(),
                 // Right below it.
                 Moves::Dangle => to_player.x.abs() < 70.0 && to_player.y < 0.0 && in_view(),
+                Moves::Stalk => to_player.y.abs() < 140.0 && (ppos.x - m.home.x).abs() < spec.leash + 150.0 && in_view(),
+                Moves::Mire => to_player.y.abs() < 120.0 && (ppos.x - m.home.x).abs() < spec.leash + 150.0 && in_view(),
+                Moves::Crypt => catacombs::seen(m, to_player, ppos.x - m.home.x) && in_view(),
+                Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::CeilingCreep => sewer::seen(m, pos, ppos) && in_view(),
                 _ => in_view(),
             };
         let touching = alive && dist < spec.radius + 16.0;
         let sees = notice(m, seen, seen && dist < spec.sense * if spec.veteran { 1.0 } else { UNAWARE_RANGE }, touching, p.vel.length(), dt);
         let ease = |rate: f32| 1.0 - (-rate * dt).exp();
+
+        if treatment::runs(spec.moves) {
+            let mut w = treatment::World { terrain: &terrain, p: &mut *p, anim: *anim, ppos, t, dt, deeds: &mut deeds, bleed: &mut bleed };
+            treatment::think(m, &mut *tf, sees, touching, &mut w);
+            continue;
+        }
+        if subway::runs(spec.moves) {
+            let world = subway::Scene { terrain: &terrain, p: &p, ppos, t, dt };
+            let step = subway::think(m, pos, sees, touching, &world, &platforms);
+            if step.bite {
+                deeds.bites.push((pos, spec.damage));
+            }
+            tf.translation.x = step.next.x;
+            tf.translation.y = step.next.y;
+            continue;
+        }
+        if bunker::owns(m.kind) {
+            let world = bunker::World { terrain: &terrain, p: &p, ppos, t, dt };
+            let step = bunker::think(m, pos, sees, &world, &mut bleed, &mut shake);
+            if let Some(from) = step.bite {
+                deeds.bites.push((from, spec.damage));
+            }
+            tf.translation.x = step.pos.x;
+            tf.translation.y = step.pos.y;
+            continue;
+        }
+        if sinkhole::runs(spec.moves) {
+            let world = sinkhole::World { terrain: &terrain, floor: &floor, p: &p, ppos, t, dt, bands: &bands };
+            let step = sinkhole::think(m, pos, sees, touching, &world);
+            if step.bite {
+                deeds.bites.push((pos, spec.damage));
+            }
+            if step.call {
+                deeds.calls.push(pos);
+            }
+            tf.translation.x = step.pos.x;
+            tf.translation.y = step.pos.y;
+            continue;
+        }
+        if let Moves::Cave(gait) = spec.moves {
+            let world = cave::World { terrain: &terrain, p: &p, ppos, dt };
+            let step = cave::think(m, pos, gait, sees, &world);
+            if step.bite {
+                deeds.bites.push((pos, spec.damage));
+            }
+            tf.translation.x = step.at.x;
+            tf.translation.y = step.at.y;
+            continue;
+        }
 
         if spec.moves == Moves::Pack {
             let world = rat::World { terrain: &terrain, p: &p, anim: *anim, ppos, t, dt };
@@ -1041,6 +1371,29 @@ fn think(
                 m.facing = m.vel.x.signum();
             }
             m.stride += dt * m.vel.x.abs() * 0.12;
+            continue;
+        }
+
+        if matches!(spec.moves, Moves::Stalk | Moves::Flutter) {
+            let world = mall::World { terrain: &terrain, p: &p, anim: *anim, ppos, t, dt };
+            let step = mall::think(m, pos, sees, touching, &world);
+            if step.bite {
+                deeds.bites.push((pos, spec.damage));
+            }
+            tf.translation.x = step.next.x;
+            tf.translation.y = step.next.y;
+            continue;
+        }
+        if spec.moves == Moves::Crypt {
+            let world = catacombs::World { terrain: &terrain, ppos, t, dt };
+            catacombs::think(m, &mut tf, sees, touching, &world, &platforms, &mut deeds.bites);
+            continue;
+        }
+        if sewer::owns(spec.moves) {
+            let mut world = sewer::World { terrain: &terrain, platforms: &platforms, p: &mut p, ppos, bleed: &mut bleed, shake: &mut shake, stop: &mut stop, t, dt };
+            let next = sewer::think(m, pos, sees, touching, &mut world);
+            tf.translation.x = next.x;
+            tf.translation.y = next.y;
             continue;
         }
 
@@ -1092,6 +1445,19 @@ fn think(
             next.x = anchor.x + (t * 1.7 + m.seed).sin() * len * 0.05;
             tf.translation.x = next.x;
             tf.translation.y = next.y.min(anchor.y - 12.0);
+            continue;
+        }
+
+        if dam::runs(spec.moves) {
+            let world = dam::World { terrain: &terrain, platforms: &platforms, p: &p, ppos, dt };
+            let step = dam::think(m, &mut tf, sees, touching, &world);
+            if let Some(from) = step.bite {
+                deeds.bites.push((from, spec.damage));
+            }
+            if step.drag {
+                dam::drag(&mut p);
+            }
+            shake.add(step.shake);
             continue;
         }
 
@@ -1225,7 +1591,9 @@ fn think(
                 feet + Vec2::Y * spec.foot
             }
             Moves::Hop => hop(m, &terrain, &platforms, pos, dt),
-            Moves::Perch | Moves::Hang | Moves::Pack | Moves::Dangle => pos,
+            Moves::Perch | Moves::Hang | Moves::Pack | Moves::Dangle | Moves::Stalk | Moves::Flutter | Moves::Mire | Moves::Siphon | Moves::Inchworm | Moves::Latch | Moves::Burrow | Moves::Tumble | Moves::Crypt | Moves::Bore | Moves::BandSweep | Moves::WallKick | Moves::Tunnel | Moves::LeafGlide | Moves::Cling | Moves::Inch | Moves::Scuttle | Moves::Shell => pos,
+            Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::CeilingCreep => pos,
+            Moves::Cave(_) => pos,
         };
         tf.translation.x = next.x;
         tf.translation.y = next.y;
@@ -1234,6 +1602,11 @@ fn think(
         m.stride += dt * (m.vel.x.abs() * 0.12 + scrabble);
     }
 
+    if !deeds.calls.is_empty() {
+        for (mut m, tf) in &mut mobs {
+            sinkhole::hear(&mut m, tf.translation.truncate(), &deeds.calls);
+        }
+    }
     for (from, damage) in deeds.bites {
         boss::hurt_player(&mut p, ppos, from, damage, &mut bleed, (&mut shake, &mut stop));
     }
@@ -1324,7 +1697,7 @@ fn flinch(m: &mut Mob, how: Shock, to_player: Vec2, dt: f32) {
         // Flies never hold still.
         Moves::Swarm if run == Vec2::ZERO => {}
         Moves::Swarm => m.vel = m.vel.lerp(run * spec.speed * 2.0 * rush, ease(8.0)),
-        Moves::Walk => {
+        Moves::Walk | Moves::Leech | Moves::Belch | Moves::CeilingCreep => {
             let dir = if run.x == 0.0 { 0.0 } else { run.x.signum() };
             m.vel.x += (dir * spec.speed * 2.0 * rush - m.vel.x) * ease(10.0);
         }
@@ -1353,7 +1726,7 @@ fn idle(m: &mut Mob, pos: Vec2, t: f32, dt: f32) {
             let desired = ((m.home + loops - pos) * 5.0).clamp_length_max(spec.speed * 2.0);
             m.vel = m.vel.lerp(desired, ease(7.0));
         }
-        Moves::Walk | Moves::Pack => {
+        Moves::Walk | Moves::Pack | Moves::Leech | Moves::Belch | Moves::CeilingCreep => {
             m.wander.1 -= dt;
             if m.wander.1 <= 0.0 {
                 let away = pos.x - m.home.x;
@@ -1381,7 +1754,8 @@ fn idle(m: &mut Mob, pos: Vec2, t: f32, dt: f32) {
                 m.wander.1 = m.rng.range(0.8, 2.2);
             }
         }
-        Moves::Perch | Moves::Hang | Moves::Dangle => {}
+        Moves::Perch | Moves::Hang | Moves::Dangle | Moves::Stalk | Moves::Flutter | Moves::Mire | Moves::Siphon | Moves::Inchworm | Moves::Latch | Moves::Burrow | Moves::Tumble | Moves::Crypt | Moves::Bore | Moves::TongueLash | Moves::BandSweep | Moves::WallKick | Moves::Tunnel | Moves::LeafGlide | Moves::Cling | Moves::Inch | Moves::Scuttle | Moves::Shell => {}
+        Moves::Cave(_) => {}
     }
 }
 
@@ -1423,7 +1797,9 @@ fn attack(m: &mut Mob, pos: Vec2, ppos: Vec2, deeds: &mut Deeds) -> State {
             deeds.spits.push((mouth, vel));
             return State::Recover(0.0);
         }
-        Moves::Hang | Moves::Pack | Moves::Dangle => {}
+        Moves::Hang | Moves::Pack | Moves::Dangle | Moves::Stalk | Moves::Flutter | Moves::Mire | Moves::Siphon | Moves::Inchworm | Moves::Latch | Moves::Burrow | Moves::Tumble | Moves::Crypt | Moves::Bore | Moves::BandSweep | Moves::WallKick | Moves::Tunnel | Moves::LeafGlide | Moves::Cling | Moves::Inch | Moves::Scuttle | Moves::Shell => {}
+        Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::CeilingCreep => {}
+        Moves::Cave(_) => {}
     }
     State::Attack(0.0)
 }
@@ -1535,7 +1911,8 @@ fn nests(
                     m.state = State::Attack(0.0);
                     // Out of the hole at the bottom.
                     let at = pos + Vec2::new(m.rng.range(-12.0, 12.0), -16.0 * m.spec.scale);
-                    mob_art::spawn(&mut commands, &mut meshes, &mut materials, MobKind::Drone, at, Some(e));
+                    let kind = mall::brood(m.kind).unwrap_or(MobKind::Drone);
+                    mob_art::spawn(&mut commands, &mut meshes, &mut materials, kind, at, Some(e));
                 }
             }
             State::Attack(s) => m.state = if s < m.spec.attack_time { State::Attack(s + dt) } else { State::Idle },

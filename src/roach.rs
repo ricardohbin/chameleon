@@ -746,7 +746,8 @@ fn think(
         let dead = matches!(r.state, State::Dead { .. });
         let mut next = tf.translation.truncate() + r.vel * dt;
         if !dead {
-            next.x = next.x.clamp(r.arena.left + 40.0, r.arena.right - 40.0);
+            let (lo, hi) = (r.arena.left + 40.0, r.arena.right - 40.0);
+            next.x = if lo <= hi { next.x.clamp(lo, hi) } else { (r.arena.left + r.arena.right) * 0.5 };
             let floor = ground_at(next.x, pos.y).unwrap_or(floor);
             if r.grounded() {
                 next.y = floor + FOOT;
