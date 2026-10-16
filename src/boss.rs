@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`, `mantis`, `crab`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`, `mantis`, `crab`, `beetle`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -23,7 +23,7 @@ use crate::{
     feeding::Morsel,
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    centipede, crab, dragonfly, frog, grasshopper, king_rat, mantis, spider,
+    beetle, centipede, crab, dragonfly, frog, grasshopper, king_rat, mantis, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -42,6 +42,7 @@ impl Plugin for BossPlugin {
         app.init_resource::<BossStatus>()
             .init_resource::<Defeated>()
             .add_message::<BossHit>()
+            .add_message::<Glanced>()
             .add_message::<Beaten>()
             .add_systems(Startup, spawn_all)
             .add_systems(PreUpdate, forget_defeated.after(level::restart))
@@ -70,7 +71,7 @@ impl Plugin for BossPlugin {
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
 /// air spin, the spider walking on walls, the centipede burrowing through rubble, the frog moving
 /// through water as if on land, the grasshopper the charged big jump, the King Rat breathing the sewer air, the mantis
-/// the scythe claws (a wider, deadlier slash), the crab the power blow. F8 forgets them.
+/// the scythe claws (a wider, deadlier slash), the crab the power blow, the beetle the shield. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -86,7 +87,7 @@ impl Defeated {
         self.0.contains(&BossKind::Roach)
     }
 
-    /// Right mouse button / G: spit venom.
+    /// Right mouse button / Q: spit venom.
     pub fn spit(&self) -> bool {
         self.0.contains(&BossKind::Wasp)
     }
@@ -126,6 +127,11 @@ impl Defeated {
         self.0.contains(&BossKind::Crab)
     }
 
+    /// G: a shield, untouchable for a moment (`beetle::SHIELD_*`).
+    pub fn shield(&self) -> bool {
+        self.0.contains(&BossKind::Beetle)
+    }
+
     /// Pushing into a wall: walking on it.
     pub fn climb(&self) -> bool {
         self.0.contains(&BossKind::Spider)
@@ -141,7 +147,7 @@ impl BossKind {
     pub fn power(self) -> &'static str {
         match self {
             BossKind::Roach => "DASH  (Shift / K)",
-            BossKind::Wasp => "VENOM SPIT  (Right click / G)",
+            BossKind::Wasp => "VENOM SPIT  (Right click / Q)",
             BossKind::Dragonfly => "AIR SPIN  (attack in the air)",
             BossKind::Spider => "WALL WALK  (push into a wall, W / S)",
             BossKind::Centipede => "BURROW  (aim into rubble, E)",
@@ -150,11 +156,12 @@ impl BossKind {
             BossKind::Rat => "SEWER RAT  (the sewer air no longer hurts you)",
             BossKind::Mantis => "SCYTHE CLAWS  (a wider slash that cuts deeper)",
             BossKind::Crab => "POWER BLOW  (hold attack 3 s, release)",
+            BossKind::Beetle => "SHIELD  (G: 2 s untouchable)",
         }
     }
 }
 
-fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<Defeated>) {
+pub(crate) fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<Defeated>) {
     if restarted.read().count() > 0 {
         defeated.0.clear();
     }
@@ -172,10 +179,11 @@ pub enum BossKind {
     Rat,
     Mantis,
     Crab,
+    Beetle,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 10] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab];
+    pub const ALL: [BossKind; 11] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab, BossKind::Beetle];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -190,6 +198,7 @@ impl BossKind {
             BossKind::Rat => terrain.rat,
             BossKind::Mantis => terrain.mantis,
             BossKind::Crab => terrain.crab,
+            BossKind::Beetle => terrain.beetle,
         }
     }
 
@@ -199,7 +208,7 @@ impl BossKind {
         let arena = Arena::find(self, terrain);
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let mut arena_rect = match self {
-            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
+            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab | BossKind::Beetle => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
             BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
@@ -239,6 +248,7 @@ impl BossKind {
             BossKind::Rat => king_rat::spawn(commands, meshes, materials, &arena, terrain, region),
             BossKind::Mantis => mantis::spawn(commands, meshes, materials, &arena),
             BossKind::Crab => crab::spawn(commands, meshes, materials, &arena, terrain),
+            BossKind::Beetle => beetle::spawn(commands, meshes, materials, &arena),
         };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
         commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect, zones }, Sense::default()));
@@ -350,6 +360,7 @@ impl Arena {
             BossKind::Rat => terrain.rat.unwrap_or(fallback),
             BossKind::Mantis => terrain.mantis.unwrap_or(fallback),
             BossKind::Crab => terrain.crab.unwrap_or(fallback),
+            BossKind::Beetle => terrain.beetle.unwrap_or(fallback),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.
@@ -387,6 +398,9 @@ pub struct Boss {
     pub staged: bool,
     /// Untouchable right now (set by its AI, e.g. mid-spin): blows glance off.
     pub guard: bool,
+    /// Armored (the beetle; set by its AI): the way it faces. Only a power blow struck from
+    /// behind it breaks through; everything else glances off.
+    pub shell: Option<f32>,
     /// Hits taken lately (it fades): enough of them and it stops flinching and hits back.
     pressure: f32,
     /// Time left in which hits don't stagger it.
@@ -418,7 +432,7 @@ impl Boss {
 
     pub fn new(spec: &'static BossSpec, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>) -> Self {
         let max_hp = scaled_hp(spec);
-        Self { spec, hp: max_hp, max_hp, home, dead: false, awake: false, staged: false, guard: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
+        Self { spec, hp: max_hp, max_hp, home, dead: false, awake: false, staged: false, guard: false, shell: None, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
     }
 
     /// Stops hunting and heals: it goes back home on its own, it is not replaced.
@@ -455,6 +469,14 @@ pub struct BossHit {
     pub retaliate: bool,
     /// Venom spit rather than claws.
     pub venom: bool,
+}
+
+/// A blow glanced off a boss (its guard or its armor) at `at`, bouncing off toward `out`.
+#[derive(Message)]
+pub struct Glanced {
+    pub boss: Entity,
+    pub at: Vec2,
+    pub out: Vec2,
 }
 
 /// Hits fade and the armor wears off.
@@ -595,8 +617,8 @@ fn lairs(
     }
 }
 
-/// The order F2 visits the bosses in (the frog, then the crab, last).
-const VISIT_ORDER: [BossKind; 10] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog, BossKind::Crab];
+/// The order F2 visits the bosses in (the frog, the crab, then the beetle, the last boss).
+const VISIT_ORDER: [BossKind; 11] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog, BossKind::Crab, BossKind::Beetle];
 
 /// F2: jump to the next boss's lair (it wakes) and heal up.
 fn visit_next_boss(
@@ -636,6 +658,7 @@ pub(crate) fn slash_bosses(
     mut paint: MessageWriter<Paint>,
     mut earned: MessageWriter<ColorEarned>,
     mut hits: MessageWriter<BossHit>,
+    mut glanced: MessageWriter<Glanced>,
     mut spat: MessageReader<SpitHit>,
     mut defeated: ResMut<Defeated>,
     mut beaten: MessageWriter<Beaten>,
@@ -665,11 +688,16 @@ pub(crate) fn slash_bosses(
         if slashed {
             boss.hit_by = anim.slash_id;
         }
-        if boss.guard && !p.god.smites() {
+        // Armored: only a power blow on its back gets through (struck from behind it); claws, spin
+        // and spit glance off anywhere.
+        let shelled = boss.shell.is_some_and(|facing| !(slashed && anim.blowing() && (ppos.x - pos.x) * facing < 0.0));
+        if (boss.guard || shelled) && !p.god.smites() {
             // Glances off: a flash, no harm.
             boss.flash = 0.6;
             shake.add(0.12);
             stop.add(0.03);
+            let out = (ppos - pos).normalize_or(Vec2::Y);
+            glanced.write(Glanced { boss: e, at: pos + out * boss.spec.radius * 0.8, out });
             continue;
         }
         // F3 touch of death: any blow kills. The scythe claws cut deeper (spit doesn't).

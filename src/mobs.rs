@@ -827,7 +827,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede), (BossKind::Frog, terrain.frog), (BossKind::Grasshopper, terrain.grasshopper), (BossKind::Rat, terrain.rat), (BossKind::Mantis, terrain.mantis), (BossKind::Crab, terrain.crab)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede), (BossKind::Frog, terrain.frog), (BossKind::Grasshopper, terrain.grasshopper), (BossKind::Rat, terrain.rat), (BossKind::Mantis, terrain.mantis), (BossKind::Crab, terrain.crab), (BossKind::Beetle, terrain.beetle)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -836,7 +836,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
         .flat_map(|&(kind, _)| {
             let a = Arena::find(kind, terrain);
             match kind {
-                BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab => vec![Zone::Rect(Rect::new(
+                BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab | BossKind::Beetle => vec![Zone::Rect(Rect::new(
                     a.left - ROACH_ARENA_MARGIN,
                     a.floor - 250.0,
                     a.right + ROACH_ARENA_MARGIN,
@@ -1039,6 +1039,8 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
         BossKind::Mantis => mall::menu(),
         // The broken dam's crawlers (`mobs/dam.rs`).
         BossKind::Crab => dam::menu(),
+        // The bunker's garrison (`mobs/bunker.rs`).
+        BossKind::Beetle => bunker::menu(),
         // The King Rat's court: its packs, and the vermin that feed beside them.
         BossKind::Rat => vec![
             (MobKind::Rat, 0.45),

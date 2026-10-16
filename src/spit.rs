@@ -71,7 +71,7 @@ fn spit(
     player: Single<(&Player, &Transform, &mut ChameleonAnim)>,
 ) {
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
-    let pressed = keys.just_pressed(KeyCode::KeyG) || mouse.just_pressed(MouseButton::Right);
+    let pressed = keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Right);
     let (p, tf, mut anim) = player.into_inner();
     if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 {
         return;

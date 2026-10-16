@@ -148,6 +148,8 @@ pub struct Terrain {
     pub mantis: Option<Vec2>,
     /// The crab: on the ground below its marker (feet position).
     pub crab: Option<Vec2>,
+    /// The beetle: on the ground below its marker (feet position).
+    pub beetle: Option<Vec2>,
     /// Sketch hints (gray blobs) asking for a falling platform: center, size (world units) and slope (rise per run, up positive).
     pub falling_hints: Vec<(Vec2, Vec2, f32)>,
     /// The same for the fixed slabs.
@@ -211,6 +213,7 @@ impl Terrain {
             rat: None,
             mantis: None,
             crab: None,
+            beetle: None,
             falling_hints: Vec::new(),
             fixed_hints: Vec::new(),
             areas: Vec::new(),
@@ -247,6 +250,7 @@ impl Terrain {
         }
 
         t.crab = marker(MarkerKind::Crab).map(|p| t.rest(to_world(p)));
+        t.beetle = marker(MarkerKind::Beetle).map(|p| t.rest(to_world(p)));
         t.falling_hints = sketch.markers.iter().filter(|m| m.kind == MarkerKind::Falling).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
 
         for s in sketch.slices {

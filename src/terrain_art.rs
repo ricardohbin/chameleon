@@ -215,7 +215,7 @@ pub struct TileTask(Task<Painted>, IVec2);
 /// A painted tile: its ground (front), its interiors (back), the ground again in the colors of
 /// the bosses that ruled it (`tinted`), and the interiors that turn color (`back_tinted`, per
 /// `BACK_TINTS`: gray, and in color), left out of `back`.
-type Painted = (Image, Image, [Option<Image>; 6], [Option<(Image, Image)>; 2]);
+type Painted = (Image, Image, [Option<Image>; 7], [Option<(Image, Image)>; 2]);
 
 /// The interiors that turn color, the boss whose color they get, and its ramp: the mall's shops
 /// in the King Rat's red, the old sewer in the Plague Frog's violet blood.
@@ -405,7 +405,7 @@ pub fn finish_tiles(
                 .add_child(back);
             // The stone in the color of the boss that ruled it, on the color layer, hidden until
             // that color washes over it.
-            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab]) {
+            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab, BossKind::Beetle]) {
                 let Some(blue) = blue else { continue };
                 let center = tf.translation.truncate();
                 let home = match boss {
@@ -414,6 +414,7 @@ pub fn finish_tiles(
                     BossKind::Rat => terrain.rat,
                     BossKind::Mantis => terrain.mantis,
                     BossKind::Crab => terrain.crab,
+                    BossKind::Beetle => terrain.beetle,
                     _ => terrain.grasshopper,
                 };
                 let dist = home.map_or(0.0, |home| (center.distance(home) - extent * 0.5).max(0.0));
@@ -444,9 +445,9 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
     let mut back = vec![0u8; px * px * 4];
     // The ground of the regions of the Weaver (blue limestone), the Gutter King (sulfur yellow),
     // the Sawleg (brown: the crumbling blocks and the park), the King Rat (red: the subway's
-    // tiles and marble), the Reaper (cyan: the mall's checkered floors) and the crab (indigo: the
-    // dam's concrete) again, in their colors (only if the tile has any).
-    let mut tinted: [Option<Vec<u8>>; 6] = [None, None, None, None, None, None];
+    // tiles and marble), the Reaper (cyan: the mall's checkered floors), the crab (indigo: the
+    // dam's concrete) and the beetle (orange: the bunker) again, in their colors (only if the tile has any).
+    let mut tinted: [Option<Vec<u8>>; 7] = [None, None, None, None, None, None, None];
     // The interiors that turn color (`BACK_TINTS`): gray, and in color.
     let mut back_tinted: [Option<(Vec<u8>, Vec<u8>)>; 2] = [None, None];
     for j in 0..px {
@@ -481,6 +482,7 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
                     Style::Subway => (3, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_RED)),
                     Style::Mall => (4, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_CYAN)),
                     Style::Dam => (5, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &DAM_INDIGO)),
+                    Style::Bunker => (6, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &BUNKER_ORANGE)),
                     _ => continue,
                 };
                 let data = tinted[which].get_or_insert_with(|| vec![0u8; px * px * 4]);
@@ -518,6 +520,8 @@ const SHOP_RED: [(f32, Rgb); 4] = [(0.0, [0.05, 0.01, 0.01]), (0.22, [0.24, 0.05
 const SEWER_VIOLET: [(f32, Rgb); 4] = [(0.0, [0.03, 0.0, 0.05]), (0.22, [0.18, 0.02, 0.27]), (0.55, [0.50, 0.05, 0.72]), (1.0, [0.85, 0.58, 1.0])];
 /// The dam once the crab's indigo is back: wet blue-gray concrete, deep indigo shadows.
 const DAM_INDIGO: [(f32, Rgb); 4] = [(0.0, [0.02, 0.02, 0.07]), (0.22, [0.10, 0.12, 0.30]), (0.55, [0.30, 0.36, 0.72]), (1.0, [0.72, 0.76, 0.96])];
+/// The bunker once the beetle's orange is back: hazard-orange paint over rusted plate and concrete.
+const BUNKER_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.07, 0.03, 0.0]), (0.22, [0.30, 0.13, 0.02]), (0.55, [0.80, 0.42, 0.05]), (1.0, [1.0, 0.80, 0.55])];
 /// The mall once the Reaper's cyan is back: glossy teal checker tiles, aqua highlights.
 const TILE_CYAN: [(f32, Rgb); 4] = [(0.0, [0.01, 0.06, 0.07]), (0.22, [0.04, 0.22, 0.25]), (0.55, [0.12, 0.55, 0.60]), (1.0, [0.62, 0.95, 0.96])];
 

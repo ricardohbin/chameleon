@@ -34,6 +34,7 @@ world sketch, the sound effects (recorded by the author) and a font.
 | The Sawleg (grasshopper) | Big jump |
 | The Plague Frog | Water walk: water no longer slows, tires or drowns you |
 | The Weaver (spider) | Wall walking |
+| The BattleTank Beetle (final boss) | Shield: 2 seconds untouchable, long cooldown |
 
 Powers show up in the controls hint only once you have earned them.
 
@@ -49,7 +50,8 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Slash (hold to keep slashing) | `F` / `J` / left mouse button, toward the mouse |
 | Eat remains | `E` |
 | Dash | `Shift` / `K` |
-| Venom spit | `G` / right mouse button |
+| Venom spit | `Q` / right mouse button |
+| Shield | `G` |
 | Air spin | attack while in the air |
 | Big jump | hold `S` / `Down` on the ground, then let go |
 | Wall walk | push into a tall wall. `W` / `S` climb, `Space` leaps off |
@@ -64,8 +66,8 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 **Menu** (`Esc`, or a gamepad's Start): resume, load the last checkpoint, start a new game, settings (difficulty,
 volume, contrast, control scheme) and exit.
 
-**Gamepad:** left stick or d-pad moves, right stick aims, South jumps, West / right trigger slashes, East / left
-trigger spits, North eats, left bumper dashes.
+**Gamepad:** left stick or d-pad moves, right stick aims, South jumps, West / right trigger slashes, East spits, left
+trigger raises the shield, North eats, left bumper dashes.
 
 **Where things are saved:** the quick save (`ghore.save`) and the settings (`ghore.settings`) are small text
 files next to the executable.

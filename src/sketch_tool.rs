@@ -437,6 +437,7 @@ impl<'a> Diff<'a> {
             MarkerKind::ClearWater => [0x62, 0x92, 0x92],
             MarkerKind::Sludge => [0x76, 0x82, 0xac],
             MarkerKind::Crab => [0x5b, 0x6e, 0xe1],
+            MarkerKind::Beetle => [0xff, 0x81, 0x00],
         };
         for m in &self.markers {
             if let MarkerChange::Moved(k, at, _) | MarkerChange::Removed(k, at) = m {
@@ -457,7 +458,7 @@ impl<'a> Diff<'a> {
 /// Pairs markers of the same kind, nearest first.
 fn diff_markers(old: &View, new: &View) -> Vec<MarkerChange> {
     let mut out = Vec::new();
-    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly, MarkerKind::Spider, MarkerKind::Centipede, MarkerKind::Frog, MarkerKind::Grasshopper, MarkerKind::Rat, MarkerKind::Mantis, MarkerKind::Crab, MarkerKind::Falling, MarkerKind::Fixed, MarkerKind::ClearWater, MarkerKind::Sludge] {
+    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly, MarkerKind::Spider, MarkerKind::Centipede, MarkerKind::Frog, MarkerKind::Grasshopper, MarkerKind::Rat, MarkerKind::Mantis, MarkerKind::Crab, MarkerKind::Beetle, MarkerKind::Falling, MarkerKind::Fixed, MarkerKind::ClearWater, MarkerKind::Sludge] {
         let mut a: Vec<Vec2> = old.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         let mut b: Vec<Vec2> = new.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         while !a.is_empty() && !b.is_empty() {
@@ -554,7 +555,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// `mark <boss> <x,y>`: a 5×5 marker of the boss's sketch color at `x,y` (sketch
 /// pixels from the origin marker), on a new top layer "marker: <boss>".
 fn mark() -> Result<(), String> {
-    let usage = "usage: mark <spider|centipede|frog|grasshopper|rat|mantis|crab|dragonfly|wasp|roach> <x,y>  (sketch px from the origin, as `diff` prints them)";
+    let usage = "usage: mark <spider|centipede|frog|grasshopper|rat|mantis|crab|beetle|dragonfly|wasp|roach> <x,y>  (sketch px from the origin, as `diff` prints them)";
     let mut args = std::env::args().skip(2);
     let boss = args.next().ok_or(usage)?;
     let (kind, rgb) = match boss.as_str() {
@@ -565,6 +566,7 @@ fn mark() -> Result<(), String> {
         "rat" => (MarkerKind::Rat, [0xac, 0x32, 0x32]),
         "mantis" => (MarkerKind::Mantis, [0x00, 0xff, 0xff]),
         "crab" => (MarkerKind::Crab, [0x5b, 0x6e, 0xe1]),
+        "beetle" => (MarkerKind::Beetle, [0xff, 0x81, 0x00]),
         "dragonfly" => (MarkerKind::Dragonfly, [0xd1, 0xb0, 0xc6]),
         "wasp" => (MarkerKind::Wasp, [0, 255, 0]),
         "roach" => (MarkerKind::Roach, [255, 230, 0]),

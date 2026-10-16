@@ -54,6 +54,8 @@ struct Clips {
     grasshopper: Handle<AudioSource>,
     rat: Handle<AudioSource>,
     mantis: Handle<AudioSource>,
+    crab: Handle<AudioSource>,
+    beetle: Handle<AudioSource>,
     airblow: Handle<AudioSource>,
     hurt: Handle<AudioSource>,
     player_death: Handle<AudioSource>,
@@ -75,6 +77,8 @@ fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         grasshopper: add(include_bytes!("../assets/audio/grasshopper.m4a")),
         rat: add(include_bytes!("../assets/audio/rat.m4a")),
         mantis: add(include_bytes!("../assets/audio/mantis.m4a")),
+        crab: add(include_bytes!("../assets/audio/crab.m4a")),
+        beetle: add(include_bytes!("../assets/audio/beetle.m4a")),
         airblow: add(include_bytes!("../assets/audio/airblow.m4a")),
         hurt: add(include_bytes!("../assets/audio/hurt.m4a")),
         player_death: add(include_bytes!("../assets/audio/player-death.m4a")),
@@ -166,8 +170,8 @@ fn voices(
             BossKind::Grasshopper => &clips.grasshopper,
             BossKind::Rat => &clips.rat,
             BossKind::Mantis => &clips.mantis,
-            // No recording of its own yet: it fights in silence.
-            BossKind::Crab => continue,
+            BossKind::Crab => &clips.crab,
+            BossKind::Beetle => &clips.beetle,
         };
         commands.spawn((
             Voice(e),
@@ -219,7 +223,7 @@ mod tests {
     /// Every embedded clip decodes (an unsupported format would panic in game).
     #[test]
     fn clips_decode() {
-        let clips: [&'static [u8]; 17] = [
+        let clips: [&'static [u8]; 19] = [
             include_bytes!("../assets/audio/slash.m4a"),
             include_bytes!("../assets/audio/blood1.m4a"),
             include_bytes!("../assets/audio/blood2.m4a"),
@@ -233,6 +237,8 @@ mod tests {
             include_bytes!("../assets/audio/grasshopper.m4a"),
             include_bytes!("../assets/audio/rat.m4a"),
             include_bytes!("../assets/audio/mantis.m4a"),
+            include_bytes!("../assets/audio/crab.m4a"),
+            include_bytes!("../assets/audio/beetle.m4a"),
             include_bytes!("../assets/audio/hurt.m4a"),
             include_bytes!("../assets/audio/player-death.m4a"),
             include_bytes!("../assets/audio/feed.m4a"),

@@ -1,6 +1,7 @@
 //! Developer helpers: F12 saves a screenshot to `screenshots/`.
 //!
-//! `GREEN=1` / `YELLOW=1` start with the Venom Mother / the Gutter King already beaten (their colors come back to the world).
+//! `GREEN=1` / `YELLOW=1` / ... / `INDIGO=1` / `ORANGE=1` start with those bosses already beaten (their powers, and
+//! their colors come back to the world), also after a restart (`BEATEN`).
 //!
 //! `TOUR=1 cargo run` visits the places that matter in the world sketch (the
 //! spawn, the bosses, every named area, the moving platforms, then the whole
@@ -15,6 +16,7 @@ use bevy::{
 
 use crate::map_export::save_lossless_webp;
 use crate::{
+    boss::{BossKind, Defeated},
     camera::{self, DevZoom},
     chameleon,
     debug_overlay::DebugInfo,
@@ -24,6 +26,38 @@ use crate::{
 };
 
 pub struct DevPlugin;
+
+/// The color flags and the boss each one marks as beaten.
+const BEATEN: [(&str, BossKind); 11] = [
+    ("GREEN", BossKind::Wasp),
+    ("YELLOW", BossKind::Roach),
+    ("PINK", BossKind::Dragonfly),
+    ("BLUE", BossKind::Spider),
+    ("PURPLE", BossKind::Centipede),
+    ("VIOLET", BossKind::Frog),
+    ("BROWN", BossKind::Grasshopper),
+    ("RED", BossKind::Rat),
+    ("CYAN", BossKind::Mantis),
+    ("INDIGO", BossKind::Crab),
+    ("ORANGE", BossKind::Beetle),
+];
+
+/// The bosses the color flags say are beaten.
+#[derive(Resource)]
+struct DevBeaten(Vec<BossKind>);
+
+fn beat(beaten: Res<DevBeaten>, mut defeated: ResMut<Defeated>) {
+    for &kind in &beaten.0 {
+        defeated.add(kind);
+    }
+}
+
+/// A restart forgot them: beaten again.
+fn beat_again(mut restarted: MessageReader<level::Restart>, beaten: Res<DevBeaten>, defeated: ResMut<Defeated>) {
+    if restarted.read().count() > 0 {
+        beat(beaten, defeated);
+    }
+}
 
 impl Plugin for DevPlugin {
     fn build(&self, app: &mut App) {
@@ -38,36 +72,13 @@ impl Plugin for DevPlugin {
         if std::env::var("AIM").is_ok() {
             app.add_systems(Update, fake_aim.after(player::move_player).before(chameleon::update_anim_state));
         }
-        if std::env::var("GREEN").is_ok() {
-            // Test the regrown world without fighting the wasp.
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Wasp));
-        }
-        if std::env::var("YELLOW").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Roach));
-        }
-        if std::env::var("PINK").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Dragonfly));
-        }
-        if std::env::var("BLUE").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Spider));
-        }
-        if std::env::var("PURPLE").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Centipede));
-        }
-        if std::env::var("VIOLET").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Frog));
-        }
-        if std::env::var("BROWN").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Grasshopper));
-        }
-        if std::env::var("RED").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Rat));
-        }
-        if std::env::var("CYAN").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Mantis));
-        }
-        if std::env::var("INDIGO").is_ok() {
-            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Crab));
+        // GREEN=1, INDIGO=1...: start with those bosses beaten (their powers and colors), kept
+        // through restarts (the menu's new game / load, F8, a death's reload), which forget them.
+        let beaten: Vec<BossKind> = BEATEN.iter().filter(|(var, _)| std::env::var(var).is_ok()).map(|&(_, kind)| kind).collect();
+        if !beaten.is_empty() {
+            app.insert_resource(DevBeaten(beaten))
+                .add_systems(Startup, beat)
+                .add_systems(PreUpdate, beat_again.after(crate::boss::forget_defeated));
         }
         if std::env::var("TOUR").is_ok() {
             app.add_systems(Update, tour.after(player::move_player).before(camera::follow_player));
@@ -103,6 +114,7 @@ fn fake_input(time: Res<Time<Real>>, mut keys: ResMut<ButtonInput<KeyCode>>, mut
         "f" => Some(KeyCode::KeyF),
         "j" => Some(KeyCode::KeyJ),
         "g" => Some(KeyCode::KeyG),
+        "q" => Some(KeyCode::KeyQ),
         "f1" => Some(KeyCode::F1),
         "f2" => Some(KeyCode::F2),
         "f3" => Some(KeyCode::F3),
@@ -248,6 +260,9 @@ fn tour(
     }
     if let Some(p) = terrain.crab {
         stops.push(("crab".into(), p + Vec2::Y * player::HALF.y, 1.0));
+    }
+    if let Some(p) = terrain.beetle {
+        stops.push(("beetle".into(), p + Vec2::Y * player::HALF.y, 1.0));
     }
     let slug = |name: &str| name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
     for a in &terrain.areas {

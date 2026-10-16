@@ -3,8 +3,8 @@
 //! The game reads the keyboard everywhere (`ButtonInput<KeyCode>`), so this runs
 //! first in `PreUpdate` and adapts the input to it:
 //! - a gamepad's sticks, d-pad and buttons are pressed as the keys they stand
-//!   for (left stick = A/D/W/S, south = Space, west = F slash, east = G spit,
-//!   north = E, left bumper = K dash);
+//!   for (left stick = A/D/W/S, south = Space, west = F slash, east = Q spit,
+//!   left trigger = G shield, north = E, left bumper = K dash);
 //! - in the dual scheme the arrows only aim: they are released before the
 //!   game sees them, so they don't move the chameleon any more.
 //!
@@ -55,7 +55,7 @@ const BUTTONS: [(GamepadButton, KeyCode); 7] = [
     (GamepadButton::South, KeyCode::Space),
     (GamepadButton::West, KeyCode::KeyF),
     (GamepadButton::RightTrigger2, KeyCode::KeyF),
-    (GamepadButton::East, KeyCode::KeyG),
+    (GamepadButton::East, KeyCode::KeyQ),
     (GamepadButton::LeftTrigger2, KeyCode::KeyG),
     (GamepadButton::North, KeyCode::KeyE),
     (GamepadButton::LeftTrigger, KeyCode::KeyK),
