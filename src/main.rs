@@ -108,10 +108,14 @@ fn toggle_fullscreen(
 }
 
 /// The title-bar / taskbar icon: a close-up of the chameleon's eye (`assets/icon.png`, embedded).
-fn set_window_icon(window: Single<Entity, With<PrimaryWindow>>, mut done: Local<bool>) {
+fn set_window_icon(world: &mut World, mut done: Local<bool>) {
+    // Exclusive system: `WINIT_WINDOWS` is thread-local, so this must run on the main thread.
     if *done {
         return;
     }
+    let Some(window) = world.query_filtered::<Entity, With<PrimaryWindow>>().iter(world).next() else {
+        return;
+    };
     let Ok(img) = image::load_from_memory_with_format(include_bytes!("../assets/icon.png"), image::ImageFormat::Png) else {
         return;
     };
@@ -121,7 +125,7 @@ fn set_window_icon(window: Single<Entity, With<PrimaryWindow>>, mut done: Local<
     };
     bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
         // The OS window is created after `Startup`: keep trying until it exists.
-        if let Some(w) = windows.get_window(*window) {
+        if let Some(w) = windows.get_window(window) {
             w.set_window_icon(Some(icon));
             *done = true;
         }
