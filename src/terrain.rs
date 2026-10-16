@@ -134,6 +134,8 @@ pub struct Terrain {
     pub dragonfly: Option<Vec2>,
     pub spider: Option<Vec2>,
     pub centipede: Option<Vec2>,
+    /// The frog: resting on the ground below its marker (feet position), like the roach.
+    pub frog: Option<Vec2>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -188,6 +190,7 @@ impl Terrain {
             dragonfly: None,
             spider: None,
             centipede: None,
+            frog: None,
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -201,6 +204,7 @@ impl Terrain {
         t.dragonfly = marker(MarkerKind::Dragonfly).map(to_world);
         t.spider = marker(MarkerKind::Spider).map(to_world);
         t.centipede = marker(MarkerKind::Centipede).map(to_world);
+        t.frog = marker(MarkerKind::Frog).map(|p| t.rest(to_world(p)));
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();

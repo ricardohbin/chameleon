@@ -481,7 +481,9 @@ pub fn move_player(
         _ => None,
     };
     // Wading slows the walk (swimming has its own speed, below).
-    let wade = wet.as_ref().map_or(1.0, |w| {
+    // The frog's power: water doesn't slow, tire or drown it.
+    let at_home = defeated.wade();
+    let wade = wet.as_ref().filter(|_| !at_home).map_or(1.0, |w| {
         1.0 - w.kind.t().wade * (w.fraction / SWIM_FRACTION).min(1.0)
     });
     let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1);
@@ -540,7 +542,11 @@ pub fn move_player(
             !dead && p.stun <= 0.0 && keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
         if let (true, Some(w)) = (swimming, &wet) {
             let t = w.kind.t();
-            p.vel.x = move_towards(vx0, dir * t.speed * (0.45 + 0.55 * p.swim), t.accel * dt);
+            p.vel.x = if at_home {
+                move_towards(vx0, dir * top_speed, accel * dt)
+            } else {
+                move_towards(vx0, dir * t.speed * (0.45 + 0.55 * p.swim), t.accel * dt)
+            };
         }
 
         // --- Jumping (with coyote time, buffering and variable height) ---
@@ -559,7 +565,7 @@ pub fn move_player(
             // On steep ground the jump tilts toward the slope's normal: no hopping up walls.
             let normal = slope.map_or(Vec2::Y, |s| Vec2::new(-s, 1.0).normalize());
             let jump = Vec2::Y.lerp(normal, hardness).normalize();
-            let push = if swimming {
+            let push = if swimming && !at_home {
                 wet.as_ref().map_or(1.0, |w| w.kind.t().jump)
             } else {
                 1.0
@@ -627,7 +633,11 @@ pub fn move_player(
             p.vel.y = (p.vel.y - GRAVITY * dt).max(-MAX_FALL);
         }
         // Swimming wears you out (faster the more you move); a dry body recovers.
-        if let (true, Some(w)) = (swimming, &wet) {
+        if at_home && swimming {
+            // Never tires in the water.
+            p.swim = 1.0;
+            p.harm = 0.0;
+        } else if let (true, Some(w)) = (swimming, &wet) {
             let t = w.kind.t();
             let busy = dir != 0.0 || swim_up || swim_down;
             p.swim = (p.swim - dt / if busy { t.active } else { t.idle }).max(0.0);

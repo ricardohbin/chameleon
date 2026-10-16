@@ -293,7 +293,7 @@ fn hot_reload(
         }
     };
     (*seen, *pending, *failed) = (Some(stamp), None, None);
-    let bosses_moved = old.roach != terrain.roach || old.wasp != terrain.wasp || old.dragonfly != terrain.dragonfly || old.spider != terrain.spider || old.centipede != terrain.centipede;
+    let bosses_moved = old.roach != terrain.roach || old.wasp != terrain.wasp || old.dragonfly != terrain.dragonfly || old.spider != terrain.spider || old.centipede != terrain.centipede || old.frog != terrain.frog;
     let focus = player.single().map_or(terrain.spawn, |tf| tf.translation.truncate());
     replace_world(&mut commands, &mut meshes, &mut materials, &mut images, &parts, terrain, focus);
     reloaded.write(WorldReloaded { bosses_moved });

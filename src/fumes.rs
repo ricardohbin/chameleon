@@ -53,8 +53,9 @@ struct Puff {
     material: Handle<ColorMaterial>,
 }
 
+/// The soft cloud mesh (also the frog's poison clouds).
 #[derive(Resource)]
-struct Cloud(Handle<Mesh>);
+pub(crate) struct Cloud(pub(crate) Handle<Mesh>);
 
 /// A soft round cloud: opaque in the middle, clear at the rim.
 fn make_cloud(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
@@ -217,7 +218,7 @@ fn ambient(
         let (rate, size, peak, life) = match boss {
             BossKind::Roach => (if fumy { 1.6 } else { 0.5 } * strength, (160.0, 320.0), if fumy { 0.2 } else { 0.1 }, (9.0, 14.0)),
             BossKind::Wasp => (7.0 * strength, (5.0, 10.0), 0.7, (5.0, 8.0)),
-            BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => unreachable!("only the king and the mother have airs"),
+            BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede | BossKind::Frog => unreachable!("only the king and the mother have airs"),
         };
         timers[i] -= dt;
         while timers[i] <= 0.0 {
@@ -230,7 +231,7 @@ fn ambient(
             let (tint, vel) = match boss {
                 BossKind::Roach => (Color::srgba(rng.range(0.9, 1.0), rng.range(0.78, 0.88), rng.range(0.2, 0.38), 0.0), Vec2::new(rng.range(-30.0, 30.0), rng.range(-4.0, 12.0))),
                 BossKind::Wasp => (Color::srgba(rng.range(0.55, 0.8), rng.range(0.9, 1.0), rng.range(0.2, 0.45), 0.0), Vec2::new(rng.range(-12.0, 12.0), rng.range(8.0, 22.0))),
-                BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => unreachable!(),
+                BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede | BossKind::Frog => unreachable!(),
             };
             let material = materials.add(ColorMaterial { color: tint, alpha_mode: AlphaMode2d::Blend, ..default() });
             commands.spawn((

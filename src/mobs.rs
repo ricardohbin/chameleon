@@ -601,7 +601,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede), (BossKind::Frog, terrain.frog)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -610,7 +610,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
         .flat_map(|&(kind, _)| {
             let a = Arena::find(kind, terrain);
             match kind {
-                BossKind::Roach => vec![Zone::Rect(Rect::new(
+                BossKind::Roach | BossKind::Frog => vec![Zone::Rect(Rect::new(
                     a.left - ROACH_ARENA_MARGIN,
                     a.floor - 250.0,
                     a.right + ROACH_ARENA_MARGIN,
@@ -726,6 +726,13 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
             (MobKind::Flea, 0.2),
             (MobKind::Spider, 0.15),
             (MobKind::Rat, 0.1),
+        ],
+        // The marsh: what a frog eats, and what dares eat it.
+        BossKind::Frog => vec![
+            (MobKind::Fly, 0.35),
+            (MobKind::Flea, 0.25),
+            (MobKind::Grub, 0.2),
+            (MobKind::Rat, 0.2),
         ],
         // Its webs: spiders everywhere, and what gets caught in them.
         BossKind::Spider => vec![

@@ -49,6 +49,7 @@ struct Clips {
     dragonfly: Handle<AudioSource>,
     spider: Handle<AudioSource>,
     centipede: Handle<AudioSource>,
+    frog: Handle<AudioSource>,
     airblow: Handle<AudioSource>,
     hurt: Handle<AudioSource>,
     player_death: Handle<AudioSource>,
@@ -65,6 +66,7 @@ fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         dragonfly: add(include_bytes!("../assets/audio/dragonfly.m4a")),
         spider: add(include_bytes!("../assets/audio/spider.m4a")),
         centipede: add(include_bytes!("../assets/audio/centipede.m4a")),
+        frog: add(include_bytes!("../assets/audio/frog.m4a")),
         airblow: add(include_bytes!("../assets/audio/airblow.m4a")),
         hurt: add(include_bytes!("../assets/audio/hurt.m4a")),
         player_death: add(include_bytes!("../assets/audio/player-death.m4a")),
@@ -151,6 +153,7 @@ fn voices(
             BossKind::Wasp => &clips.wasp,
             BossKind::Dragonfly => &clips.dragonfly,
             BossKind::Spider => &clips.spider,
+            BossKind::Frog => &clips.frog,
         };
         commands.spawn((
             Voice(e),
@@ -201,7 +204,7 @@ mod tests {
     /// Every embedded clip decodes (an unsupported format would panic in game).
     #[test]
     fn clips_decode() {
-        let clips: [&'static [u8]; 12] = [
+        let clips: [&'static [u8]; 13] = [
             include_bytes!("../assets/audio/slash.m4a"),
             include_bytes!("../assets/audio/blood1.m4a"),
             include_bytes!("../assets/audio/blood2.m4a"),
@@ -211,6 +214,7 @@ mod tests {
             include_bytes!("../assets/audio/dragonfly.m4a"),
             include_bytes!("../assets/audio/spider.m4a"),
             include_bytes!("../assets/audio/centipede.m4a"),
+            include_bytes!("../assets/audio/frog.m4a"),
             include_bytes!("../assets/audio/hurt.m4a"),
             include_bytes!("../assets/audio/player-death.m4a"),
             include_bytes!("../assets/audio/airblow.m4a"),
