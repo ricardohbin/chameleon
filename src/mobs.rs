@@ -1120,7 +1120,7 @@ fn slash_mobs(
             }
         }
         // Claw guards and shells.
-        if !p.god && dam::glances(&mut m, pos, ppos, aim) {
+        if !p.god.smites() && dam::glances(&mut m, pos, ppos, aim) {
             shake.add(0.1);
             stop.add(0.03);
             continue;
@@ -1135,7 +1135,7 @@ fn slash_mobs(
                 continue;
             }
         }
-        m.hp -= 1;
+        m.hp -= if p.god.smites() { player::SMITE } else { 1 };
         m.flash = 1.0;
         if m.spec.moves == Moves::Crypt {
             catacombs::struck(&mut m);

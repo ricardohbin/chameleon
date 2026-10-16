@@ -567,7 +567,7 @@ fn leech(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, step: &m
 
     if let Some(local) = m.dam.latch {
         let hurt = matches!(m.state, State::Hurt(_));
-        if hurt || !alive || p.dash > 0.0 || p.god {
+        if hurt || !alive || p.dash > 0.0 || p.god.on() {
             // Torn off (by a blow, `knock` threw it) or flung off by a dash.
             m.dam.latch = None;
             m.airborne = true;
@@ -644,7 +644,7 @@ fn leech(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, step: &m
     };
 
     if m.airborne {
-        if matches!(m.state, State::Attack(_)) && touching && alive && !p.god && p.dash <= 0.0 {
+        if matches!(m.state, State::Attack(_)) && touching && alive && !p.god.on() && p.dash <= 0.0 {
             // Got it: holds on to its flank.
             let x = ((pos.x - w.ppos.x) * p.facing).clamp(-14.0, 14.0);
             m.dam.latch = Some(Vec2::new(if x.abs() < 8.0 { 8.0 * sign(x) } else { x }, 3.0));
@@ -811,7 +811,7 @@ fn hermit(m: &mut Mob, pos: Vec2, sees: bool, w: &World, step: &mut Step) -> Vec
 
     if m.dam.hidden {
         // Rubble, until something walks right up to it.
-        let close = alive && !w.p.god && to.length() < AMBUSH && to.y.abs() < 80.0;
+        let close = alive && !w.p.god.on() && to.length() < AMBUSH && to.y.abs() < 80.0;
         if close && w.terrain.raycast(pos + Vec2::Y * 4.0, w.ppos).is_none() {
             m.dam.hidden = false;
             m.notice = Notice::Aware;

@@ -116,7 +116,7 @@ fn keys(contrast: f32) -> String {
     [
         "F1   this overlay".to_string(),
         "F2   next boss's lair".into(),
-        "F3   invulnerability".into(),
+        "F3   god mode: invulnerable / + touch of death".into(),
         "F4   flight".into(),
         "F5 / F9   save / load".into(),
         format!("F6 / F7   contrast {contrast:+.2}"),
@@ -167,7 +167,11 @@ fn describe(
         "ground: {ground}   hp {}   {}{}{}",
         p.hp,
         if p.dead.is_some() { "DEAD" } else { "" },
-        if p.god { "   INVULNERABILITY (F3)" } else { "" },
+        match p.god {
+            player::God::Off => "",
+            player::God::Invulnerable => "   INVULNERABILITY (F3)",
+            player::God::Smite => "   INVULNERABILITY + TOUCH OF DEATH (F3)",
+        },
         if p.flying { "   FLYING (F4)" } else { "" }
     ));
     match terrain.slope_at(feet) {

@@ -384,7 +384,7 @@ fn leech(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &mut World) -> V
             m.airborne = true;
             State::Attack(0.0)
         }
-        State::Attack(_) if touching && m.airborne && !w.p.god && w.p.dead.is_none() => {
+        State::Attack(_) if touching && m.airborne && !w.p.god.on() && w.p.dead.is_none() => {
             latch(m, pos, w);
             return pos;
         }
@@ -444,7 +444,7 @@ fn ride(m: &mut Mob, at: Vec2, w: &mut World) -> Vec2 {
         m.sewer.shakes += 1;
     }
     m.sewer.was_grounded = p.grounded;
-    if p.dash > 0.0 || p.swimming || p.dead.is_some() || p.god || m.sewer.shakes >= SHAKE_OFF {
+    if p.dash > 0.0 || p.swimming || p.dead.is_some() || p.god.on() || m.sewer.shakes >= SHAKE_OFF {
         m.sewer.latched = None;
         m.airborne = true;
         let out = if at.x * p.facing >= 0.0 { 1.0 } else { -1.0 };

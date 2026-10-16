@@ -576,15 +576,15 @@ pub(crate) fn slash_bosses(
         if slashed {
             boss.hit_by = anim.slash_id;
         }
-        if boss.guard && !p.god {
+        if boss.guard && !p.god.smites() {
             // Glances off: a flash, no harm.
             boss.flash = 0.6;
             shake.add(0.12);
             stop.add(0.03);
             continue;
         }
-        // F3 god mode: any blow kills.
-        boss.hp = if p.god { 0 } else { boss.hp - 1 };
+        // F3 touch of death: any blow kills.
+        boss.hp = if p.god.smites() { 0 } else { boss.hp - 1 };
         boss.flash = 1.0;
         let killed = boss.hp <= 0;
         boss.dead = killed;

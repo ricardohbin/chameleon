@@ -704,7 +704,7 @@ fn move_globs(
         let d = (pos - ppos).abs();
         if p.dead.is_none() && d.x < player::HALF.x + 6.0 && d.y < player::HALF.y + 6.0 {
             // Snared: held for a moment, then slowed in the web around it.
-            if p.guard <= 0.0 && !p.god {
+            if p.guard <= 0.0 && !p.god.on() {
                 p.stun = p.stun.max(SNARE_STUN);
                 p.vel *= 0.2;
                 p.climbing = None;

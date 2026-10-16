@@ -660,7 +660,7 @@ fn think(
                             boss::hurt_player(&mut p, ppos, to + Vec2::Y * FOOT, CRUSH_DAMAGE, &mut bleed, (&mut shake, &mut stop));
                         }
                         let standing = p.grounded && p.climbing.is_none() && (pfeet.y - to.y).abs() < SHOCK_HEIGHT;
-                        if alive && !p.god && standing && (ppos.x - to.x).abs() < SHOCK_REACH {
+                        if alive && !p.god.on() && standing && (ppos.x - to.x).abs() < SHOCK_REACH {
                             p.stun = p.stun.max(SHOCK_STUN);
                             daze.0 = SHOCK_STUN;
                             p.vel = Vec2::new(0.0, 160.0);

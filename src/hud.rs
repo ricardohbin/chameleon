@@ -14,12 +14,18 @@ use bevy::{
 use crate::{
     boss::{Beaten, BossKind, BossStatus, Defeated},
     level::{self, Restart},
-    player::{self, Player},
+    player::{self, God, Player},
 };
 
 const PIP_FULL: Color = Color::srgb(0.78, 0.06, 0.05);
-/// Pips in F3 invulnerability.
-const PIP_GOD: Color = Color::srgb(0.95, 0.78, 0.2);
+/// Pips in F3 invulnerability: molten gold, breathing toward white-hot, in a halo.
+const PIP_GOD: Color = Color::srgb(0.95, 0.70, 0.12);
+const PIP_GOD_HOT: Color = Color::srgb(1.0, 0.97, 0.7);
+const PIP_GOD_HALO: Color = Color::srgb(1.0, 0.85, 0.3);
+/// Pips in invulnerability + touch of death: hellfire flickering from blood to white-hot, ringed in crimson.
+const PIP_SMITE: Color = Color::srgb(0.6, 0.0, 0.02);
+const PIP_SMITE_HOT: Color = Color::srgb(1.0, 0.55, 0.3);
+const PIP_SMITE_HALO: Color = Color::srgb(1.0, 0.1, 0.05);
 const PIP_EMPTY: Color = Color::srgba(0.2, 0.18, 0.17, 0.7);
 /// Shadow health: promised by remains eaten, not health yet.
 const PIP_SHADOW: Color = Color::srgba(0.42, 0.10, 0.09, 0.75);
@@ -205,6 +211,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 Pip(i),
                 Node { width: px(16), height: px(22), ..default() },
                 BackgroundColor(PIP_FULL),
+                Outline { width: px(2), offset: px(1), color: Color::NONE },
                 UiTransform { rotation: Rot2::radians(0.25), ..default() },
                 ChildOf(pips),
             ))
@@ -386,18 +393,43 @@ fn update_flash(real: Res<Time<Real>>, mut flash: ResMut<ScreenFlash>, mut overl
 }
 
 fn update_pips(
+    time: Res<Time<Real>>,
     player: Single<&Player>,
-    mut pips: Query<(&Pip, &mut BackgroundColor, &mut Node), (Without<PipShadow>, Without<PipFill>)>,
+    mut pips: Query<
+        (&Pip, &mut BackgroundColor, &mut Node, &mut Outline, &mut UiTransform),
+        (Without<PipShadow>, Without<PipFill>),
+    >,
     mut shadows: Query<(&PipShadow, &mut Node), (Without<PipFill>, Without<Pip>)>,
     mut fills: Query<(&PipFill, &mut Node), (Without<PipShadow>, Without<Pip>)>,
 ) {
-    for (pip, mut bg, mut node) in &mut pips {
+    let t = time.elapsed_secs();
+    for (pip, mut bg, mut node, mut outline, mut tf) in &mut pips {
         node.display = if pip.0 < player.max_hp { Display::Flex } else { Display::None };
-        bg.0 = match () {
-            _ if pip.0 >= player.hp => PIP_EMPTY,
-            _ if player.god => PIP_GOD,
-            _ => PIP_FULL,
+        let full = pip.0 < player.hp;
+        // Each pip beats a little out of step with its neighbor, so the row ripples.
+        let phase = pip.0 as f32 * 0.55;
+        let (color, ring, scale) = match player.god {
+            _ if !full => (PIP_EMPTY, Color::NONE, 1.0),
+            God::Off => (PIP_FULL, Color::NONE, 1.0),
+            // Molten gold, breathing; a bright halo.
+            God::Invulnerable => {
+                let beat = 0.5 + 0.5 * (t * 3.0 - phase).sin();
+                (PIP_GOD.mix(&PIP_GOD_HOT, beat), PIP_GOD_HALO.with_alpha(0.35 + 0.55 * beat), 1.0 + 0.12 * beat)
+            }
+            // Hellfire: flickering white-hot to blood, a violent pulse, a black-and-crimson ring.
+            God::Smite => {
+                let flicker = 0.5 + 0.5 * (t * 23.0 + phase * 3.1).sin() * (t * 7.3 - phase).cos();
+                let throb = (0.5 + 0.5 * (t * 9.0 - phase).sin()).powi(3);
+                (
+                    PIP_SMITE.mix(&PIP_SMITE_HOT, flicker * 0.8),
+                    PIP_SMITE_HALO.mix(&Color::BLACK, 1.0 - throb).with_alpha(0.65 + 0.35 * throb),
+                    1.12 + 0.28 * throb,
+                )
+            }
         };
+        bg.0 = color;
+        outline.color = ring;
+        tf.scale = Vec2::splat(scale);
     }
     // Empty pips, from the first one: shadow promised there, and the one filling.
     let past_hp = |i: i32| (i - player.hp) as f32;

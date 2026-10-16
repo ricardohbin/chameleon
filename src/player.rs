@@ -142,8 +142,8 @@ pub struct Player {
     /// Seconds left untouchable in the middle of an attack (the air spin): like
     /// `invuln`, without the blinking.
     pub guard: f32,
-    /// F3 invulnerability: no damage, no knockback (enemies pass right through).
-    pub god: bool,
+    /// F3 god mode (see `God`).
+    pub god: God,
     /// F4: gravity-free movement with mouse-directed jump impulses.
     pub flying: bool,
     /// Seconds since death, `None` while alive.
@@ -186,6 +186,39 @@ pub struct Player {
     jump_buffer: f32,
 }
 
+/// F3 cycles through these.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum God {
+    #[default]
+    Off,
+    /// No damage, no knockback (enemies pass right through).
+    Invulnerable,
+    /// Invulnerable, and every blow lands for `SMITE` damage, through any guard.
+    Smite,
+}
+
+/// Damage of a blow in `God::Smite`.
+pub const SMITE: i32 = 666;
+
+impl God {
+    /// Untouchable (either mode).
+    pub fn on(self) -> bool {
+        self != God::Off
+    }
+
+    pub fn smites(self) -> bool {
+        self == God::Smite
+    }
+
+    fn next(self) -> God {
+        match self {
+            God::Off => God::Invulnerable,
+            God::Invulnerable => God::Smite,
+            God::Smite => God::Off,
+        }
+    }
+}
+
 /// Sent when the chameleon comes back after dying (enemies reset).
 #[derive(Message)]
 pub struct Respawned;
@@ -204,7 +237,7 @@ impl Player {
 
     /// Take `damage` and get knocked back with velocity `knock`.
     pub fn hurt(&mut self, damage: i32, knock: Vec2) -> Hurt {
-        if self.dead.is_some() || self.invuln > 0.0 || self.guard > 0.0 || self.god {
+        if self.dead.is_some() || self.invuln > 0.0 || self.guard > 0.0 || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
@@ -228,7 +261,7 @@ impl Player {
     /// instead of a knockback, and no invulnerability, so the shocks keep coming
     /// for as long as the chameleon stays on the live rail.
     pub fn shock(&mut self, damage: i32) -> Hurt {
-        if self.dead.is_some() || self.god {
+        if self.dead.is_some() || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
@@ -290,11 +323,11 @@ impl Player {
     }
 }
 
-/// F3: toggle invulnerability.
+/// F3: cycle god mode (off, invulnerable, invulnerable + touch of death).
 fn toggle_god(keys: Res<ButtonInput<KeyCode>>, mut player: Single<&mut Player>) {
     if keys.just_pressed(KeyCode::F3) {
-        player.god = !player.god;
-        info!("invulnerability {}", if player.god { "on" } else { "off" });
+        player.god = player.god.next();
+        info!("god mode {:?}", player.god);
     }
 }
 
@@ -327,7 +360,7 @@ fn spawn_player(
     mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
 ) {
-    spawn(&mut commands, &mut meshes, &mut materials, &terrain, false);
+    spawn(&mut commands, &mut meshes, &mut materials, &terrain, God::Off);
 }
 
 /// F8: a brand new chameleon on the spawn marker (health, max health, earned
@@ -353,7 +386,7 @@ fn spawn(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
     terrain: &Terrain,
-    god: bool,
+    god: God,
 ) {
     let spawn = spawn_point(terrain);
     let player = commands
@@ -714,7 +747,7 @@ pub fn move_player(
                 p.harm = (p.harm - dt * 0.8).max(0.0);
             }
             if p.harm >= 1.0 {
-                if p.god {
+                if p.god.on() {
                     p.harm = 0.0;
                 } else if p.invuln <= 0.0 {
                     let keep = p.vel;
@@ -942,7 +975,7 @@ pub fn move_player(
                 0.0
             };
             let floors = (p.fall_top - feet_y).max(0.0) * (1.0 - softness) / FLOOR_HEIGHT;
-            if floors >= FALL_SAFE_FLOORS && !p.god {
+            if floors >= FALL_SAFE_FLOORS && !p.god.on() {
                 p.invuln = 0.0;
                 let damage = floors.floor() as i32 - FALL_SAFE_FLOORS as i32 + 1;
                 p.hurt(damage, Vec2::ZERO);
