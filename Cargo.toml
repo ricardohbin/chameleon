@@ -16,8 +16,18 @@ webp = { version = "0.3", default-features = false }
 opt-level = 1
 debug = false # or "line-tables-only" for backtraces with line numbers
 strip = "debuginfo"
+incremental = true
+codegen-units = 256 # max parallelism for our own crate
 
 # Fully optimize dependencies (Bevy) even in dev builds — big FPS win, compiled once.
 [profile.dev.package."*"]
 opt-level = 3
 debug = false
+
+# Release: slow to build, as small and fast as possible.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

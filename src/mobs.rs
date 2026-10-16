@@ -24,7 +24,8 @@
 //!
 //! The slice with the player spawn is left empty (a calm start), and so are
 //! both bosses' arenas. Placement is deterministic (seeded per slice name) and
-//! the count scales with the slice size. Nobody strays more than `leash` from
+//! the count scales with the slice's open area times its style's density, with
+//! the roofed share (indoors) of the slots placed inside the rooms. Nobody strays more than `leash` from
 //! where it was placed. A few HP, killed by the claw slash. Everyone comes back
 //! when the chameleon respawns, and the lot is replaced when the sketch reloads.
 //!
@@ -65,12 +66,20 @@ const SPAWN_CLEAR: f32 = 700.0;
 const ROACH_ARENA_MARGIN: f32 = 400.0;
 /// Kept free around the Venom Mother's home (more than her aggro range).
 const WASP_CLEAR: f32 = 800.0;
-/// Sketch pixels of slice per mob (a swarm counts as one), and the count limits per slice.
-const CELLS_PER_MOB: f32 = 2600.0;
-const MIN_PER_AREA: usize = 2;
-const MAX_PER_AREA: usize = 16;
-/// Minimum distance between two mobs (or swarms).
+/// Open (non-solid) sketch pixels of slice per mob at density 1.0 (a swarm
+/// counts as one); `density` scales it per style. The count grows with the
+/// slice, the cap is only a safety net.
+const OPEN_CELLS_PER_MOB: f32 = 1100.0;
+const MIN_PER_AREA: usize = 1;
+const MAX_PER_AREA: usize = 240;
+/// Minimum distance between two mobs (or swarms), outdoors and indoors (rooms are tight).
 const MIN_GAP: f32 = 150.0;
+const INDOOR_GAP: f32 = 90.0;
+/// An open cell with solid ground within this many cells above it is indoors.
+const ROOF_REACH: i32 = 30;
+/// Indoor slots are the roofed share of the slice times this: rooms are harder
+/// to fill by chance, and a mob in a room is the better ambush.
+const INDOOR_BIAS: f32 = 1.5;
 /// Room a drone needs around its spot.
 const FLY_ROOM: f32 = 6.0 * PX;
 /// Veterans' shock lasts this share of a green mob's.
@@ -107,12 +116,13 @@ impl Plugin for MobPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_glob).add_systems(
             Update,
-            (rebuild, slash_mobs, think, subway::split, nests, cave::hatch, catacombs::hatch, bunker::balls, move_globs, mob_art::dismember, mob_art::animate, flash_mobs)
+            (rebuild, hole_up, slash_mobs, think, subway::split, nests, cave::hatch, catacombs::hatch, bunker::balls, move_globs, mob_art::dismember, mob_art::animate, flash_mobs)
                 .chain()
                 .after(player::move_player)
                 .after(chameleon::update_anim_state)
                 .after(spit::move_spit),
         );
+        app.add_systems(Update, reinforce.after(rebuild));
         treatment::build(app);
         sewer::plugin(app);
     }
@@ -703,6 +713,9 @@ pub struct Mob {
     pub(crate) dam: dam::Mind,
     /// Cave mobs: their state of mind (`cave.rs`).
     pub(crate) cave: cave::Mind,
+    /// Dug in while the Burrower fights (`hole_up`): hidden, out of reach and idle. Seconds left
+    /// before it comes out again (infinite while the fight lasts).
+    pub(crate) buried: Option<f32>,
 }
 
 impl Mob {
@@ -744,12 +757,13 @@ impl Mob {
             sinkhole: sinkhole::Mind::default(),
             dam: dam::Mind::default(),
             cave: cave::Mind::default(),
+            buried: None,
         }
     }
 
     /// Out of reach of claw and spit: buried, dug in, hidden in its hole.
     pub fn untouchable(&self) -> bool {
-        self.hidden() || self.dug_in() || self.in_soil() || catacombs::hidden(self) || bunker::buried(self)
+        self.buried.is_some() || self.hidden() || self.dug_in() || self.in_soil() || catacombs::hidden(self) || bunker::buried(self)
     }
 
     /// Shadow health its remains give.
@@ -851,8 +865,10 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
             .or_else(|| bosses.iter().min_by(|a, b| off(a.1).total_cmp(&off(b.1))));
         let Some(&(boss, _)) = owner else { continue };
         let mut rng = Rng(seed_from(&area.name));
-        let cells = area.rect.size().element_product() / (PX * PX);
-        let want = ((cells / CELLS_PER_MOB).round() as usize).clamp(MIN_PER_AREA, MAX_PER_AREA);
+        let ground = survey(terrain, area.rect);
+        let want = ((ground.open as f32 * density(area.style) * crate::settings::difficulty().mobs() / OPEN_CELLS_PER_MOB).round() as usize).clamp(MIN_PER_AREA, MAX_PER_AREA);
+        let roofed = ground.roofed as f32 / ground.open.max(1) as f32;
+        let indoor_n = if ground.indoor.is_empty() { 0 } else { ((want as f32 * roofed * INDOOR_BIAS).round() as usize).min(want) };
         // Each kind gets its share of the slots (in a shuffled order), so the
         // easy spots (open air) don't crowd out the rare ones (ceilings).
         let mut slots: Vec<MobKind> = Vec::new();
@@ -863,11 +879,20 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
             slots.swap(i, rng.below(i + 1));
         }
         let mut got: Vec<MobKind> = Vec::new();
-        for kind in slots.into_iter().take(want) {
+        for (i, kind) in slots.into_iter().take(want).enumerate() {
+            // The first slots go indoors, the rest to the open (or anywhere if
+            // the slice has no sky-facing ground left).
+            let inside = i < indoor_n;
+            let pool = if inside || ground.outdoor.is_empty() { &ground.indoor } else { &ground.outdoor };
+            if pool.is_empty() {
+                continue;
+            }
+            let gap = if inside { INDOOR_GAP } else { MIN_GAP };
             let found = (0..120).find_map(|_| {
-                let p = Vec2::new(rng.range(area.rect.min.x, area.rect.max.x), rng.range(area.rect.min.y, area.rect.max.y));
+                let jitter = Vec2::new(rng.range(-0.5, 0.5), rng.range(-0.5, 0.5)) * PX;
+                let p = pool[rng.below(pool.len())] + jitter;
                 let at = site(terrain, kind, p, area.rect)?;
-                (!banned(at) && placed.iter().all(|(_, q)| q.distance(at) >= MIN_GAP)).then_some(at)
+                (!banned(at) && placed.iter().all(|(_, q)| q.distance(at) >= gap)).then_some(at)
             });
             let Some(at) = found else { continue };
             if kind == MobKind::Fly {
@@ -900,9 +925,61 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
                 None => counts.push((*k, 1)),
             }
         }
-        info!("mobs: {}/{want} for {boss:?} in \"{}\": {counts:?}", got.len(), area.name);
+        info!("mobs: {}/{want} ({indoor_n} indoors, {:.0}% roofed) for {boss:?} in \"{}\": {counts:?}", got.len(), roofed * 100.0, area.name);
     }
     placed
+}
+
+/// The open ground of a slice, surveyed once for placement.
+struct Ground {
+    /// Open cells (all of them) and how many are roofed.
+    open: usize,
+    roofed: usize,
+    /// Sampled cell centers (every other cell): under a roof, and under the sky.
+    indoor: Vec<Vec2>,
+    outdoor: Vec<Vec2>,
+}
+
+/// Walk each column of `rect` top-down, remembering the last solid cell seen:
+/// an open cell with one within `ROOF_REACH` above it is indoors.
+fn survey(terrain: &Terrain, rect: Rect) -> Ground {
+    let a = terrain.to_cell(Vec2::new(rect.min.x, rect.max.y));
+    let b = terrain.to_cell(Vec2::new(rect.max.x, rect.min.y));
+    let mut g = Ground { open: 0, roofed: 0, indoor: Vec::new(), outdoor: Vec::new() };
+    for x in a.x.max(0)..=b.x.min(terrain.size().x - 1) {
+        let mut since: Option<i32> = None;
+        // Start above the slice so a roof just over its top edge still counts.
+        for y in (a.y - ROOF_REACH).max(0)..=b.y.min(terrain.size().y - 1) {
+            let c = IVec2::new(x, y);
+            if terrain.solid(c) {
+                since = Some(0);
+                continue;
+            }
+            let roof = since.is_some_and(|s| s < ROOF_REACH);
+            since = since.map(|s| s + 1);
+            if y < a.y {
+                continue;
+            }
+            g.open += 1;
+            g.roofed += roof as usize;
+            if x % 2 == 0 && y % 2 == 0 {
+                let at = terrain.cell_min(c) + Vec2::splat(PX * 0.5);
+                if roof { g.indoor.push(at) } else { g.outdoor.push(at) }
+            }
+        }
+    }
+    g
+}
+
+/// How crowded a style's slices are, against `OPEN_CELLS_PER_MOB`.
+fn density(style: Style) -> f32 {
+    match style {
+        Style::Park | Style::Dam => 0.8,
+        Style::Treatment => 0.9,
+        Style::Concrete | Style::Trash | Style::Sinkhole | Style::Cave => 1.0,
+        Style::Sewer | Style::Subway => 1.1,
+        Style::Catacombs | Style::Mall | Style::Bunker => 1.2,
+    }
 }
 
 /// The ecosystem of a region of `boss`: kinds and their share of the mobs.
@@ -1064,6 +1141,113 @@ fn rebuild(
     }
     for (kind, at) in plan(&terrain) {
         mob_art::spawn(&mut commands, &mut meshes, &mut materials, kind, at, None);
+    }
+}
+
+/// Hard only: while a boss fights, the creatures of its region keep arriving
+/// (one every `REINFORCE_EVERY` seconds, up to `REINFORCE_MAX` alive), out of
+/// the chameleon's sight. A new life or game clears them with the other mobs.
+const REINFORCE_EVERY: f32 = 12.0;
+const REINFORCE_MAX: usize = 4;
+const REINFORCE_FROM: f32 = 500.0;
+const REINFORCE_TO: f32 = 1000.0;
+
+#[derive(Component)]
+struct Reinforcement;
+
+fn reinforce(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    bosses: Query<(&boss::Boss, &boss::Lair)>,
+    player: Single<&Transform, With<Player>>,
+    living: Query<(), With<Reinforcement>>,
+    mut wait: Local<f32>,
+    mut rng: Local<Option<Rng>>,
+) {
+    let fighting = bosses.iter().find(|(b, _)| b.awake && !b.staged && !b.dead).map(|(_, l)| l.kind);
+    let Some(kind) = fighting.filter(|_| crate::settings::difficulty().reinforcements()) else {
+        *wait = 0.0;
+        return;
+    };
+    *wait += time.delta_secs();
+    if *wait < REINFORCE_EVERY {
+        return;
+    }
+    *wait = 0.0;
+    if living.iter().count() >= REINFORCE_MAX {
+        return;
+    }
+    let rng = rng.get_or_insert_with(|| Rng(0x7e1f_0c3d));
+    let arena = Arena::find(kind, &terrain);
+    let style = terrain.area_at(arena.home).map_or(Style::Concrete, |a| a.style);
+    // Single walkers and flyers only: swarms, packs and ceiling dwellers need their own ground.
+    let pool: Vec<MobKind> = menu(kind, style)
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| matches!(k.spec().moves, Moves::Walk | Moves::Hop | Moves::Fly | Moves::Stalk | Moves::Scuttle | Moves::Perch))
+        .collect();
+    if pool.is_empty() {
+        return;
+    }
+    let mob = pool[rng.below(pool.len())];
+    let ppos = player.translation.truncate();
+    let rect = Rect::new(arena.left, arena.floor - 500.0, arena.right, arena.floor + 200.0);
+    let spot = (0..60).find_map(|_| {
+        let p = Vec2::new(rng.range(rect.min.x, rect.max.x), rng.range(rect.min.y, rect.max.y));
+        let at = site(&terrain, mob, p, rect)?;
+        (REINFORCE_FROM..REINFORCE_TO).contains(&at.distance(ppos)).then_some(at)
+    });
+    if let Some(at) = spot {
+        let e = mob_art::spawn(&mut commands, &mut meshes, &mut materials, mob, at, None);
+        commands.entity(e).insert(Reinforcement);
+    }
+}
+
+/// Once the Burrower's fight is over, the cave dwellers wait this long, then come out one by one
+/// at random moments within the spread.
+const EMERGE_AFTER: f32 = 5.0;
+const EMERGE_SPREAD: f32 = 120.0;
+
+/// While the Burrower fights, every other mob of its caves digs in and vanishes. When the fight
+/// ends (it dies, or the chameleon leaves) they surface one by one over a couple of minutes.
+fn hole_up(
+    time: Res<Time>,
+    bosses: Query<(&boss::Boss, &boss::Lair)>,
+    mut mobs: Query<(&mut Mob, &mut Visibility)>,
+    mut fighting: Local<bool>,
+) {
+    let dt = time.delta_secs();
+    let region = bosses.iter().find(|(b, l)| l.kind == BossKind::Centipede && b.awake && !b.dead).map(|(_, l)| l);
+    let was = std::mem::replace(&mut *fighting, region.is_some());
+    for (mut m, mut vis) in &mut mobs {
+        if let Some(region) = region {
+            let alive = !matches!(m.state, State::Dead { .. });
+            if alive && m.kind != MobKind::Burrowling && m.buried.is_none() && region.holds(m.home) {
+                m.buried = Some(f32::INFINITY);
+                m.vel = Vec2::ZERO;
+                m.state = State::Idle;
+                *vis = Visibility::Hidden;
+            }
+            continue;
+        }
+        let Some(left) = m.buried else { continue };
+        if was || left.is_infinite() {
+            m.buried = Some(EMERGE_AFTER + m.rng.range(0.0, EMERGE_SPREAD));
+            continue;
+        }
+        if left > dt {
+            m.buried = Some(left - dt);
+        } else {
+            m.buried = None;
+            m.notice = Notice::Unaware;
+            m.lost = 0.0;
+            m.vel = Vec2::ZERO;
+            m.wander = (0.0, m.rng.range(0.2, 1.5));
+            *vis = Visibility::Inherited;
+        }
     }
 }
 
@@ -1238,6 +1422,9 @@ fn think(
     for (mut m, mut tf) in &mut mobs {
         let m = &mut *m;
         let spec = m.spec;
+        if m.buried.is_some() {
+            continue;
+        }
         let pos = tf.translation.truncate();
         // Stuck in a web: everything about it goes slower.
         let dt = dt * (1.0 - 0.8 * m.webbed).max(0.1);
@@ -1905,7 +2092,7 @@ fn nests(
         }
     }
     for (e, mut m, tf) in &mut mobs {
-        if m.spec.moves != Moves::Hang {
+        if m.spec.moves != Moves::Hang || m.buried.is_some() {
             continue;
         }
         let pos = tf.translation.truncate();

@@ -461,7 +461,7 @@ fn think(
     mut frogs: Query<(&mut Frog, &mut Boss, &mut Transform, Option<&mut boss::Sense>)>,
     terrain: Res<Terrain>,
 ) {
-    let dt = time.delta_secs().min(1.0 / 30.0);
+    let dt = time.delta_secs().min(1.0 / 30.0) * crate::boss::tempo();
     let t = time.elapsed_secs();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();

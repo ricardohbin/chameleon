@@ -94,7 +94,7 @@ pub(super) fn corridor(p: &mut Props, s: &Site, at: Vec2, style: Style) {
             catacombs::sagging(&mut groups[g], a, b, a.distance(b) * 0.06, 1.5);
         }
     }
-    let root = p.commands.spawn((Transform::from_xyz(at.x, ceiling, Z), Visibility::default(), TerrainPart)).id();
+    let root = p.commands.spawn((Transform::from_xyz(at.x, ceiling, Z), Visibility::default(), TerrainPart, crate::terrain_art::WorldArt)).id();
     let base = p.colors.get(&p.mats[M::Silk as usize]).cloned().unwrap_or_default();
     let silk = p.colors.add(base);
     let mut parents = Vec::new();

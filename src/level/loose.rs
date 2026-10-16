@@ -31,15 +31,19 @@ const MAX_GAP: i32 = 18;
 /// Free air above a loose piece (pixels): the chameleon must be able to stand on it.
 const HEADROOM: i32 = 6;
 /// Inclined slabs: how many pixels the far ledge may differ in height, and how
-/// steep the slab may be (rise per run: 0.8 is ~39°).
-const MAX_RISE: i32 = 12;
-const MAX_SLOPE: f32 = 0.8;
+/// steep the slab may be (rise per run: 1.0 is 45°; the planner takes anything from ~11° to ~49°).
+const MAX_RISE: i32 = 18;
+const MAX_SLOPE: f32 = 1.15;
 /// Free air below one: a real drop, not a notch.
 const DROP: i32 = 6;
 /// How far a piece reaches into the ground it is fixed to.
-const OVERLAP: f32 = 4.0;
+const OVERLAP: f32 = 6.0;
 /// No loose piece closer than this (pixels) to another.
 const SPACING: f32 = 30.0;
+/// How far (world units) from a sketch hint (gray `#847e87`) a piece may be found to answer it.
+const HINT_REACH: f32 = PX * 20.0;
+/// How far (cells) a hinted piece looks for a wall to dig its ends into.
+const HINT_DIG: i32 = 8;
 /// Nothing is placed this close (world units) to where the game starts.
 const SPAWN_CLEAR: f32 = 320.0;
 
@@ -268,13 +272,18 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
                 }
                 // A short loose ledge sticking out into open air. Never where another
                 // ledge is within reach (that would shorten a jump or a dash).
-                let len = 4 + (hash(x, y, 3) * 4.0) as i32;
+                let len = [4, 5, 6, 7, 5, 8, 10, 13, 16, 20, 14, 18][(hash(x, y, 3) * 12.0) as usize % 12];
                 let (near, far) = (x + dir, x + dir * len);
                 let beyond = x + dir * (len + 3);
                 let (elo, ehi) = (near.min(far), near.max(far));
                 let (lo, hi) = (near.min(beyond), near.max(beyond));
                 // Some are angled, rising or sinking away from the ground they hang from.
-                let pitch = [0.0, 0.0, 0.3, -0.3, 0.55, -0.55][(hash(x, y, 5) * 6.0) as usize % 6];
+                // Long shelves are mostly level.
+                let pitch = if len >= 10 {
+                    [0.0, 0.0, 0.0, 0.0, 0.3, -0.3][(hash(x, y, 5) * 6.0) as usize % 6]
+                } else {
+                    [0.0, 0.0, 0.3, -0.3, 0.55, -0.55, 0.8, -0.8, 1.0, -1.0][(hash(x, y, 5) * 10.0) as usize % 10]
+                };
                 let (base, tip_x) = if dir == 1 { (face(x + 1), face(x + len + 1)) } else { (face(x), face(x - len)) };
                 let tip = Vec2::new(tip_x, top_of(y) + pitch * (tip_x - base).abs());
                 let base = Vec2::new(base, top_of(y));
@@ -301,9 +310,43 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
         }
     }
 
+    // Hints drawn in the sketch: the nearest candidate to each is taken, whatever the dice say.
+    let mut kept: Vec<Candidate> = Vec::new();
+    for &(hint, size, slope) in &t.falling_hints {
+        // The hint's own slope (flat below ~0.15), so a level blob never becomes a diagonal slab.
+        let want = if slope.abs() < 0.15 { 0.0 } else { slope.clamp(-MAX_SLOPE, MAX_SLOPE) };
+        // A candidate answers it when it points the same way and is about as long as the blob.
+        let answers = |c: &Candidate| {
+            let (a, b) = (c.loose.a, c.loose.b);
+            (b.y - a.y) / (b.x - a.x).abs().max(1.0) * (b.x - a.x).signum() >= want - 0.25
+                && (b.y - a.y) / (b.x - a.x).abs().max(1.0) * (b.x - a.x).signum() <= want + 0.25
+                && (b - a).length() >= size.x * 0.7
+        };
+        let nearest = found.iter().enumerate().filter(|(_, c)| answers(c)).map(|(i, c)| (i, c.loose.center().distance(hint))).filter(|&(_, d)| d <= HINT_REACH).min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, _)) = nearest {
+            kept.push(found.swap_remove(i));
+            continue;
+        }
+        // Nothing fits: best effort, a slab following the blob (its width and slope), with its ends dug into any wall just past them.
+        let half = size.x.max(PX * 3.0) / 2.0;
+        let slope = want;
+        let dir = Vec2::new(1.0, slope).normalize();
+        let mid = Vec2::new(hint.x, if slope == 0.0 { hint.y + size.y / 2.0 } else { hint.y });
+        let (mut a, mut b) = (mid - dir * half, mid + dir * half);
+        let mut hold = (false, false);
+        for (end, out, held) in [(&mut a, -dir, &mut hold.0), (&mut b, dir, &mut hold.1)] {
+            // Probe a little under the top surface, outward, for the wall's face.
+            if let Some(k) = (0..=HINT_DIG * 2).find(|&k| t.solid_at(*end + out * (k as f32 * PX * 0.5) - Vec2::Y * 3.0)) {
+                *end += out * (k as f32 * PX * 0.5);
+                *held = true;
+            }
+        }
+        let cell = t.to_cell(hint);
+        kept.push(Candidate { loose: Loose { kind: Kind::of(t.style_at(hint), hash(cell.x, cell.y, 1)), a, b, hold }, at: cell.as_vec2(), luck: 0.0, bridge: true });
+    }
+
     // Most gaps get one, only some ledges do. Keep clear of the spawn and of each other.
     found.sort_by(|a, b| b.bridge.cmp(&a.bridge).then(a.luck.total_cmp(&b.luck)));
-    let mut kept: Vec<Candidate> = Vec::new();
     for c in found {
         let wanted = if c.bridge { 0.9 } else { 0.4 };
         if hash(c.at.x as i32, c.at.y as i32, 4) > wanted || c.loose.center().distance(t.spawn) < SPAWN_CLEAR {

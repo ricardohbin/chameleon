@@ -217,7 +217,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         (sites, facade_spots(&found))
     });
     let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), blue: Blue::default(), mats };
-    commands.spawn((job, TerrainPart));
+    commands.spawn((job, TerrainPart, terrain_art::WorldArt));
 }
 
 pub fn place_props(
@@ -822,7 +822,7 @@ impl Props<'_, '_, '_> {
         let tf = Transform::from_translation(at.extend(self.depth))
             .with_rotation(Quat::from_rotation_z(angle + self.tilt))
             .with_scale(Vec3::new(flip * S, S, 1.0));
-        self.commands.spawn((tf, Visibility::default(), TerrainPart)).id()
+        self.commands.spawn((tf, Visibility::default(), TerrainPart, terrain_art::WorldArt)).id()
     }
 
     fn part(&mut self, e: Entity, mesh: Mesh, m: M, z: f32) {

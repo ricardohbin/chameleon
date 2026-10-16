@@ -57,7 +57,7 @@ impl Default for Contrast {
 /// 0 = as painted.
 const DEFAULT_CONTRAST: f32 = 0.5;
 const CONTRAST_STEP: f32 = 0.25;
-const CONTRAST_RANGE: (f32, f32) = (-4.0, 8.0);
+pub const CONTRAST_RANGE: (f32, f32) = (-4.0, 8.0);
 
 /// Which layer of a painted tile a sprite is (its tint follows `Contrast`).
 #[derive(Component, Clone, Copy)]
@@ -122,6 +122,11 @@ const PAVING: Rgb = [0.47, 0.45, 0.42];
 /// Marks everything spawned for the current terrain (despawned on reload).
 #[derive(Component)]
 pub struct TerrainPart;
+
+/// The painted ground and the props, on top of `TerrainPart`: they only change with the
+/// sketch, so a restart keeps them while the moving pieces are rebuilt.
+#[derive(Component)]
+pub struct WorldArt;
 
 /// Per-cell data the painter samples.
 struct Fields {
@@ -226,7 +231,7 @@ pub fn spawn(commands: &mut Commands, images: &mut Assets<Image>, terrain: &Terr
     placeholders(commands, images, terrain, focus);
     let terrain = terrain.clone();
     let task = AsyncComputeTaskPool::get().spawn(async move { prepare(&terrain, focus) });
-    commands.spawn((CanvasTask(task), TerrainPart));
+    commands.spawn((CanvasTask(task), TerrainPart, WorldArt));
 }
 
 /// Neutral gray stand-ins (one texel per cell: solid gray, interiors dark) for
@@ -270,6 +275,7 @@ fn placeholders(commands: &mut Commands, images: &mut Assets<Image>, terrain: &T
                 Transform::from_translation((corner + Vec2::new(extent, -extent) / 2.0).extend(Z - 0.01)),
                 Placeholder(first),
                 TerrainPart,
+                WorldArt,
             ));
         }
     }
@@ -323,7 +329,7 @@ pub fn finish_tiles(
         for tile in tiles {
             let c = canvas.clone();
             let task = pool.spawn(async move { paint_tile(&c, tile.x as i32, tile.y as i32) });
-            commands.spawn((TileTask(task, tile.as_ivec2()), Transform::from_translation(canvas.center(tile).extend(Z)), Visibility::default(), TerrainPart));
+            commands.spawn((TileTask(task, tile.as_ivec2()), Transform::from_translation(canvas.center(tile).extend(Z)), Visibility::default(), TerrainPart, WorldArt));
         }
     }
     let extent = TILE as f32 * PX;

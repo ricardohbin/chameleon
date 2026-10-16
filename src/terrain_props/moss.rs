@@ -963,6 +963,7 @@ pub(super) fn vent(p: &mut Props, s: &Site, at: Vec2, style: Style) {
         Transform::from_translation((at + Vec2::new(0.0, 9.5 * S)).extend(0.0)),
         crate::fumes::Fumer { dist, timer: p.rng.range(0.0, 0.6), seed: s.key },
         crate::terrain_art::TerrainPart,
+        crate::terrain_art::WorldArt,
     ));
     p.vents.push(at);
 }

@@ -4,7 +4,7 @@
 //! boss whose lair the chameleon is in) plus world drawings: the chameleon's
 //! box, velocity, ground normal and foot samples, region/feature/lair/arena
 //! outlines, moving platforms, and what each boss senses (line of sight, goal,
-//! planned path). The panel is a strip along the bottom of the screen (the
+//! planned path). The panel is a strip along the top of the screen (the
 //! chameleon on the left, its surroundings and the boss in the middle, the F
 //! keys on the right).
 //! With the overlay on, F12 also saves the panel text next to the screenshot.
@@ -68,7 +68,7 @@ fn setup(mut commands: Commands, mut store: ResMut<GizmoConfigStore>) {
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
         Node {
             position_type: PositionType::Absolute,
-            bottom: px(0),
+            top: px(0),
             left: px(0),
             right: px(0),
             flex_direction: FlexDirection::Row,
@@ -236,7 +236,7 @@ fn describe(
             "{} [{state}] hp {}/{}  {:.0} u to the {}  at sketch ({}, {})",
             boss.spec.name,
             boss.hp.max(0),
-            boss.spec.hp,
+            boss.max_hp,
             d.length(),
             direction(d),
             sketch_px(bpos).x,
@@ -268,7 +268,14 @@ fn draw(
     player: Single<(&Player, &Transform)>,
     platforms: Query<(&Platform, &Transform)>,
     bosses: Query<(&Boss, &Lair, &Transform, Option<&Sense>)>,
+    view: Single<(&Transform, &Projection), With<camera::MainCamera>>,
 ) {
+    // The visible world rect, to fade the boss lines with their distance from its edge.
+    let (cam_tf, projection) = *view;
+    let screen = match projection {
+        Projection::Orthographic(o) => Rect::from_center_size(cam_tf.translation.truncate(), o.area.size()),
+        _ => Rect::from_center_size(cam_tf.translation.truncate(), Vec2::splat(1000.0)),
+    };
     let (p, tf) = *player;
     let pos = tf.translation.truncate();
     let feet = pos - Vec2::Y * player::HALF.y;
@@ -319,7 +326,11 @@ fn draw(
         } else {
             ARENA
         };
-        gizmos.line_2d(pos, bpos, color.with_alpha(0.5));
+        // Strongest as the boss is about to enter the screen, quadratically fainter, floor at ~10 screens away.
+        let outside = (bpos - bpos.clamp(screen.min, screen.max)).length();
+        let t = (outside / (10.0 * screen.size().x)).clamp(0.0, 1.0);
+        let fade = 0.15 + (0.85 - 0.15) * (1.0 - t) * (1.0 - t);
+        gizmos.line_2d(pos, bpos, color.with_alpha(fade));
         gizmos.circle_2d(bpos, boss.spec.radius, color);
         gizmos.circle_2d(boss.home, 6.0, DIM);
         let Some(sense) = sense else { continue };

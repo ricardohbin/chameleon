@@ -20,6 +20,7 @@ use std::f32::consts::PI;
 use bevy::prelude::*;
 
 use crate::{
+    feeding::Morsel,
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
     centipede, dragonfly, frog, grasshopper, king_rat, spider,
@@ -27,6 +28,7 @@ use crate::{
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
     player::{self, Hurt, Player, Respawned},
+    save::AutoSave,
     roach,
     spit::{self, SpitHit},
     terrain::Terrain,
@@ -191,8 +193,14 @@ impl BossKind {
             .min_by(|a, b| a.rect.size().element_product().total_cmp(&b.rect.size().element_product()))
             .map_or(Rect::from_center_half_size(marker, Vec2::new(1000.0, 700.0)), |a| a.rect)
             .union(arena_rect);
-        // The centipede's domain is the whole cave system: it wakes as soon as you set foot in it.
+        // The centipede's domain is its whole region (every slice it owns, as the mobs are placed):
+        // the fight starts as you come near it and lasts until you leave it or it dies.
+        let mut zones = vec![region];
+        let mut region = region;
         if self == BossKind::Centipede {
+            zones = owned_areas(self, marker, terrain);
+            zones.push(region);
+            region = zones.iter().fold(zones[0], |a, r| a.union(*r));
             arena_rect = region;
         }
         // The King Rat roams all the ground it can get around on: it wakes when you step on any of it.
@@ -210,7 +218,7 @@ impl BossKind {
             BossKind::Rat => king_rat::spawn(commands, meshes, materials, &arena, terrain, region),
         };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
-        commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect }, Sense::default()));
+        commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect, zones }, Sense::default()));
     }
 }
 
@@ -258,6 +266,40 @@ pub struct Lair {
     pub region: Rect,
     /// Entering this wakes it.
     pub arena: Rect,
+    /// The slices the lair is made of (`region` is their bounding box).
+    pub zones: Vec<Rect>,
+}
+
+/// How close to its region the chameleon must come to start the Burrower's fight (and how far
+/// outside it may stray before the fight is over).
+const REGION_MARGIN: f32 = 250.0;
+
+impl Lair {
+    /// Whether `p` is in the lair itself (not the empty space of its bounding box).
+    pub fn holds(&self, p: Vec2) -> bool {
+        self.zones.iter().any(|z| z.contains(p))
+    }
+
+    /// Whether `p` is in or near the lair.
+    fn near(&self, p: Vec2) -> bool {
+        self.zones.iter().any(|z| Rect { min: z.min - Vec2::splat(REGION_MARGIN), max: z.max + Vec2::splat(REGION_MARGIN) }.contains(p))
+    }
+}
+
+/// The slices a boss owns: the one its marker is in, and the ones with no boss of their own that
+/// are nearest to it (the same rule that places the mobs, `mobs::plan`).
+fn owned_areas(kind: BossKind, marker: Vec2, terrain: &Terrain) -> Vec<Rect> {
+    let markers: Vec<(BossKind, Vec2)> = BossKind::ALL.into_iter().filter_map(|k| Some((k, k.marker(terrain)?))).collect();
+    terrain
+        .areas
+        .iter()
+        .filter(|a| {
+            let off = |p: Vec2| (p - p.clamp(a.rect.min, a.rect.max)).length();
+            let owner = markers.iter().find(|(_, at)| a.rect.contains(*at)).or_else(|| markers.iter().min_by(|x, y| off(x.1).total_cmp(&off(y.1))));
+            owner.is_some_and(|(k, _)| *k == kind) || a.rect.contains(marker)
+        })
+        .map(|a| a.rect)
+        .collect()
 }
 
 /// Where a boss fights: the floor height and walkable x range around its home.
@@ -310,6 +352,8 @@ pub struct BossSpec {
 pub struct Boss {
     pub spec: &'static BossSpec,
     pub hp: i32,
+    /// Full health: the spec's, scaled by the difficulty.
+    pub max_hp: i32,
     pub home: Vec2,
     pub dead: bool,
     /// Woken by the chameleon entering its lair (asleep, it stays home).
@@ -330,6 +374,16 @@ pub struct Boss {
     mats: Vec<(Handle<ColorMaterial>, Color)>,
 }
 
+/// How fast the bosses' AI runs now (their `dt`), by difficulty.
+pub fn tempo() -> f32 {
+    crate::settings::difficulty().tempo()
+}
+
+/// Health of a boss now: the spec's, scaled by the difficulty.
+fn scaled_hp(spec: &BossSpec) -> i32 {
+    ((spec.hp as f32 * crate::settings::difficulty().boss_hp()).round() as i32).max(1)
+}
+
 impl Boss {
     /// A boss that introduces itself: it hides its health bar until it does.
     pub fn staged(mut self) -> Self {
@@ -338,20 +392,22 @@ impl Boss {
     }
 
     pub fn new(spec: &'static BossSpec, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>) -> Self {
-        Self { spec, hp: spec.hp, home, dead: false, awake: false, staged: false, guard: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
+        let max_hp = scaled_hp(spec);
+        Self { spec, hp: max_hp, max_hp, home, dead: false, awake: false, staged: false, guard: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
     }
 
     /// Stops hunting and heals: it goes back home on its own, it is not replaced.
     pub fn stand_down(&mut self) {
         self.awake = false;
-        self.hp = self.spec.hp;
+        self.max_hp = scaled_hp(self.spec);
+        self.hp = self.max_hp;
         self.pressure = 0.0;
         self.armor = 0.0;
     }
 
     /// Second phase: below half health.
     pub fn enraged(&self) -> bool {
-        self.hp * 2 <= self.spec.hp
+        self.hp * 2 <= self.max_hp
     }
 }
 
@@ -492,6 +548,7 @@ fn spawn_all(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
 fn lairs(
     player: Single<(&Player, &Transform)>,
     mut bosses: Query<(&mut Boss, &Lair, &Transform)>,
+    mut autosave: MessageWriter<AutoSave>,
 ) {
     let (p, ptf) = *player;
     let ppos = ptf.translation.truncate();
@@ -499,10 +556,13 @@ fn lairs(
         if boss.dead || p.dead.is_some() {
             continue;
         }
-        let inside = lair.region.contains(ppos);
-        if !boss.awake && lair.arena.contains(ppos) {
+        let centipede = lair.kind == BossKind::Centipede;
+        let inside = if centipede { lair.near(ppos) } else { lair.region.contains(ppos) };
+        let entered = if centipede { inside } else { lair.arena.contains(ppos) };
+        if !boss.awake && entered {
             boss.awake = true;
             info!("{} wakes", boss.spec.name);
+            autosave.write(AutoSave);
         } else if boss.awake && (!inside || (lair.kind != BossKind::Centipede && tf.translation.truncate().distance(ppos) > LEASH)) {
             info!("{} gives up and goes home", boss.spec.name);
             boss.stand_down();
@@ -551,6 +611,7 @@ pub(crate) fn slash_bosses(
     mut spat: MessageReader<SpitHit>,
     mut defeated: ResMut<Defeated>,
     mut beaten: MessageWriter<Beaten>,
+    mut autosave: MessageWriter<AutoSave>,
     player: Single<(&Player, &Transform, &ChameleonAnim)>,
     mut bosses: Query<(Entity, &mut Boss, &Transform, &Lair)>,
 ) {
@@ -618,6 +679,7 @@ pub(crate) fn slash_bosses(
         if killed {
             defeated.add(lair.kind);
             beaten.write(Beaten(lair.kind));
+            autosave.write(AutoSave);
             // Burst open and give up its color. Make it land: freeze, slow motion,
             // zoom punch and a flash of its color.
             bleed.write(Bleed { dir: Vec2::Y, spread: PI, speed: 800.0, amount: 240, ..gush });
@@ -679,7 +741,7 @@ fn update_status(
     if let Some((boss, _)) = fighting {
         status.name = boss.spec.name;
         status.color = boss.spec.color;
-        status.health = boss.hp.max(0) as f32 / boss.spec.hp as f32;
+        status.health = boss.hp.max(0) as f32 / boss.max_hp as f32;
         status.engaged = p.dead.is_none() && !boss.dead && !boss.staged;
     }
 }
@@ -708,20 +770,35 @@ fn move_gibs(
     mut commands: Commands,
     time: Res<Time>,
     mut bleed: MessageWriter<Bleed>,
-    mut gibs: Query<(Entity, &mut Gib, &mut Transform)>,
+    mut gibs: Query<(Entity, &mut Gib, &mut Transform, Has<Morsel>)>,
     platforms: Query<(&Platform, &Transform), Without<Gib>>,
     terrain: Res<Terrain>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
-    for (e, mut g, mut tf) in &mut gibs {
+    for (e, mut g, mut tf, edible) in &mut gibs {
         g.t += dt;
         let pos = tf.translation.truncate();
+        if g.landed {
+            // What it landed on may have moved away (a plate of the boss): then it falls again.
+            match floor(&terrain, platforms.iter(), pos, pos - Vec2::Y * 4.0, 4.0) {
+                Some(top) => tf.translation.y = top + 4.0,
+                None => {
+                    g.landed = false;
+                    g.vel = Vec2::ZERO;
+                }
+            }
+        }
         if !g.landed {
             g.vel.y -= 1400.0 * dt;
             let next = pos + g.vel * dt;
             if let Some(top) = floor(&terrain, platforms.iter(), pos, next, 4.0) {
                 tf.translation.y = top + 4.0;
                 g.landed = true;
+                if edible {
+                    // Lies flat on the ground.
+                    let a = tf.rotation.to_euler(EulerRot::ZYX).0;
+                    tf.rotation = Quat::from_rotation_z((a / PI).round() * PI);
+                }
             } else {
                 tf.translation.x = next.x;
                 tf.translation.y = next.y;

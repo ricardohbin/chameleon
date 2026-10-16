@@ -4,6 +4,7 @@ use bevy::{
     camera::visibility::RenderLayers,
     prelude::*,
     render::view::{ColorGrading, ColorGradingGlobal},
+    window::PrimaryWindow,
 };
 
 use crate::{
@@ -54,6 +55,7 @@ impl Plugin for CameraPlugin {
             .init_resource::<HitStop>()
             .init_resource::<ZoomPunch>()
             .init_resource::<DevZoom>()
+            .init_resource::<ArenaView>()
             .add_systems(Startup, spawn_camera)
             .add_systems(First, apply_hit_stop)
             .add_systems(PreUpdate, restart.after(level::restart))
@@ -130,6 +132,28 @@ impl ZoomPunch {
     }
 }
 
+/// A fight that wants a wider view kept inside its arena (the Burrower's caves): the boss asks
+/// for it every frame it lasts. The camera pulls back (between the zoom multipliers `zoom`) to
+/// frame both the chameleon and `show` (where the boss is), leaning toward it, and keeps the view
+/// inside `rect`; it eases into it, and back out when nobody asks.
+#[derive(Resource, Default)]
+pub struct ArenaView {
+    pub want: Option<ArenaWant>,
+    /// 0..1 how far into the arena view it is; the zoom and the middle of the view it eases toward;
+    /// the last request.
+    k: f32,
+    zoom: f32,
+    center: Vec2,
+    last: Option<ArenaWant>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ArenaWant {
+    pub zoom: (f32, f32),
+    pub rect: Rect,
+    pub show: Vec2,
+}
+
 /// Zoom multiplier for developer tools (1 = normal).
 #[derive(Resource)]
 pub struct DevZoom(pub f32);
@@ -199,9 +223,11 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
 fn restart(
     mut restarted: MessageReader<Restart>,
     terrain: Res<Terrain>,
+    pending: Res<crate::save::Pending>,
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
     mut punch: ResMut<ZoomPunch>,
+    mut view: ResMut<ArenaView>,
     mut time: ResMut<Time<Virtual>>,
     mut follow: Single<&mut Follow, With<MainCamera>>,
 ) {
@@ -209,17 +235,20 @@ fn restart(
         return;
     }
     *shake = default();
+    *view = default();
     *stop = default();
     *punch = default();
     time.set_relative_speed(1.0);
-    follow.0 = player::spawn_point(&terrain) + Vec2::new(LOOK_AHEAD, HEIGHT_OFFSET);
+    follow.0 = pending.at().unwrap_or_else(|| player::spawn_point(&terrain)) + Vec2::new(LOOK_AHEAD, HEIGHT_OFFSET);
 }
 
 pub fn follow_player(
     time: Res<Time>,
     mut shake: ResMut<Shake>,
     mut punch: ResMut<ZoomPunch>,
+    mut view: ResMut<ArenaView>,
     dev_zoom: Res<DevZoom>,
+    window: Option<Single<&Window, With<PrimaryWindow>>>,
     camera: Single<(&mut Transform, &mut Follow), (With<MainCamera>, Without<Player>)>,
     mut projections: Query<&mut Projection, Without<crate::map_export::ExportCamera>>,
     player: Single<(&Transform, &Player)>,
@@ -235,15 +264,52 @@ pub fn follow_player(
     }
     follow.0 = follow.0.lerp(target, 1.0 - (-FOLLOW_RATE * dt).exp());
 
+    // An arena view: pulled back, and the view kept inside the arena (centered on it along a side
+    // it doesn't fill).
+    let wanted = view.want.take();
+    let goal = if wanted.is_some() { 1.0 } else { 0.0 };
+    if wanted.is_some() {
+        if view.last.is_none() {
+            view.center = follow.0;
+            view.zoom = 1.0;
+        }
+        view.last = wanted;
+    }
+    view.k += (goal - view.k) * (1.0 - (-1.8 * dt).exp());
+    let ease = view.k * view.k * (3.0 - 2.0 * view.k);
+    let window_half = window.as_ref().map_or(Vec2::new(640.0, 360.0), |w| Vec2::new(w.width(), w.height()) * 0.5);
+    let mut at = follow.0;
+    if let Some(w) = view.last.filter(|_| view.k > 0.001) {
+        // Framing the chameleon and the boss: the middle leans toward the boss, the zoom takes in both
+        // with room around them.
+        let center = follow.0.lerp(w.show, 0.35);
+        view.center = view.center.lerp(center, 1.0 - (-2.0 * dt).exp());
+        let need = ((w.show - view.center).abs().max((follow.0 - view.center).abs()) + Vec2::splat(450.0)) / window_half;
+        let zoom = (need.max_element() / (ZOOM * dev_zoom.0)).clamp(w.zoom.0, w.zoom.1);
+        view.zoom += (zoom - view.zoom) * (1.0 - (-1.2 * dt).exp());
+        at = follow.0.lerp(view.center, ease);
+    } else {
+        view.last = None;
+    }
+    let pull = 1.0 + (view.zoom.max(1.0) - 1.0) * ease;
+    let scale = ZOOM * dev_zoom.0 * pull * (1.0 - PUNCH_ZOOM * punch.0 * punch.0 * (3.0 - 2.0 * punch.0));
+    if let Some(w) = view.last {
+        // The view stays inside the arena (centered on it along a side it doesn't fill).
+        let half = window_half * scale;
+        let r = w.rect;
+        let keep = |v: f32, lo: f32, hi: f32, h: f32| if hi - lo < 2.0 * h { (lo + hi) * 0.5 } else { v.clamp(lo + h, hi - h) };
+        let inside = Vec2::new(keep(at.x, r.min.x, r.max.x, half.x), keep(at.y, r.min.y, r.max.y, half.y));
+        at = at.lerp(inside, ease);
+    }
+
     let t = time.elapsed_secs();
     let k = shake.trauma * shake.trauma;
     let offset = Vec2::new(noise(t * 23.0), noise(t * 19.0 + 7.0)) * 18.0 * k;
-    tf.translation = (follow.0 + offset).extend(tf.translation.z);
+    tf.translation = (at + offset).extend(tf.translation.z);
     tf.rotation = Quat::from_rotation_z(noise(t * 13.0 + 3.0) * 0.03 * k);
     shake.trauma = (shake.trauma - dt * 1.1).max(0.0);
 
-    // Both cameras share the zoom.
-    let scale = ZOOM * dev_zoom.0 * (1.0 - PUNCH_ZOOM * punch.0 * punch.0 * (3.0 - 2.0 * punch.0));
+    // All the cameras share the zoom.
     for mut projection in &mut projections {
         if let Projection::Orthographic(ortho) = &mut *projection {
             ortho.scale = scale;

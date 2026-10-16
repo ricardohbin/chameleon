@@ -140,6 +140,8 @@ pub struct Terrain {
     pub grasshopper: Option<Vec2>,
     /// The King Rat: on the ground below its marker (feet position).
     pub rat: Option<Vec2>,
+    /// Sketch hints (gray blobs) asking for a falling platform: center, size (world units) and slope (rise per run, up positive).
+    pub falling_hints: Vec<(Vec2, Vec2, f32)>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -197,6 +199,7 @@ impl Terrain {
             frog: None,
             grasshopper: None,
             rat: None,
+            falling_hints: Vec::new(),
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -213,6 +216,7 @@ impl Terrain {
         t.frog = marker(MarkerKind::Frog).map(|p| t.rest(to_world(p)));
         t.grasshopper = marker(MarkerKind::Grasshopper).map(|p| t.rest(to_world(p)));
         t.rat = marker(MarkerKind::Rat).map(|p| t.rest(to_world(p)));
+        t.falling_hints = sketch.markers.iter().filter(|m| m.kind == MarkerKind::Falling).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();

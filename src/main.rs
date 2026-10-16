@@ -2,6 +2,7 @@ mod atmosphere;
 mod boss;
 mod camera;
 mod chameleon;
+mod controls;
 mod debug_overlay;
 mod dev;
 mod dragonfly;
@@ -17,15 +18,19 @@ mod feeding;
 mod gore;
 mod hud;
 mod level;
+mod menu;
 mod mob_art;
 mod mobs;
 mod outline;
+#[cfg(debug_assertions)]
+mod perf;
 mod player;
 mod regrowth;
 mod roach;
 mod save;
 mod shapes;
 mod sound;
+mod settings;
 mod sketch;
 mod sketch_tool;
 mod burrow;
@@ -40,14 +45,23 @@ mod wasp;
 mod water;
 
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, MonitorSelection, PrimaryWindow, WindowMode};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowMode};
+
+/// Every `Text` without an explicit font uses Bevy's default font asset: swap it for ours.
+fn install_default_font(mut fonts: ResMut<Assets<Font>>) {
+    let font = Font::from_bytes(include_bytes!("../assets/fonts/GhoreSerif.ttf").to_vec());
+    fonts.insert(AssetId::default(), font).unwrap();
+}
 
 fn main() {
     // `cargo run -- bake` / `cargo run -- diff`: world sketch tools, no game.
     if sketch_tool::run_cli() {
         return;
     }
-    App::new()
+    let mut app = App::new();
+    #[cfg(debug_assertions)]
+    app.add_plugins(perf::PerfPlugin);
+    app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Ghore, The Chameleon".into(),
@@ -56,6 +70,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins((settings::SettingsPlugin, menu::MenuPlugin, controls::ControlsPlugin))
         .add_plugins((
             atmosphere::AtmospherePlugin,
             level::LevelPlugin,
@@ -77,8 +92,9 @@ fn main() {
         .add_plugins(king_rat::KingRatPlugin)
         .add_systems(
             PreUpdate,
-            capture_mouse.after(bevy::input::InputSystems).before(level::restart),
+            capture_mouse.after(bevy::input::InputSystems).after(menu::input).before(level::restart),
         )
+        .add_systems(PreStartup, install_default_font)
         .add_systems(Update, toggle_fullscreen)
         .add_systems(Update, set_window_icon)
         .run();
@@ -89,10 +105,13 @@ fn main() {
 fn capture_mouse(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    menu: Res<menu::Menu>,
+    settings: Res<settings::Settings>,
     mut window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
     let (window, cursor) = &mut *window;
-    if !window.focused || keys.just_pressed(KeyCode::Escape) {
+    // Only the mouse scheme aims with it; the menu needs it free.
+    if !window.focused || menu.open || settings.scheme != settings::Scheme::MouseKeyboard || keys.just_pressed(KeyCode::Escape) {
         cursor.grab_mode = CursorGrabMode::None;
     } else if window.cursor_position().is_some() && mouse.get_just_pressed().next().is_some() {
         cursor.grab_mode = CursorGrabMode::Confined;
@@ -102,15 +121,15 @@ fn capture_mouse(
 /// Alt+Enter or F11 toggles borderless fullscreen.
 fn toggle_fullscreen(
     keys: Res<ButtonInput<KeyCode>>,
-    mut window: Single<&mut Window, With<PrimaryWindow>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut settings: ResMut<settings::Settings>,
+    contrast: Res<terrain_art::Contrast>,
 ) {
     let alt_enter = keys.just_pressed(KeyCode::Enter)
         && (keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight));
     if alt_enter || keys.just_pressed(KeyCode::F11) {
-        window.mode = match window.mode {
-            WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
-            _ => WindowMode::Windowed,
-        };
+        settings.fullscreen = window.mode == WindowMode::Windowed;
+        settings::store(&settings, contrast.0);
     }
 }
 

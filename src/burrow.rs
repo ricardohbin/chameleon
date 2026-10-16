@@ -121,10 +121,12 @@ fn spawn_ui(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materi
     commands.spawn((
         Prompt,
         Text::new(""),
-        TextFont { font_size: FontSize::Px(24.0), ..default() },
+        TextFont { font_size: FontSize::Px(22.0), ..default() },
         TextColor(Color::NONE),
+        BackgroundColor(Color::NONE),
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, bottom: percent(16), width: percent(100), ..default() },
+        Node { position_type: PositionType::Absolute, bottom: percent(16), left: percent(50), padding: crate::hud::chip_pad(), ..default() },
+        UiTransform { translation: Val2::percent(-50.0, 0.0), ..default() },
     ));
     let mesh = meshes.add(fill(&ellipse_pts(9.0, 14.0, 4), |_| 1.0));
     let mat = materials.add(ColorMaterial { color: PURPLE.with_alpha(0.8), alpha_mode: AlphaMode2d::Blend, ..default() });
@@ -141,7 +143,7 @@ fn scan(
     defeated: Res<Defeated>,
     terrain: Res<Terrain>,
     player: Single<(&mut Player, &Transform)>,
-    mut prompt: Single<(&mut Text, &mut TextColor), With<Prompt>>,
+    mut prompt: Single<(&mut Text, &mut TextColor, &mut BackgroundColor), With<Prompt>>,
     mut marks: Query<(&Mark, &mut Transform, &mut Visibility), Without<Player>>,
 ) {
     let (mut p, ptf) = player.into_inner();
@@ -175,14 +177,15 @@ fn scan(
         *last = Vec2::ZERO;
     }
     let (text, alpha) = match (p.burrow_target, near) {
-        (Some(_), _) => ("[E]  BURROW THROUGH THE RUBBLE", 0.95),
-        (None, true) => ("RUBBLE: aim through it, to the other side, and press E", 0.55),
+        (Some(_), _) => ("E  Burrow", 1.0),
+        (None, true) => ("Aim through", 0.7),
         _ => ("", 0.0),
     };
     if prompt.0.0 != text {
         prompt.0.0 = text.into();
     }
-    prompt.1.0 = Color::srgb(0.85, 0.45, 0.85).with_alpha(alpha);
+    prompt.1.0 = crate::hud::CHIP_INK.with_alpha(alpha);
+    prompt.2.0 = crate::hud::CHIP.with_alpha(crate::hud::CHIP.alpha() * alpha);
 
     let pulse = 1.0 + 0.2 * (time.elapsed_secs() * 7.0).sin();
     for (mark, mut tf, mut vis) in &mut marks {

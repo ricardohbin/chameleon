@@ -451,7 +451,7 @@ fn think(
     mut hoppers: Query<(&mut Hopper, &mut Boss, &mut Transform, Option<&mut boss::Sense>)>,
     terrain: Res<Terrain>,
 ) {
-    let dt = time.delta_secs().min(1.0 / 30.0);
+    let dt = time.delta_secs().min(1.0 / 30.0) * crate::boss::tempo();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
 

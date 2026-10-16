@@ -79,13 +79,15 @@ const FLIGHT_BRAKE: f32 = 10.0;
 const MAX_FALL: f32 = 1400.0;
 /// Grace time to still jump after walking off a ledge.
 const COYOTE_TIME: f32 = 0.1;
+/// Down on a one-way platform (a ledge, the Burrower's back): it falls through for this long.
+const DROP_TIME: f32 = 0.3;
 /// A jump pressed slightly before landing still counts.
 const JUMP_BUFFER: f32 = 0.12;
 /// Landing faster than this shakes the camera.
 const HARD_LANDING: f32 = 950.0;
 /// Falls shorter than this many storeys (`FLOOR_HEIGHT`) are harmless; from there
 /// on it costs 1 HP, plus 1 more for every further storey.
-const FALL_SAFE_FLOORS: f32 = 5.0;
+const FALL_SAFE_FLOORS: f32 = 4.0;
 /// This far below the lowest ground you fell into the abyss.
 const VOID_DEPTH: f32 = 600.0;
 /// From this share of the body under the surface you swim instead of walking.
@@ -161,6 +163,8 @@ pub struct Player {
     pub burrow: Option<crate::burrow::Burrow>,
     pub burrow_target: Option<crate::burrow::Path>,
     climb_lock: f32,
+    /// Seconds left of falling through one-way platforms (down pressed on one).
+    pub drop: f32,
     /// Seconds left of the current dash.
     pub dash: f32,
     dash_ready: bool,
@@ -283,7 +287,7 @@ impl Player {
     /// Choking on foul air (`king_rat::foul_air`): costs `damage` and a cough
     /// (a short stagger), no knockback.
     pub fn choke(&mut self, damage: i32) -> Hurt {
-        if self.dead.is_some() || self.god {
+        if self.dead.is_some() || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
@@ -360,7 +364,7 @@ fn spawn_player(
     mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
 ) {
-    spawn(&mut commands, &mut meshes, &mut materials, &terrain, God::Off);
+    spawn(&mut commands, &mut meshes, &mut materials, &terrain, God::Off, None);
 }
 
 /// F8: a brand new chameleon on the spawn marker (health, max health, earned
@@ -371,6 +375,7 @@ fn restart(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
+    pending: Res<crate::save::Pending>,
     player: Single<(Entity, &Player)>,
 ) {
     if restarted.read().count() == 0 {
@@ -378,7 +383,7 @@ fn restart(
     }
     let (e, p) = *player;
     commands.entity(e).despawn();
-    spawn(&mut commands, &mut meshes, &mut materials, &terrain, p.god);
+    spawn(&mut commands, &mut meshes, &mut materials, &terrain, p.god, pending.at());
 }
 
 fn spawn(
@@ -387,8 +392,9 @@ fn spawn(
     materials: &mut Assets<ColorMaterial>,
     terrain: &Terrain,
     god: God,
+    at: Option<Vec2>,
 ) {
-    let spawn = spawn_point(terrain);
+    let spawn = at.unwrap_or_else(|| spawn_point(terrain));
     let player = commands
         .spawn((
             Player {
@@ -413,6 +419,7 @@ pub fn move_player(
     keys: Res<ButtonInput<KeyCode>>,
     mut shake: ResMut<Shake>,
     mut respawned: MessageWriter<Respawned>,
+    mut load_saved: MessageWriter<crate::save::LoadOnDeath>,
     mut splash: MessageWriter<Splash>,
     waters: Res<Waters>,
     mut player: Single<(&mut Player, &mut Transform)>,
@@ -421,19 +428,25 @@ pub fn move_player(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<crate::camera::MainCamera>>,
     defeated: Res<Defeated>,
+    aim_input: Res<crate::controls::AimInput>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let (ref mut p, ref mut tf) = *player;
     let (camera, camera_tf) = *camera;
 
-    // --- Aim: the mouse, in the world ---
-    if let Some(target) = window
-        .cursor_position()
-        .and_then(|c| camera.viewport_to_world_2d(camera_tf, c).ok())
-    {
-        p.aim_at = Some(target);
-    }
+    // --- Aim: the mouse, in the world, or the direction the controls chose ---
     let neck = chameleon::neck(tf.translation.truncate(), p.facing);
+    if aim_input.mouse {
+        if let Some(target) = window
+            .cursor_position()
+            .and_then(|c| camera.viewport_to_world_2d(camera_tf, c).ok())
+        {
+            p.aim_at = Some(target);
+        }
+    } else {
+        let dir = if aim_input.dir == Vec2::ZERO { Vec2::new(p.facing, 0.0) } else { aim_input.dir };
+        p.aim_at = Some(neck + dir * 300.0);
+    }
     p.aim = p
         .aim_at
         .map_or(Vec2::ZERO, |at| at - neck)
@@ -645,7 +658,16 @@ pub fn move_player(
         // The big jump (grasshopper): holding down (S / arrow) on the ground charges it
         // (feet planted), letting go launches it; a tap (under `CHARGE_MIN`) does nothing.
         let down = keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
-        let can_charge = defeated.leap() && !swimming && !dead && p.stun <= 0.0 && climbing.is_none() && p.grounded;
+        // Down on a one-way platform drops through it (there, down doesn't charge the big jump).
+        let on_one_way = p.grounded && p.ground.and_then(|e| platforms.get(e).ok()).is_some_and(|(_, plat, _)| plat.one_way);
+        p.drop = (p.drop - dt).max(0.0);
+        if on_one_way && !dead && p.stun <= 0.0 && keys.any_just_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) {
+            p.drop = DROP_TIME;
+            p.grounded = false;
+            p.ground = None;
+            p.vel.y = p.vel.y.min(-60.0);
+        }
+        let can_charge = defeated.leap() && !swimming && !dead && p.stun <= 0.0 && climbing.is_none() && p.grounded && !on_one_way;
         let mut launched = false;
         if let Some(held) = p.charge {
             if !can_charge {
@@ -897,7 +919,7 @@ pub fn move_player(
     }
     for (entity, plat, ptf) in &platforms {
         let c = ptf.translation.truncate();
-        if !plat.solid || !overlaps(pos, c, plat.bound()) {
+        if !plat.solid || !overlaps(pos, c, plat.bound()) || (plat.one_way && p.drop > 0.0) {
             continue;
         }
         let tilted = plat.tilt != 0.0;
@@ -935,7 +957,7 @@ pub fn move_player(
     if !flying && !p.grounded && p.vel.y <= 0.0 {
         if let Some((entity, plat, ptf)) = prev_ground.and_then(|e| platforms.get(e).ok()) {
             let c = ptf.translation.truncate();
-            if plat.solid && plat.tilt != 0.0 && (pos.x - c.x).abs() <= plat.run() {
+            if plat.solid && plat.tilt != 0.0 && (pos.x - c.x).abs() <= plat.run() && !(plat.one_way && p.drop > 0.0) {
                 let top = plat.top_at(c, pos.x);
                 let gap = pos.y - HALF.y - top;
                 if (0.0..=6.0 + plat.tilt.tan().abs() * 20.0).contains(&gap) {
@@ -1010,7 +1032,10 @@ pub fn move_player(
     // Dead: lie there a while, then start over.
     if let Some(t) = p.dead {
         p.dead = Some(t + dt);
-        if t + dt > DEATH_TIME {
+        if t + dt > DEATH_TIME && crate::save::has_save() {
+            // Skip the respawn: the saved game is loaded in its place, in one go.
+            load_saved.write(crate::save::LoadOnDeath);
+        } else if t + dt > DEATH_TIME {
             p.dead = None;
             p.swim = 1.0;
             p.harm = 0.0;

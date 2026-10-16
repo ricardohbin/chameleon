@@ -15,6 +15,7 @@ use crate::{
     boss::{Beaten, BossKind, BossStatus, Defeated},
     level::{self, Restart},
     player::{self, God, Player},
+    settings::{Scheme, Settings},
 };
 
 const PIP_FULL: Color = Color::srgb(0.78, 0.06, 0.05);
@@ -68,9 +69,25 @@ impl ScreenFlash {
 #[derive(Component)]
 struct FlashOverlay;
 
-/// The controls line along the top.
+/// Key hints, bottom right: a row per action, its name (outlined) left of the key (white on black).
 #[derive(Component)]
-struct Hint;
+struct HintRow(usize);
+
+#[derive(Component)]
+struct HintLabel(usize);
+
+#[derive(Component)]
+struct HintKey(usize);
+
+const HINT_ROWS: usize = 14;
+
+/// The look of every piece of HUD text that sits on a background: white on black.
+pub const CHIP: Color = Color::srgba(0.0, 0.0, 0.0, 0.88);
+pub const CHIP_INK: Color = Color::WHITE;
+
+pub fn chip_pad() -> UiRect {
+    UiRect::axes(px(12), px(5))
+}
 
 /// "Power earned" in the middle of the screen, fading out (seconds left).
 #[derive(Component)]
@@ -126,6 +143,7 @@ fn pause(
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     mut time: ResMut<Time<Virtual>>,
+    menu: Res<crate::menu::Menu>,
     mut label: Single<&mut Visibility, With<PausedLabel>>,
 ) {
     if restarted.read().count() > 0 {
@@ -133,7 +151,7 @@ fn pause(
     } else if keys.any_just_pressed([KeyCode::KeyP, KeyCode::Pause]) {
         if time.is_paused() { time.unpause() } else { time.pause() }
     }
-    **label = if time.is_paused() { Visibility::Inherited } else { Visibility::Hidden };
+    **label = if time.is_paused() && !menu.open { Visibility::Inherited } else { Visibility::Hidden };
     if time.is_paused() {
         let held: Vec<KeyCode> = keys.get_pressed().copied().filter(|k| !is_function_key(*k)).collect();
         for key in held {
@@ -156,20 +174,54 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() },
         BackgroundColor(Color::NONE),
     ));
-    commands.spawn((
-        Hint,
-        Text::new(hint(&Defeated::default())),
-        TextFont { font_size: FontSize::Px(18.0), ..default() },
-        TextColor(Color::srgba(0.85, 0.82, 0.78, 0.7)),
-        Node { position_type: PositionType::Absolute, top: px(12), left: px(14), ..default() },
-    ));
+    let panel = commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            right: px(24),
+            bottom: px(24),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexEnd,
+            row_gap: px(6),
+            ..default()
+        })
+        .id();
+    for i in 0..HINT_ROWS {
+        let row = commands
+            .spawn((HintRow(i), Node { align_items: AlignItems::Center, column_gap: px(10), ..default() }, ChildOf(panel)))
+            .id();
+        // The action: white, with a black outline made of copies around it.
+        let label = commands.spawn((Node::default(), ChildOf(row))).id();
+        let font = TextFont { font_size: FontSize::Px(20.0), ..default() };
+        for (dx, dy) in [(-2.0, 0.0), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0), (-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5)] {
+            commands.spawn((
+                HintLabel(i),
+                Text::new(""),
+                font.clone(),
+                TextColor(Color::BLACK),
+                Node { position_type: PositionType::Absolute, left: px(dx), top: px(dy), ..default() },
+                ChildOf(label),
+            ));
+        }
+        commands.spawn((HintLabel(i), Text::new(""), font, TextColor(CHIP_INK), ChildOf(label)));
+        commands.spawn((
+            HintKey(i),
+            Text::new(""),
+            TextFont { font_size: FontSize::Px(18.0), ..default() },
+            TextColor(CHIP_INK),
+            BackgroundColor(CHIP),
+            Node { padding: chip_pad(), ..default() },
+            ChildOf(row),
+        ));
+    }
     commands.spawn((
         Announcement(0.0),
         Text::new(""),
         TextFont { font_size: FontSize::Px(30.0), ..default() },
         TextColor(Color::NONE),
+        BackgroundColor(Color::NONE),
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, top: percent(22), width: percent(100), ..default() },
+        Node { position_type: PositionType::Absolute, top: percent(22), left: percent(50), padding: UiRect::axes(px(20), px(8)), ..default() },
+        UiTransform { translation: Val2::percent(-50.0, 0.0), ..default() },
     ));
 
 
@@ -183,23 +235,24 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
             PausedLabel,
             Visibility::Hidden,
         ))
         .with_child((
             Text::new("PAUSED"),
             TextFont { font_size: FontSize::Px(48.0), ..default() },
-            TextColor(Color::srgb(0.88, 0.85, 0.78)),
+            TextColor(CHIP_INK),
+            BackgroundColor(CHIP),
+            Node { padding: UiRect::axes(px(28), px(10)), ..default() },
         ));
 
     // Health: one slanted red shard per hit point.
     let pips = commands
         .spawn(Node {
             position_type: PositionType::Absolute,
-            top: px(44),
-            left: px(16),
-            column_gap: px(6),
+            bottom: px(28),
+            left: px(28),
+            column_gap: px(9),
             ..default()
         })
         .id();
@@ -209,7 +262,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         let pip = commands
             .spawn((
                 Pip(i),
-                Node { width: px(16), height: px(22), ..default() },
+                Node { width: px(26), height: px(36), ..default() },
                 BackgroundColor(PIP_FULL),
                 Outline { width: px(2), offset: px(1), color: Color::NONE },
                 UiTransform { rotation: Rot2::radians(0.25), ..default() },
@@ -224,7 +277,7 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let swim = commands
         .spawn((
             SwimBar,
-            Node { position_type: PositionType::Absolute, top: px(72), left: px(16), width: px(104), height: px(6), ..default() },
+            Node { position_type: PositionType::Absolute, bottom: px(76), left: px(28), width: px(150), height: px(8), ..default() },
             BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.7)),
             Visibility::Hidden,
         ))
@@ -242,10 +295,11 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             BossBar,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: px(28),
-                left: percent(20),
-                width: percent(60),
+                top: px(22),
+                left: percent(25),
+                width: percent(50),
                 flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
                 row_gap: px(6),
                 ..default()
             },
@@ -256,13 +310,16 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         BossName,
         Text::new(""),
         TextFont { font_size: FontSize::Px(20.0), ..default() },
-        TextColor(Color::srgb(0.88, 0.85, 0.78)),
+        TextColor(CHIP_INK),
+        BackgroundColor(CHIP),
+        Node { padding: chip_pad(), ..default() },
         ChildOf(bar),
     ));
     let track = commands
         .spawn((
-            Node { width: percent(100), height: px(12), ..default() },
-            BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.85)),
+            Node { width: percent(100), height: px(14), ..default() },
+            BackgroundColor(CHIP),
+            Outline { width: px(3), offset: px(0), color: CHIP },
             ChildOf(bar),
         ))
         .id();
@@ -284,30 +341,56 @@ fn update_swim_bar(
     color.0 = Color::srgb(0.55, 0.82, 0.95).mix(&tired, ((1.0 - player.swim - 0.35) / 0.65).clamp(0.0, 1.0));
 }
 
-/// The controls: powers only once earned.
-fn hint(defeated: &Defeated) -> String {
-    let mut s = String::from("A/D: walk   Space/W: jump   Mouse: aim   F/Left click: slash   E: eat remains");
+/// The controls, as (action, key): powers only once earned.
+fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str)> {
+    let mouse = scheme == Scheme::MouseKeyboard;
+    let mut v = vec![("Move", "A D"), ("Jump", "Space")];
+    v.push(match scheme {
+        Scheme::MouseKeyboard => ("Aim", "Mouse"),
+        Scheme::Directional => ("Aim", "Last move"),
+        Scheme::Dual => ("Aim", "Arrows"),
+    });
+    v.push(("Slash", if mouse { "F / LMB" } else { "F" }));
+    v.push(("Feed", "E"));
     if defeated.dash() {
-        s.push_str("   Shift/K: dash");
+        v.push(("Dash", "Shift / K"));
     }
     if defeated.spit() {
-        s.push_str("   G/Right click: spit");
+        v.push(("Spit", if mouse { "G / RMB" } else { "G" }));
     }
     if defeated.spin() {
-        s.push_str("   Attack in the air: spin");
+        v.push(("Spin", "Slash midair"));
     }
     if defeated.climb() {
-        s.push_str("   Walls: climb (W/S), Space: leap off");
+        v.push(("Climb", "W S"));
     }
     if defeated.burrow() {
-        s.push_str("   Rubble: burrow (E)");
+        v.push(("Burrow", "E at rubble"));
     }
-    s
+    v.push(("Pause", "P"));
+    v.push(("Menu", "Esc"));
+    v
 }
 
-fn update_hint(defeated: Res<Defeated>, mut text: Single<&mut Text, With<Hint>>) {
-    if defeated.is_changed() {
-        text.0 = hint(&defeated);
+fn update_hint(
+    defeated: Res<Defeated>,
+    settings: Res<Settings>,
+    mut rows: Query<(&HintRow, &mut Node)>,
+    mut labels: Query<(&HintLabel, &mut Text), Without<HintKey>>,
+    mut keys: Query<(&HintKey, &mut Text), Without<HintLabel>>,
+) {
+    if !defeated.is_changed() && !settings.is_changed() {
+        return;
+    }
+    let list = hints(&defeated, settings.scheme);
+    for (row, mut node) in &mut rows {
+        node.display = if row.0 < list.len() { Display::Flex } else { Display::None };
+    }
+    for (label, mut text) in &mut labels {
+        text.0 = list.get(label.0).map_or("", |h| h.0).to_string();
+    }
+    for (key, mut text) in &mut keys {
+        text.0 = list.get(key.0).map_or("", |h| h.1).to_string();
     }
 }
 
@@ -316,9 +399,9 @@ fn update_hint(defeated: Res<Defeated>, mut text: Single<&mut Text, With<Hint>>)
 fn announce(
     real: Res<Time<Real>>,
     mut beaten: MessageReader<Beaten>,
-    label: Single<(&mut Announcement, &mut Text, &mut TextColor)>,
+    label: Single<(&mut Announcement, &mut Text, &mut TextColor, &mut BackgroundColor)>,
 ) {
-    let (mut a, mut text, mut color) = label.into_inner();
+    let (mut a, mut text, mut color, mut bg) = label.into_inner();
     if let Some(Beaten(kind)) = beaten.read().last() {
         text.0 = format!("EARNED: {}", kind.power());
         a.0 = ANNOUNCE_TIME;
@@ -327,7 +410,9 @@ fn announce(
         return;
     }
     a.0 = (a.0 - real.delta_secs()).max(0.0);
-    color.0 = Color::srgb(0.95, 0.90, 0.75).with_alpha((a.0 / 1.0).min(1.0));
+    let fade = (a.0 / 1.0).min(1.0);
+    color.0 = CHIP_INK.with_alpha(fade);
+    bg.0 = CHIP.with_alpha(CHIP.alpha() * fade);
 }
 
 /// A crosshair: four ticks around a gap and a dot in bone white, outlined in

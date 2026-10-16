@@ -410,21 +410,6 @@ fn spawn_backdrop(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials:
     let fog = gradient_column(60000.0, &[(-60.0, fog_top), (-320.0, thick), (-800.0, thick), (-1200.0, fog_top)]);
     layer(commands, meshes, fog, &white_blend, Vec2::ZERO, 35.0, Vec2::ONE);
 
-    // Foreground wreckage silhouettes along the bottom of the screen, moving
-    // faster than the world.
-    let fg = materials.add(Color::srgb(0.03, 0.03, 0.035));
-    let factor = Vec2::new(-0.3, 1.0);
-    let (mut x, extent) = span(factor.x);
-    while x < extent {
-        let w = rng.range(120.0, 260.0);
-        let h = rng.range(40.0, 90.0);
-        let base = Vec2::new(x, -300.0);
-        for mesh in foreground_pieces(&mut rng, seen_from(x, factor), w, h) {
-            layer(commands, meshes, mesh, &fg, base, 45.0, factor);
-        }
-        x += rng.range(500.0, 900.0);
-    }
-
     // Smoke plumes rising from fires on the near ground.
     let factor = Vec2::new(0.5, 0.8);
     let (mut x, extent) = span(factor.x);
@@ -611,122 +596,6 @@ fn rng_width(r: f32) -> f32 {
 }
 
 /// A building silhouette with a broken, jagged top. Base at y = 0.
-/// The near, blurry silhouettes at the bottom of the screen, themed to the
-/// area the camera is in: ruined floors, junk heaps, pipes, dead shrubs,
-/// bones and columns, stalagmites, sandbags.
-fn foreground_pieces(rng: &mut Rng, style: Style, w: f32, h: f32) -> Vec<Mesh> {
-    // A silhouette standing on the ground line, with a foot reaching below the screen.
-    let footed = |mut top: Vec<Vec2>| {
-        let last = top.len() - 1;
-        top[0].y = -500.0;
-        top[last].y = -500.0;
-        fill(&top, |_| 1.0)
-    };
-    // Lumpy ground: random heights along the top.
-    let heap = |rng: &mut Rng, w: f32, h: f32, lump: f32| {
-        let mut pts = vec![Vec2::new(-w / 2.0, 0.0)];
-        let mut x = -w / 2.0;
-        while x < w / 2.0 {
-            let edge = 1.0 - (x / (w / 2.0)).abs().powi(2);
-            pts.push(Vec2::new(x, h * (0.25 + 0.75 * edge) * rng.range(1.0 - lump, 1.0)));
-            x += rng.range(10.0, 26.0);
-        }
-        pts.push(Vec2::new(w / 2.0, 0.0));
-        pts
-    };
-    let mut out = Vec::new();
-    match style {
-        Style::Trash | Style::Sinkhole => {
-            out.push(footed(heap(rng, w, h, 0.6)));
-            if style == Style::Trash {
-                // A tire in the pile.
-                let (r, x) = (rng.range(22.0, 38.0), rng.range(-w / 4.0, w / 4.0));
-                let ring: Vec<Vec2> = (0..=24).map(|i| Vec2::new(x, h * 0.7) + Vec2::from_angle(i as f32 / 24.0 * std::f32::consts::TAU) * r).collect();
-                out.push(stroke(&ring, |_| r * 0.35, 1.0, 1.0, |_| 1.0));
-            } else {
-                // Roots coming through the rubble.
-                for _ in 0..3 {
-                    let x = rng.range(-w / 3.0, w / 3.0);
-                    let root = smooth_open(&[Vec2::new(x, h * 0.6), Vec2::new(x + rng.range(-30.0, 30.0), h + 40.0), Vec2::new(x + rng.range(-80.0, 80.0), h + 90.0)], 6);
-                    out.push(stroke(&root, |t| 9.0 * (1.0 - t) + 1.5, 1.0, 1.0, |_| 1.0));
-                }
-            }
-        }
-        Style::Sewer | Style::Treatment | Style::Subway => {
-            // A run of pipe along the ground with flanges, on a block.
-            let (y, r) = (rng.range(30.0, 60.0), rng.range(18.0, 30.0));
-            out.push(footed(vec![Vec2::new(-w / 2.0, 0.0), Vec2::new(-w / 2.0, y - r), Vec2::new(w / 2.0, y - r), Vec2::new(w / 2.0, 0.0)]));
-            let body = [Vec2::new(-w / 2.0, y - r), Vec2::new(w / 2.0, y - r), Vec2::new(w / 2.0, y + r), Vec2::new(-w / 2.0, y + r)];
-            out.push(fill(&body, |_| 1.0));
-            for k in [0.25, 0.75] {
-                let x = -w / 2.0 + w * k;
-                out.push(fill(&[Vec2::new(x - 7.0, y - r - 7.0), Vec2::new(x + 7.0, y - r - 7.0), Vec2::new(x + 7.0, y + r + 7.0), Vec2::new(x - 7.0, y + r + 7.0)], |_| 1.0));
-            }
-            if rng.chance(0.6) {
-                let x = rng.range(-w / 4.0, w / 4.0);
-                out.push(fill(&[Vec2::new(x - r * 0.6, y), Vec2::new(x + r * 0.6, y), Vec2::new(x + r * 0.6, y + h + 60.0), Vec2::new(x - r * 0.6, y + h + 60.0)], |_| 1.0));
-            }
-        }
-        Style::Park => {
-            out.push(footed(heap(rng, w * 0.8, h * 0.4, 0.3)));
-            // Dead shrub: bent twigs.
-            for _ in 0..4 + rng.below(3) {
-                let x = rng.range(-w / 3.0, w / 3.0);
-                let (dx, top) = (rng.range(-70.0, 70.0), rng.range(80.0, 170.0));
-                let twig = smooth_open(&[Vec2::new(x, h * 0.2), Vec2::new(x + dx * 0.3, top * 0.55), Vec2::new(x + dx, top)], 6);
-                out.push(stroke(&twig, |t| 6.0 * (1.0 - t) + 1.0, 1.0, 1.0, |_| 1.0));
-            }
-        }
-        Style::Catacombs => {
-            // A pile of rubble and a broken column.
-            out.push(footed(heap(rng, w, h * 0.7, 0.5)));
-            let (x, cw, ch) = (rng.range(-w / 4.0, w / 4.0), rng.range(26.0, 40.0), rng.range(100.0, 190.0));
-            let shaft = [Vec2::new(x - cw / 2.0, 0.0), Vec2::new(x - cw / 2.0, ch), Vec2::new(x - cw * 0.2, ch + 12.0), Vec2::new(x + cw / 2.0, ch - 24.0), Vec2::new(x + cw / 2.0, 0.0)];
-            out.push(fill(&shaft, |_| 1.0));
-            out.push(fill(&[Vec2::new(x - cw * 0.8, 0.0), Vec2::new(x - cw * 0.8, 16.0), Vec2::new(x + cw * 0.8, 16.0), Vec2::new(x + cw * 0.8, 0.0)], |_| 1.0));
-        }
-        Style::Cave => {
-            // Stalagmites on a rocky floor.
-            out.push(footed(heap(rng, w, h * 0.35, 0.4)));
-            for _ in 0..3 + rng.below(4) {
-                let (x, sw, sh) = (rng.range(-w / 2.0, w / 2.0), rng.range(24.0, 60.0), rng.range(70.0, 210.0));
-                out.push(fill(&[Vec2::new(x - sw, -20.0), Vec2::new(x - sw * 0.2, sh * 0.7), Vec2::new(x + rng.range(-8.0, 8.0), sh), Vec2::new(x + sw * 0.25, sh * 0.65), Vec2::new(x + sw, -20.0)], |_| 1.0));
-            }
-        }
-        Style::Bunker => {
-            // Stacked concrete blocks and a coil of barbed wire.
-            let mut y = 0.0;
-            let mut half = w / 2.0;
-            let mut blocks = vec![];
-            for _ in 0..2 + rng.below(2) {
-                let bh = rng.range(24.0, 44.0);
-                let off = rng.range(-12.0, 12.0);
-                blocks.push([Vec2::new(off - half, y), Vec2::new(off + half, y), Vec2::new(off + half, y + bh), Vec2::new(off - half, y + bh)]);
-                y += bh + 2.0;
-                half *= rng.range(0.6, 0.85);
-            }
-            let mut base = blocks[0].to_vec();
-            base[0].y = -500.0;
-            base[1].y = -500.0;
-            out.push(fill(&base, |_| 1.0));
-            for b in &blocks[1..] {
-                out.push(fill(b, |_| 1.0));
-            }
-            let wire: Vec<Vec2> = (0..=16).map(|i| Vec2::new(-w / 2.0 + w * i as f32 / 16.0, y + 14.0 + if i % 2 == 0 { 10.0 } else { -4.0 })).collect();
-            out.push(stroke(&wire, |_| 2.5, 1.0, 1.0, |_| 1.0));
-        }
-        Style::Concrete | Style::Mall | Style::Dam => {
-            out.push(footed(ruin_outline(rng, w, h)));
-            if rng.chance(0.6) {
-                let bx = rng.range(-w / 3.0, w / 3.0);
-                let bar = smooth_open(&[Vec2::new(bx, 60.0), Vec2::new(bx + rng.range(-20.0, 20.0), 130.0), Vec2::new(bx + rng.range(-60.0, 60.0), 160.0)], 6);
-                out.push(stroke(&bar, |t| 5.0 - 3.0 * t, 1.0, 1.0, |_| 1.0));
-            }
-        }
-    }
-    out
-}
-
 fn ruin_outline(rng: &mut Rng, w: f32, h: f32) -> Vec<Vec2> {
     let mut pts = vec![Vec2::new(-w / 2.0, 0.0), Vec2::new(-w / 2.0, h * rng.range(0.6, 1.0))];
     let mut x = -w / 2.0 + rng.range(4.0, 12.0);
@@ -903,12 +772,23 @@ fn bolt_mesh_gen(rng: &mut Rng) -> Mesh {
 }
 
 fn parallax(
-    camera: Single<&Transform, With<MainCamera>>,
+    camera: Single<(&Transform, &Projection), With<MainCamera>>,
     mut layers: Query<(&Parallax, &mut Transform), Without<MainCamera>>,
 ) {
+    let (camera, projection) = *camera;
     let cam = camera.translation.truncate();
+    // What is glued to the screen up and down (the foreground wreckage, the low fog) is laid out for
+    // the normal zoom: zoomed out (the Burrower's fight), it grows with the view so it stays at the edge.
+    let zoom = match projection {
+        Projection::Orthographic(o) => o.scale / crate::camera::ZOOM,
+        _ => 1.0,
+    };
     for (layer, mut tf) in &mut layers {
-        let p = layer.origin + cam * layer.factor;
+        let mut p = layer.origin + cam * layer.factor;
+        if layer.factor.y == 1.0 {
+            p.y = cam.y + layer.origin.y * zoom;
+            tf.scale = Vec3::splat(zoom);
+        }
         tf.translation.x = p.x;
         tf.translation.y = p.y;
     }

@@ -359,7 +359,7 @@ fn think(
     mut commands: Commands,
     mut nav: Local<Nav>,
 ) {
-    let dt = time.delta_secs().min(1.0 / 30.0);
+    let dt = time.delta_secs().min(1.0 / 30.0) * crate::boss::tempo();
     let t = time.elapsed_secs();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
@@ -597,10 +597,20 @@ fn think(
                         Some(to) => State::Dart { to, t: 0.0 },
                         None => {
                             // Nowhere to dart in a straight line: work its way closer.
+                            // The line of sight is the costly test and the search visits thousands of
+                            // cells: only cast it for a cell that could still beat the best so far.
+                            let best = std::cell::Cell::new(f32::INFINITY);
                             let found = nav.plan(&terrain, pos, None, |q, steps| {
                                 let off = q - ppos;
-                                (terrain.raycast(q, ppos).is_none() && off.y > 0.0)
-                                    .then(|| (off.length() - 240.0).abs() + steps as f32 * NAV_STEP * 0.4)
+                                if off.y <= 0.0 {
+                                    return None;
+                                }
+                                let score = (off.length() - 240.0).abs() + steps as f32 * NAV_STEP * 0.4;
+                                if score >= best.get() || terrain.raycast(q, ppos).is_some() {
+                                    return None;
+                                }
+                                best.set(score);
+                                Some(score)
                             });
                             if let Some((spot, path)) = found {
                                 d.spot = spot;

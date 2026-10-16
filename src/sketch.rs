@@ -34,6 +34,11 @@ const GRASSHOPPER_MARK: [u8; 3] = [0x8f, 0x56, 0x3b];
 /// Dull red `#ac3232`: the King Rat (would read as the player's red in the channel test).
 const RAT_MARK: [u8; 3] = [0xac, 0x32, 0x32];
 
+/// Gray `#847e87`: asks `level::loose` for a falling platform (it would read as background structure).
+const FALLING_MARK: [u8; 3] = [0x84, 0x7e, 0x87];
+/// Light steel `#9badb7`: the same hint, over open air instead of a back wall.
+const FALLING_OPEN_MARK: [u8; 3] = [0x9b, 0xad, 0xb7];
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// The reference point: world (0, 0).
@@ -53,12 +58,19 @@ pub enum MarkerKind {
     Grasshopper,
     /// Dull red `#ac3232` (`RAT_MARK`, its blood): the King Rat boss (rests on the ground).
     Rat,
+    /// Gray `#847e87` (`FALLING_MARK`): a hint to place a falling platform here
+    /// (the marked pixels themselves stay open air).
+    Falling,
 }
 
 pub struct Marker {
     pub kind: MarkerKind,
     /// Centroid in sketch pixels.
     pub at: Vec2,
+    /// Size of its bounding box in sketch pixels.
+    pub extent: Vec2,
+    /// Fitted slope of the blob (rise per run, sketch y down); 0 when it has no clear direction.
+    pub slope: f32,
 }
 
 pub struct Slice {
@@ -75,13 +87,23 @@ pub struct Sketch {
 }
 
 /// Starts a baked sketch; the rest is zlib-compressed.
-const BAKED_MAGIC: &[u8; 8] = b"CAMSKT01";
+const BAKED_MAGIC: &[u8; 8] = b"CAMSKT03";
+/// Markers with an extent but no slope.
+const BAKED_MAGIC_V2: &[u8; 8] = b"CAMSKT02";
+/// The previous format: markers without an extent.
+const BAKED_MAGIC_V1: &[u8; 8] = b"CAMSKT01";
 
 /// Reads a baked sketch, or parses an .aseprite file and classifies the
 /// composited first frame.
 pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
     if let Some(packed) = bytes.strip_prefix(BAKED_MAGIC) {
-        return unbake(packed);
+        return unbake(packed, 3);
+    }
+    if let Some(packed) = bytes.strip_prefix(BAKED_MAGIC_V2) {
+        return unbake(packed, 2);
+    }
+    if let Some(packed) = bytes.strip_prefix(BAKED_MAGIC_V1) {
+        return unbake(packed, 1);
     }
     let ase = parse(bytes)?;
     let (w, h) = (ase.size.x as usize, ase.size.y as usize);
@@ -96,6 +118,11 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
         let (max, min) = (r.max(g).max(b), r.min(g).min(b));
         // Their colors are nearly gray, so they're matched by color, not by saturation.
         let is = |mark: [u8; 3]| mark.iter().zip([r, g, b]).all(|(m, c)| (*m as i32 - c).abs() <= 2);
+        if is(FALLING_MARK) || is(FALLING_OPEN_MARK) {
+            marks[i] = Some(MarkerKind::Falling);
+            cells[i] = if is(FALLING_MARK) { Cell::Back } else { Cell::Air };
+            continue;
+        }
         if is(DRAGONFLY_MARK) {
             marks[i] = Some(MarkerKind::Dragonfly);
             continue;
@@ -142,7 +169,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
     // Markers may be drawn over the ground: under them, continue whatever surrounds them.
     for y in 0..h {
         for x in 0..w {
-            if marks[y * w + x].is_none() {
+            if marks[y * w + x].is_none() || marks[y * w + x] == Some(MarkerKind::Falling) {
                 continue;
             }
             let side = |dir: isize| {
@@ -186,6 +213,9 @@ impl Sketch {
             raw.push(m.kind as u8);
             raw.extend(m.at.x.to_bits().to_le_bytes());
             raw.extend(m.at.y.to_bits().to_le_bytes());
+            raw.extend(m.extent.x.to_bits().to_le_bytes());
+            raw.extend(m.extent.y.to_bits().to_le_bytes());
+            raw.extend(m.slope.to_bits().to_le_bytes());
         }
         raw.extend((self.slices.len() as u32).to_le_bytes());
         for s in &self.slices {
@@ -201,7 +231,7 @@ impl Sketch {
     }
 }
 
-fn unbake(packed: &[u8]) -> Result<Sketch, String> {
+fn unbake(packed: &[u8], version: u8) -> Result<Sketch, String> {
     let raw = miniz_oxide::inflate::decompress_to_vec_zlib(packed).map_err(|e| format!("bad baked sketch: {e:?}"))?;
     let mut r = Reader { data: &raw, pos: 0 };
     let size = IVec2::new(r.u32()? as i32, r.u32()? as i32);
@@ -236,10 +266,13 @@ fn unbake(packed: &[u8]) -> Result<Sketch, String> {
             7 => MarkerKind::Frog,
             8 => MarkerKind::Grasshopper,
             9 => MarkerKind::Rat,
+            10 => MarkerKind::Falling,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));
-        markers.push(Marker { kind, at });
+        let extent = if version >= 2 { Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?)) } else { Vec2::ZERO };
+        let slope = if version >= 3 { f32::from_bits(r.u32()?) } else { 0.0 };
+        markers.push(Marker { kind, at, extent, slope });
     }
     let mut slices = Vec::new();
     for _ in 0..r.u32()? {
@@ -261,9 +294,16 @@ fn find_markers(marks: &[Option<MarkerKind>], w: usize, h: usize) -> Vec<Marker>
         }
         seen[start] = true;
         let (mut sum, mut n, mut stack) = (Vec2::ZERO, 0.0, vec![start]);
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        let (mut sxx, mut sxy) = (0.0, 0.0);
         while let Some(i) = stack.pop() {
             let (x, y) = ((i % w) as i32, (i / w) as i32);
-            sum += Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let c = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            sum += c;
+            sxx += c.x * c.x;
+            sxy += c.x * c.y;
+            lo = lo.min(c - 0.5);
+            hi = hi.max(c + 0.5);
             n += 1.0;
             for dy in -1..=1 {
                 for dx in -1..=1 {
@@ -279,7 +319,10 @@ fn find_markers(marks: &[Option<MarkerKind>], w: usize, h: usize) -> Vec<Marker>
                 }
             }
         }
-        out.push(Marker { kind, at: sum / n });
+        // Least-squares line through the blob (y down), when it is spread out horizontally.
+        let var_x = sxx - sum.x * sum.x / n;
+        let slope = if var_x > 1.0 { (sxy - sum.x * sum.y / n) / var_x } else { 0.0 };
+        out.push(Marker { kind, at: sum / n, extent: hi - lo, slope });
     }
     out
 }

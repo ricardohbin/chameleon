@@ -89,6 +89,17 @@ const PERCH_RANGE: (f32, f32, f32) = (170.0, KEEP_AWAY.x + 40.0, 430.0);
 const DIVE_RANGE: (f32, f32, f32) = (150.0, 260.0, 380.0);
 /// Givet up on finding a dive lane after this long and spits again instead.
 const DIVE_PATIENCE: f32 = 3.0;
+/// Where it got hit it remembers as a hotspot: hits within this distance (world px) pile up in one.
+const HOT_MERGE: f32 = 110.0;
+/// How far a hotspot's dread reaches (world px).
+const HOT_RADIUS: f32 = 220.0;
+/// Hits a hotspot can pile up, and how many it remembers.
+const HOT_MAX: f32 = 6.0;
+const HOT_SPOTS: usize = 16;
+/// Route cost (in cells walked) of crossing the core of a one-hit hotspot.
+const HOT_ROUTE: f32 = 10.0;
+/// Score penalty for choosing a spot inside a one-hit hotspot.
+const HOT_SCORE: f32 = 220.0;
 
 const YELLOW: Color = Color::srgb(0.86, 0.68, 0.14);
 const BLACK: Color = Color::srgb(0.08, 0.07, 0.06);
@@ -138,6 +149,49 @@ struct Wasp {
     aim: f32,
     /// It has faced the chameleon off (until the lair resets it).
     introduced: bool,
+    /// Places it was hit, avoided in proportion to how often.
+    hot: Hotspots,
+}
+
+/// A place it was hit and how much: each hit adds one.
+struct Hot {
+    pos: Vec2,
+    weight: f32,
+}
+
+#[derive(Default)]
+struct Hotspots(Vec<Hot>);
+
+impl Hotspots {
+    fn add(&mut self, pos: Vec2) {
+        if let Some(h) = self.0.iter_mut().find(|h| (h.pos - pos).length() < HOT_MERGE) {
+            h.weight = (h.weight + 1.0).min(HOT_MAX);
+            h.pos = h.pos.lerp(pos, 1.0 / (h.weight + 1.0));
+            return;
+        }
+        if self.0.len() >= HOT_SPOTS {
+            // Forget the weakest.
+            if let Some(i) = (0..self.0.len()).min_by(|&a, &b| self.0[a].weight.total_cmp(&self.0[b].weight)) {
+                self.0.swap_remove(i);
+            }
+        }
+        self.0.push(Hot { pos, weight: 1.0 });
+    }
+
+    /// How much `p` is to be avoided: 0 far from any hotspot, the hits
+    /// it took there at the very core.
+    fn heat(&self, p: Vec2) -> f32 {
+        self.0.iter().map(|h| h.weight * (1.0 - (p - h.pos).length() / HOT_RADIUS).max(0.0)).sum()
+    }
+
+    /// The hottest point along the segment `a`..`b`.
+    fn heat_along(&self, a: Vec2, b: Vec2) -> f32 {
+        if self.0.is_empty() {
+            return 0.0;
+        }
+        let n = ((b - a).length() / (HOT_RADIUS * 0.25)).ceil().max(1.0) as i32;
+        (0..=n).map(|i| self.heat(a.lerp(b, i as f32 / n as f32))).fold(0.0, f32::max)
+    }
 }
 
 /// What a spot is for.
@@ -473,6 +527,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             plan: Vec2::ZERO,
             aim: 0.0,
             introduced: false,
+            hot: Hotspots::default(),
         },
     ));
     wasp
@@ -542,7 +597,7 @@ fn think(
     terrain: Res<Terrain>,
     mut nav: Local<Nav>,
 ) {
-    let dt = time.delta_secs().min(1.0 / 30.0);
+    let dt = time.delta_secs().min(1.0 / 30.0) * crate::boss::tempo();
     let t = time.elapsed_secs();
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
@@ -593,7 +648,8 @@ fn think(
             if w.replan <= 0.0 {
                 w.replan = REPLAN;
                 let keep = w.spot;
-                let plan = if want == Want::Home && clear_line(&terrain, pos, boss.home, BODY_CLEARANCE) {
+                let hot = &w.hot;
+                let plan = if want == Want::Home && clear_line(&terrain, pos, boss.home, BODY_CLEARANCE) && hot.heat_along(pos, boss.home) < 0.05 {
                     Some((boss.home, Vec::new()))
                 } else {
                     // Can't dive from anywhere near: at least find a perch; no
@@ -605,14 +661,22 @@ fn think(
                     };
                     let mut plan = None;
                     for &want in wants {
-                        plan = nav.plan(&terrain, pos, keep, |q, steps| spot_score(&terrain, want, q, steps, ppos, boss.home));
+                        plan = nav.plan_avoiding(
+                            &terrain,
+                            pos,
+                            keep,
+                            |q| hot.heat(q) * HOT_ROUTE,
+                            |q, steps| spot_score(&terrain, want, q, steps, ppos, boss.home).map(|s| s + hot.heat(q) * HOT_SCORE),
+                        );
                         if plan.is_some() {
                             break;
                         }
                     }
                     plan.or_else(|| {
                         let near = ppos + Vec2::Y * KEEP_AWAY.y;
-                        nav.plan(&terrain, pos, None, |q, steps| Some((q - near).length() + steps as f32 * NAV_STEP * 0.3))
+                        nav.plan_avoiding(&terrain, pos, None, |q| hot.heat(q) * HOT_ROUTE, |q, steps| {
+                            Some((q - near).length() + steps as f32 * NAV_STEP * 0.3 + hot.heat(q) * HOT_SCORE)
+                        })
                     })
                 };
                 match plan {
@@ -835,7 +899,11 @@ fn think(
                 // whenever a later one is in plain (roomy) sight.
                 while let Some(&next) = w.path.first() {
                     let reached = (next - pos).length() < NAV_STEP * 0.75;
-                    if reached || (w.path.len() >= 2 && clear_line(&terrain, pos, w.path[1], BODY_CLEARANCE + 2.0)) {
+                    // (but not through a hotspot the route went around)
+                    let shortcut = w.path.len() >= 2
+                        && clear_line(&terrain, pos, w.path[1], BODY_CLEARANCE + 2.0)
+                        && w.hot.heat_along(pos, w.path[1]) <= w.hot.heat(pos).max(w.hot.heat(w.path[0])).max(w.hot.heat(w.path[1])) + 0.05;
+                    if reached || shortcut {
                         w.path.remove(0);
                     } else {
                         break;
@@ -978,9 +1046,12 @@ fn spit(commands: &mut Commands, venom: &VenomAssets, from: Vec2, at: Vec2, angl
 }
 
 /// React to the slash (health and blood are handled in `boss.rs`).
-fn on_hit(mut hits: MessageReader<BossHit>, mut wasps: Query<&mut Wasp>) {
+fn on_hit(mut hits: MessageReader<BossHit>, mut wasps: Query<(&mut Wasp, &Transform)>) {
     for hit in hits.read() {
-        let Ok(mut w) = wasps.get_mut(hit.boss) else { continue };
+        let Ok((mut w, tf)) = wasps.get_mut(hit.boss) else { continue };
+        if !hit.killed {
+            w.hot.add(tf.translation.truncate());
+        }
         if hit.killed {
             // Launched high, spinning hard.
             w.vel = hit.dir * 420.0 + Vec2::Y * 560.0;
@@ -1092,6 +1163,7 @@ fn reset_on_respawn(
         w.path.clear();
         w.replan = 0.0;
         w.dive_wait = 0.0;
+        w.hot.0.clear();
     }
     for e in &venom {
         commands.entity(e).despawn();
@@ -1284,8 +1356,13 @@ pub(crate) struct Nav {
     mark: u32,
     from: Vec<u32>,
     steps: Vec<u16>,
+    /// Route cost so far (`STEP_COST` per cell, plus what the plan wants to avoid).
+    cost: Vec<u32>,
     order: Vec<u32>,
 }
+
+/// Cost of one nav step, in the fixed point of the route costs.
+const STEP_COST: u32 = 16;
 
 impl Nav {
     fn coarse(terrain: &Terrain, p: Vec2) -> IVec2 {
@@ -1309,10 +1386,23 @@ impl Nav {
         keep: Option<Vec2>,
         score: impl Fn(Vec2, u16) -> Option<f32>,
     ) -> Option<(Vec2, Vec<Vec2>)> {
+        self.plan_avoiding(terrain, from, keep, |_| 0.0, score)
+    }
+
+    /// Like `plan`, but entering a cell costs `avoid(center)` extra steps, so
+    /// routes bend around what it dislikes (a search by cost, not by distance).
+    pub(crate) fn plan_avoiding(
+        &mut self,
+        terrain: &Terrain,
+        from: Vec2,
+        keep: Option<Vec2>,
+        avoid: impl Fn(Vec2) -> f32,
+        score: impl Fn(Vec2, u16) -> Option<f32>,
+    ) -> Option<(Vec2, Vec<Vec2>)> {
         let size = (terrain.size() + NAV_CELL - 1) / NAV_CELL;
         let n = (size.x * size.y) as usize;
         if self.size != size || self.seen.len() != n {
-            *self = Nav { size, seen: vec![0; n], from: vec![0; n], steps: vec![0; n], ..default() };
+            *self = Nav { size, seen: vec![0; n], from: vec![0; n], steps: vec![0; n], cost: vec![0; n], ..default() };
         }
         self.mark = self.mark.wrapping_add(1);
         if self.mark == 0 {
@@ -1328,12 +1418,14 @@ impl Nav {
             return None;
         }
         self.order.clear();
-        let mut queue = std::collections::VecDeque::new();
+        let mut queue = std::collections::BinaryHeap::new();
+        let extra = |c: IVec2| (avoid(Self::center(terrain, c)).max(0.0) * STEP_COST as f32) as u32;
         let t = index(start);
         self.seen[t] = self.mark;
         self.from[t] = t as u32;
         self.steps[t] = 0;
-        queue.push_back(start);
+        self.cost[t] = 0;
+        queue.push(std::cmp::Reverse((0u32, t as u32)));
         // Hugging a wall (its own cell too tight): start from the open cells around it.
         for dy in -2..=2 {
             for dx in -2..=2 {
@@ -1343,19 +1435,24 @@ impl Nav {
                     self.seen[i] = self.mark;
                     self.from[i] = t as u32;
                     self.steps[i] = 1;
-                    queue.push_back(c);
+                    self.cost[i] = STEP_COST + extra(c);
+                    queue.push(std::cmp::Reverse((self.cost[i], i as u32)));
                 }
             }
         }
-        while let Some(c) = queue.pop_front() {
-            let i = index(c);
+        while let Some(std::cmp::Reverse((cost, i))) = queue.pop() {
+            let i = i as usize;
+            if cost > self.cost[i] {
+                continue; // a stale entry: reached cheaper since
+            }
+            let c = cell(i);
             self.order.push(i as u32);
             if self.steps[i] >= NAV_RANGE {
                 continue;
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let nc = c + IVec2::new(dx, dy);
-                if !inside(nc) || self.seen[index(nc)] == self.mark || !Self::open(terrain, nc) {
+                if !inside(nc) || !Self::open(terrain, nc) {
                     continue;
                 }
                 // No cutting corners diagonally.
@@ -1363,10 +1460,15 @@ impl Nav {
                     continue;
                 }
                 let j = index(nc);
+                let next = self.cost[i] + STEP_COST + extra(nc);
+                if self.seen[j] == self.mark && next >= self.cost[j] {
+                    continue;
+                }
                 self.seen[j] = self.mark;
                 self.from[j] = i as u32;
                 self.steps[j] = self.steps[i] + 1;
-                queue.push_back(nc);
+                self.cost[j] = next;
+                queue.push(std::cmp::Reverse((next, j as u32)));
             }
         }
 

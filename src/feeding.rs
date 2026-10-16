@@ -11,6 +11,7 @@ use bevy::prelude::*;
 
 use crate::{
     boss::Boss,
+    save::AutoSave,
     camera::{HitStop, MainCamera, Shake},
     chameleon::{self, ChameleonAnim},
     gore::{Bleed, Fluid, Paint},
@@ -26,8 +27,8 @@ const REACH_SLACK: f32 = 10.0;
 const DEVOUR_TIME: f32 = 0.3;
 /// The eating tip shows over remains this close to the chameleon (world units).
 const TIP_RANGE: f32 = 260.0;
-/// The tip floats this far above the remains (world units).
-const TIP_LIFT: f32 = 34.0;
+/// The tip floats this far below the remains (world units).
+const TIP_DROP: f32 = 34.0;
 
 pub struct FeedingPlugin;
 
@@ -43,6 +44,16 @@ impl Plugin for FeedingPlugin {
 /// A mob corpse being eaten: shrinks away, then is gone.
 #[derive(Component)]
 struct Devoured(f32);
+
+/// A bite of food lying around (a leg knocked off a boss).
+#[derive(Component)]
+pub struct Morsel {
+    pub food: f32,
+    pub fluid: Fluid,
+}
+
+/// How big a morsel counts as, for reaching it.
+const MORSEL_R: f32 = 40.0;
 
 /// A boss carcass that was already eaten.
 #[derive(Component)]
@@ -72,8 +83,14 @@ fn meals(
     from: Vec2,
     mobs: &Query<(Entity, &Mob, &Transform), Without<Devoured>>,
     bosses: &Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
+    morsels: &Query<(Entity, &Morsel, &Transform), Without<Devoured>>,
 ) -> Vec<(Meal, f32)> {
     let mut found = Vec::new();
+    for (entity, m, tf) in morsels {
+        if p.hunger() > 0.0 {
+            found.push((Meal { entity, pos: tf.translation.truncate(), food: m.food, fluid: m.fluid, boss: false }, MORSEL_R));
+        }
+    }
     for (entity, m, tf) in mobs {
         if matches!(m.state, State::Dead { .. }) && m.food() > 0.0 && p.hunger() > 0.0 {
             let pos = tf.translation.truncate();
@@ -98,9 +115,11 @@ fn feed(
     mut bleed: MessageWriter<Bleed>,
     mut paint: MessageWriter<Paint>,
     mut sfx: MessageWriter<Sfx>,
+    mut autosave: MessageWriter<AutoSave>,
     player: Single<(&mut Player, &Transform, &mut ChameleonAnim)>,
     mobs: Query<(Entity, &Mob, &Transform), Without<Devoured>>,
     bosses: Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
+    morsels: Query<(Entity, &Morsel, &Transform), Without<Devoured>>,
 ) {
     let (mut p, ptf, mut anim) = player.into_inner();
     if !anim.wants_to_eat() {
@@ -109,7 +128,7 @@ fn feed(
     let ppos = ptf.translation.truncate();
     // Within slash reach of the shoulder, on either side: the head finds it.
     let center = chameleon::slash_center(ppos, p.facing);
-    let Some((meal, _)) = meals(&p, center, &mobs, &bosses)
+    let Some((meal, _)) = meals(&p, center, &mobs, &bosses, &morsels)
         .into_iter()
         .find(|(m, radius)| m.pos.distance(center) < chameleon::SLASH_REACH + radius + REACH_SLACK)
     else {
@@ -122,6 +141,7 @@ fn feed(
     if meal.boss {
         p.max_hp += 1;
         commands.entity(meal.entity).insert(PickedClean);
+        autosave.write(AutoSave);
     }
     p.feed(meal.food);
     if !meal.boss {
@@ -186,16 +206,17 @@ fn devour(mut commands: Commands, time: Res<Time>, mut corpses: Query<(Entity, &
 fn spawn_tip(mut commands: Commands) {
     commands.spawn((
         Tip,
-        Text::new("E: eat"),
-        TextFont { font_size: FontSize::Px(18.0), ..default() },
+        Text::new("E  Feed"),
+        TextFont { font_size: FontSize::Px(20.0), ..default() },
         TextColor(Color::NONE),
+        BackgroundColor(Color::NONE),
         TextLayout::justify(Justify::Center),
-        Node { position_type: PositionType::Absolute, ..default() },
+        Node { position_type: PositionType::Absolute, padding: crate::hud::chip_pad(), ..default() },
         Visibility::Hidden,
     ));
 }
 
-/// Until the first meal: the tip floats over the nearest remains in range,
+/// Until the first meal: the tip floats under the nearest remains in range,
 /// fading in, brighter once they're in reach.
 fn show_tip(
     time: Res<Time<Real>>,
@@ -204,20 +225,21 @@ fn show_tip(
     player: Single<(&Player, &Transform)>,
     mobs: Query<(Entity, &Mob, &Transform), Without<Devoured>>,
     bosses: Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
-    tip: Single<(&mut Node, &mut TextColor, &mut Visibility, &ComputedNode), With<Tip>>,
+    morsels: Query<(Entity, &Morsel, &Transform), Without<Devoured>>,
+    tip: Single<(&mut Node, &mut TextColor, &mut BackgroundColor, &mut Visibility, &ComputedNode), With<Tip>>,
 ) {
-    let (mut node, mut color, mut vis, computed) = tip.into_inner();
+    let (mut node, mut color, mut bg, mut vis, computed) = tip.into_inner();
     let (p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
     let center = chameleon::slash_center(ppos, p.facing);
     let target = (!learned.0 && p.dead.is_none())
-        .then(|| meals(p, ppos, &mobs, &bosses).into_iter().next())
+        .then(|| meals(p, ppos, &mobs, &bosses, &morsels).into_iter().next())
         .flatten()
         .filter(|(m, _)| m.pos.distance(ppos) < TIP_RANGE);
     let at = target.as_ref().and_then(|(m, radius)| {
         let reach = m.pos.distance(center) < chameleon::SLASH_REACH + radius + REACH_SLACK;
-        let above = m.pos + Vec2::Y * (radius + TIP_LIFT);
-        camera.0.world_to_viewport(camera.1, above.extend(0.0)).ok().map(|v| (v, reach))
+        let below = m.pos - Vec2::Y * (radius + TIP_DROP);
+        camera.0.world_to_viewport(camera.1, below.extend(0.0)).ok().map(|v| (v, reach))
     });
 
     let alpha = color.0.alpha();
@@ -232,6 +254,7 @@ fn show_tip(
         node.left = px(v.x - size.x * 0.5);
         node.top = px(v.y - size.y * 0.5);
     }
-    color.0 = Color::srgb(0.95, 0.90, 0.75).with_alpha(alpha);
+    color.0 = crate::hud::CHIP_INK.with_alpha(alpha);
+    bg.0 = crate::hud::CHIP.with_alpha(crate::hud::CHIP.alpha() * alpha);
     *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
 }

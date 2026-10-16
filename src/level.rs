@@ -96,6 +96,10 @@ pub struct WorldReloaded {
 #[derive(Message)]
 pub struct Restart;
 
+/// The menu's "Start new": the same as F8.
+#[derive(Message)]
+pub struct NewGame;
+
 pub struct LevelPlugin;
 
 impl Plugin for LevelPlugin {
@@ -112,6 +116,7 @@ impl Plugin for LevelPlugin {
                 (terrain_art::finish_tiles, terrain_props::place_props, (terrain_art::adjust_contrast, terrain_art::apply_contrast).chain()),
             )
             .add_message::<Restart>()
+            .add_message::<NewGame>()
             .add_systems(Startup, spawn_level)
             .add_systems(PreUpdate, restart.after(bevy::input::InputSystems));
         #[cfg(debug_assertions)]
@@ -209,7 +214,11 @@ fn build(
 ) {
     terrain_art::spawn(commands, images, terrain, focus);
     terrain_props::spawn(commands, materials, terrain);
+    build_pieces(commands, meshes, materials, terrain);
+}
 
+/// The moving and breaking pieces: the part of the level a restart rebuilds.
+fn build_pieces(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
     let mats = Mats {
         concrete_dark: materials.add(scale_color(CONCRETE, 0.6)),
         rust: materials.add(RUST),
@@ -300,33 +309,32 @@ fn hot_reload(
     info!("world sketch reloaded{}", if bosses_moved { " (bosses moved: fight restarts)" } else { "" });
 }
 
-/// F8: start over. Reads the sketch again (debug builds: from disk, so a stale
-/// level is picked up even without a save), rebuilds the world and tells
-/// everyone to reset (`Restart`).
+/// F8, a new game, a loaded save: start over. The sketch is the same as the one
+/// the world was built from (a changed sketch is `hot_reload`'s job), so the painted
+/// ground and the props stay; only the moving pieces are rebuilt, then everyone
+/// is told to reset (`Restart`).
 pub fn restart(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    parts: Query<Entity, With<TerrainPart>>,
+    parts: Query<Entity, (With<TerrainPart>, Without<terrain_art::WorldArt>)>,
+    terrain: Res<Terrain>,
     mut reloaded: MessageWriter<WorldReloaded>,
     mut restarted: MessageWriter<Restart>,
     mut loads: MessageReader<crate::save::LoadGame>,
+    mut new_games: MessageReader<NewGame>,
 ) {
     // F9 (a loaded game) starts over too; `save.rs` then puts the saved state back.
-    let loaded_at = loads.read().last().map(|l| l.at);
-    if !keys.just_pressed(KeyCode::F8) && loaded_at.is_none() {
+    let loaded = loads.read().count() > 0;
+    let new_game = new_games.read().count() > 0;
+    if !keys.just_pressed(KeyCode::F8) && !new_game && !loaded {
         return;
     }
-    match load() {
-        // The chameleon starts over at the spawn, or where the save puts it.
-        Ok(terrain) => {
-            let focus = loaded_at.unwrap_or(terrain.spawn);
-            replace_world(&mut commands, &mut meshes, &mut materials, &mut images, &parts, terrain, focus)
-        }
-        Err(e) => warn!("world sketch: {e} (restarting on the current one)"),
+    for e in &parts {
+        commands.entity(e).try_despawn();
     }
+    build_pieces(&mut commands, &mut meshes, &mut materials, &terrain);
     reloaded.write(WorldReloaded { bosses_moved: true });
     restarted.write(Restart);
     info!("restart");

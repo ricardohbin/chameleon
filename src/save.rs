@@ -1,8 +1,11 @@
-//! Quick save (F5) / quick load (F9).
+//! Quick save (F5) / quick load (F9), and the auto save.
 //!
-//! One slot, a small text file next to the executable with the same name and
-//! a `.save` extension (`ghore.exe` → `ghore.save`; a `target/*/deps/`
-//! test build shares the file of the normal one). It holds the progress that
+//! Two slots, small text files next to the executable with the same name and
+//! a `.save` (quick) or `.autosave` extension (`ghore.exe` → `ghore.save`; a
+//! `target/*/deps/` test build shares the files of the normal one). The auto
+//! save is written when a boss fight starts, when the boss dies and when its
+//! carcass is eaten (`AutoSave`). When the chameleon dies, the most recent of
+//! the two is loaded by itself. A save holds the progress that
 //! matters: where the chameleon is and how it is (health, max health, shadow
 //! health, facing, speed) and which bosses are dead (their colors and the
 //! skin come from that, and the powers they gave). Everything else resets the way it does when the
@@ -28,22 +31,50 @@ pub struct SavePlugin;
 
 impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Pending>()
+        // Start from the newest save: the world is built around it, and `apply_load` finishes the job.
+        // With the menu up the player chooses ("Load last checkpoint"); scripted runs still start from it.
+        let snapshot = newest_save().filter(|_| !crate::settings::menu_at_start()).and_then(|path| {
+            let loaded = fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| Snapshot::parse(&t));
+            match loaded {
+                Ok(s) => {
+                    info!("startup load: {}", path.display());
+                    Some(s)
+                }
+                Err(e) => {
+                    warn!("startup load: {}: {e}", path.display());
+                    None
+                }
+            }
+        });
+        app.insert_resource(Pending { snapshot, wait: 1 })
             .add_message::<LoadGame>()
+            .add_message::<LoadLast>()
+            .add_message::<AutoSave>()
+            .add_message::<LoadOnDeath>()
             .add_systems(
                 PreUpdate,
-                (quick_save, request_load).after(bevy::input::InputSystems).before(level::restart),
+                (quick_save, auto_save, request_load, request_load_last, load_on_death).after(bevy::input::InputSystems).before(level::restart),
             )
             .add_systems(Update, apply_load);
     }
 }
 
-/// F9 found a save: `level::restart` rebuilds the world (like F8), around
-/// where the chameleon was saved (`at`) so the ground there shows at once.
+/// A save was read: `level::restart` resets the world (like F8) and `apply_load` puts the saved state back.
 #[derive(Message)]
-pub struct LoadGame {
-    pub at: Vec2,
-}
+pub struct LoadGame;
+
+/// The menu asks for the most recent save, quick or auto.
+#[derive(Message)]
+pub struct LoadLast;
+
+/// Something worth saving happened (a boss fight began, a boss died, a boss was eaten).
+#[derive(Message)]
+pub struct AutoSave;
+
+/// The chameleon has lain dead long enough and there is a save: load it
+/// instead of respawning at the spawn point.
+#[derive(Message)]
+pub struct LoadOnDeath;
 
 struct Snapshot {
     pos: Vec2,
@@ -60,22 +91,30 @@ struct Snapshot {
 /// A loaded snapshot waiting for the rebuilt world (bosses and the new chameleon
 /// exist from the frame after the restart).
 #[derive(Resource, Default)]
-struct Pending {
+pub struct Pending {
     snapshot: Option<Snapshot>,
     wait: u8,
 }
 
-/// Next to the executable, same name, `.save`. Test builds in `deps/` (named
+impl Pending {
+    /// Where the chameleon will stand once the load is done, so the rebuilt
+    /// world starts it (and the camera) there rather than at the spawn point.
+    pub fn at(&self) -> Option<Vec2> {
+        self.snapshot.as_ref().map(|s| s.pos)
+    }
+}
+
+/// Next to the executable, same name, `.save` or `.autosave`. Test builds in `deps/` (named
 /// `ghore-<hash>.exe`) use the file of the build in the folder above.
-fn save_path() -> Option<PathBuf> {
+pub(crate) fn save_path(ext: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     if dir.file_name().is_some_and(|n| n == "deps") {
         let stem = exe.file_stem()?.to_str()?;
         let name = stem.rsplit_once('-').map_or(stem, |(name, _hash)| name);
-        return Some(dir.parent()?.join(name).with_extension("save"));
+        return Some(dir.parent()?.join(name).with_extension(ext));
     }
-    Some(exe.with_extension("save"))
+    Some(exe.with_extension(ext))
 }
 
 fn kind_name(kind: BossKind) -> String {
@@ -145,67 +184,125 @@ impl Snapshot {
     }
 }
 
-/// F5: write the current game down.
-fn quick_save(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut flash: ResMut<ScreenFlash>,
-    defeated: Res<Defeated>,
-    player: Single<(&Player, &Transform)>,
-) {
-    if !keys.just_pressed(KeyCode::F5) {
-        return;
-    }
-    let (p, tf) = *player;
-    if p.dead.is_some() {
-        warn!("quick save: not while dead");
-        return;
-    }
-    let Some(path) = save_path() else {
-        warn!("quick save: can't tell where the executable is");
-        return;
-    };
-    // In kill order: colors are earned in it, and the last one is the skin.
-    let snapshot = Snapshot {
-        pos: tf.translation.truncate(),
-        vel: p.vel,
-        facing: p.facing,
-        hp: p.hp,
-        max_hp: p.max_hp,
-        shadow: p.shadow,
-        digest: p.digest,
-        dead: defeated.0.clone(),
-    };
-    // Write beside it and rename, so a crash can't leave half a save.
-    let tmp = path.with_extension("save.tmp");
-    match fs::write(&tmp, snapshot.to_text()).and_then(|_| fs::rename(&tmp, &path)) {
-        Ok(()) => {
-            info!("quick save: {}", path.display());
-            flash.flash(Color::WHITE, 0.18);
+impl Snapshot {
+    fn capture(p: &Player, tf: &Transform, defeated: &Defeated) -> Snapshot {
+        // In kill order: colors are earned in it, and the last one is the skin.
+        Snapshot {
+            pos: tf.translation.truncate(),
+            vel: p.vel,
+            facing: p.facing,
+            hp: p.hp,
+            max_hp: p.max_hp,
+            shadow: p.shadow,
+            digest: p.digest,
+            dead: defeated.0.clone(),
         }
-        Err(e) => warn!("quick save: {}: {e}", path.display()),
     }
 }
 
-/// F9: read the save and start the rebuild (`apply_load` finishes it).
-fn request_load(keys: Res<ButtonInput<KeyCode>>, mut pending: ResMut<Pending>, mut load: MessageWriter<LoadGame>) {
-    if !keys.just_pressed(KeyCode::F9) {
-        return;
+/// Writes the current game down in the slot with this extension.
+fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &Defeated) -> bool {
+    let (p, tf) = player;
+    if p.dead.is_some() {
+        warn!("{what}: not while dead");
+        return false;
     }
-    let Some(path) = save_path() else {
-        warn!("quick load: can't tell where the executable is");
-        return;
+    let Some(path) = save_path(ext) else {
+        warn!("{what}: can't tell where the executable is");
+        return false;
     };
-    let snapshot = match fs::read_to_string(&path) {
+    let snapshot = Snapshot::capture(p, tf, defeated);
+    // Write beside it and rename, so a crash can't leave half a save.
+    let tmp = path.with_extension(format!("{ext}.tmp"));
+    match fs::write(&tmp, snapshot.to_text()).and_then(|_| fs::rename(&tmp, &path)) {
+        Ok(()) => {
+            info!("{what}: {}", path.display());
+            true
+        }
+        Err(e) => {
+            warn!("{what}: {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// F5: write the current game down.
+fn quick_save(keys: Res<ButtonInput<KeyCode>>, mut flash: ResMut<ScreenFlash>, pending: Res<Pending>, defeated: Res<Defeated>, player: Single<(&Player, &Transform)>) {
+    if keys.just_pressed(KeyCode::F5) && pending.snapshot.is_none() && write_save("save", "quick save", *player, &defeated) {
+        flash.flash(Color::WHITE, 0.18);
+    }
+}
+
+/// A boss fight began, or a boss died or was eaten: the one auto save.
+fn auto_save(mut events: MessageReader<AutoSave>, pending: Res<Pending>, defeated: Res<Defeated>, player: Single<(&Player, &Transform)>) {
+    // A load is rebuilding the world: `Defeated` and the player are blank until `apply_load`
+    // puts the save back, and a boss waking meanwhile (the save is at its lair) would overwrite
+    // the save with that blank state.
+    if events.read().count() > 0 && pending.snapshot.is_none() {
+        write_save("autosave", "auto save", *player, &defeated);
+    }
+}
+
+/// Reads a save and starts the rebuild (`apply_load` finishes it).
+fn start_load(path: &PathBuf, what: &str, pending: &mut Pending, load: &mut MessageWriter<LoadGame>) {
+    let snapshot = match fs::read_to_string(path) {
         Ok(text) => Snapshot::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) => Err(format!("{}: {e}", path.display())),
     };
     match snapshot {
         Ok(snapshot) => {
-            info!("quick load: {}", path.display());
-            load.write(LoadGame { at: snapshot.pos });
+            info!("{what}: {}", path.display());
+            load.write(LoadGame);
             *pending = Pending { snapshot: Some(snapshot), wait: 1 };
         }
-        Err(e) => warn!("quick load: {e}"),
+        Err(e) => warn!("{what}: {e}"),
+    }
+}
+
+/// F9: load the quick save.
+fn request_load(keys: Res<ButtonInput<KeyCode>>, mut pending: ResMut<Pending>, mut load: MessageWriter<LoadGame>) {
+    if !keys.just_pressed(KeyCode::F9) {
+        return;
+    }
+    let Some(path) = save_path("save") else {
+        warn!("quick load: can't tell where the executable is");
+        return;
+    };
+    start_load(&path, "quick load", &mut pending, &mut load);
+}
+
+/// Menu: "Load last checkpoint".
+fn request_load_last(mut asked: MessageReader<LoadLast>, mut pending: ResMut<Pending>, mut load: MessageWriter<LoadGame>) {
+    if asked.read().count() == 0 {
+        return;
+    }
+    match newest_save() {
+        Some(path) => start_load(&path, "load last checkpoint", &mut pending, &mut load),
+        None => warn!("load last checkpoint: no save"),
+    }
+}
+
+/// The most recent save, quick or auto (by file time).
+fn newest_save() -> Option<PathBuf> {
+    ["save", "autosave"]
+        .into_iter()
+        .filter_map(save_path)
+        .filter_map(|path| Some((fs::metadata(&path).and_then(|m| m.modified()).ok()?, path)))
+        .max_by_key(|(time, _)| *time)
+        .map(|(_, path)| path)
+}
+
+pub fn has_save() -> bool {
+    newest_save().is_some()
+}
+
+/// Dead for long enough: go back to the most recent save.
+fn load_on_death(mut dying: MessageReader<LoadOnDeath>, mut pending: ResMut<Pending>, mut load: MessageWriter<LoadGame>) {
+    if dying.read().count() == 0 || pending.snapshot.is_some() {
+        return;
+    }
+    if let Some(path) = newest_save() {
+        start_load(&path, "load on death", &mut pending, &mut load);
     }
 }
 

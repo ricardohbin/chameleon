@@ -957,7 +957,7 @@ pub(super) fn hatch(
         }
     }
     for (e, mut m, tf) in &mut mobs {
-        if m.kind != MobKind::Broodcoil || matches!(m.state, State::Dead { .. }) || m.notice != Notice::Aware {
+        if m.kind != MobKind::Broodcoil || m.buried.is_some() || matches!(m.state, State::Dead { .. }) || m.notice != Notice::Aware {
             continue;
         }
         let pos = tf.translation.truncate();

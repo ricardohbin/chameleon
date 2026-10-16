@@ -618,11 +618,18 @@ fn simulate(time: Res<Time>, mut waters: ResMut<Waters>, mut left: Local<f32>) {
 fn animate_surface(
     time: Res<Time>,
     waters: Res<Waters>,
-    camera: Single<&Transform, With<MainCamera>>,
+    camera: Single<(&Transform, &Projection), With<MainCamera>>,
     surfaces: Query<&Surface>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let (lo, hi) = (camera.translation.x - 1500.0, camera.translation.x + 1500.0);
+    // Wide enough for the zoomed-out views (a boss fight pulls the camera back).
+    let (tf, projection) = *camera;
+    let zoom = match projection {
+        Projection::Orthographic(o) => (o.scale / camera::ZOOM).max(1.0),
+        _ => 1.0,
+    };
+    let reach = 1500.0 * zoom;
+    let (lo, hi) = (tf.translation.x - reach, tf.translation.x + reach);
     for s in &surfaces {
         let Some(pool) = waters.pools.get(s.pool) else { continue };
         if let Some(mut mesh) = meshes.get_mut(&s.mesh) {
