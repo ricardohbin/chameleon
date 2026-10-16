@@ -25,6 +25,8 @@ pub enum Cell {
 /// The sketch colors (RGB, ±2) that mark the dragonfly and spider bosses.
 const DRAGONFLY_MARK: [u8; 3] = [0xd1, 0xb0, 0xc6];
 const SPIDER_MARK: [u8; 3] = [0x81, 0xa6, 0xf3];
+/// Purple `#a200a2`: the centipede (magenta-ish, so it must be matched before the channel test).
+const CENTIPEDE_MARK: [u8; 3] = [0xa2, 0x00, 0xa2];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
@@ -37,6 +39,8 @@ pub enum MarkerKind {
     Dragonfly,
     /// Dusty blue `#7f9fd6` (`SPIDER_MARK`, the spider's own color): the spider boss.
     Spider,
+    /// Purple `#a200a2` (`CENTIPEDE_MARK`, the centipede's own color): the centipede boss.
+    Centipede,
 }
 
 pub struct Marker {
@@ -82,6 +86,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
         let is = |mark: [u8; 3]| mark.iter().zip([r, g, b]).all(|(m, c)| (*m as i32 - c).abs() <= 2);
         if is(DRAGONFLY_MARK) {
             marks[i] = Some(MarkerKind::Dragonfly);
+            continue;
+        }
+        if is(CENTIPEDE_MARK) {
+            marks[i] = Some(MarkerKind::Centipede);
             continue;
         }
         if is(SPIDER_MARK) {
@@ -200,6 +208,7 @@ fn unbake(packed: &[u8]) -> Result<Sketch, String> {
             3 => MarkerKind::Wasp,
             4 => MarkerKind::Dragonfly,
             5 => MarkerKind::Spider,
+            6 => MarkerKind::Centipede,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

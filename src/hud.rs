@@ -292,6 +292,9 @@ fn hint(defeated: &Defeated) -> String {
     if defeated.climb() {
         s.push_str("   Walls: climb (W/S), Space: leap off");
     }
+    if defeated.burrow() {
+        s.push_str("   Rubble: burrow (E)");
+    }
     s
 }
 

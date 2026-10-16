@@ -110,6 +110,8 @@ pub struct Feature {
     pub crumbles: bool,
     /// "track" / "rail" / "electrif": a live third rail runs along the floor (`electric.rs`).
     pub electrified: bool,
+    /// "rubble": loose rock the chameleon can burrow through (`burrow.rs`).
+    pub rubble: bool,
 }
 
 /// Cloned to paint the art and place props on other threads.
@@ -131,6 +133,7 @@ pub struct Terrain {
     pub wasp: Option<Vec2>,
     pub dragonfly: Option<Vec2>,
     pub spider: Option<Vec2>,
+    pub centipede: Option<Vec2>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -184,6 +187,7 @@ impl Terrain {
             wasp: None,
             dragonfly: None,
             spider: None,
+            centipede: None,
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -196,6 +200,7 @@ impl Terrain {
         t.wasp = marker(MarkerKind::Wasp).map(to_world);
         t.dragonfly = marker(MarkerKind::Dragonfly).map(to_world);
         t.spider = marker(MarkerKind::Spider).map(to_world);
+        t.centipede = marker(MarkerKind::Centipede).map(to_world);
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();
@@ -203,7 +208,8 @@ impl Terrain {
             if n.trim_start().starts_with("feature:") {
                 let crumbles = n.contains("fall apart") || n.contains("falls apart") || n.contains("crumbl");
                 let electrified = n.contains("track") || n.contains("rail") || n.contains("electrif");
-                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified });
+                let rubble = n.contains("rubble");
+                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified, rubble });
             } else {
                 t.areas.push(Area { style: Style::from_name(&s.name), name: s.name, rect, slide });
             }

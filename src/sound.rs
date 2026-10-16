@@ -120,7 +120,7 @@ fn voices(
         }
         *left = rng.range(VOICE_GAP.0, VOICE_GAP.1);
         let clip = match lair.kind {
-            BossKind::Roach => &clips.gutter,
+            BossKind::Roach | BossKind::Centipede => &clips.gutter,
             BossKind::Wasp => &clips.wasp,
             BossKind::Dragonfly => &clips.dragonfly,
             BossKind::Spider => &clips.spider,

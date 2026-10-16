@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use crate::{
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    dragonfly, spider,
+    centipede, dragonfly, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -66,7 +66,7 @@ impl Plugin for BossPlugin {
 
 /// The bosses beaten so far, in order. Each one gives a power for good: the
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
-/// air spin, the spider walking on walls. F8 forgets them.
+/// air spin, the spider walking on walls, the centipede burrowing through rubble. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -92,6 +92,11 @@ impl Defeated {
         self.0.contains(&BossKind::Dragonfly)
     }
 
+    /// E at a rubble feature: burrow through it.
+    pub fn burrow(&self) -> bool {
+        self.0.contains(&BossKind::Centipede)
+    }
+
     /// Pushing into a wall: walking on it.
     pub fn climb(&self) -> bool {
         self.0.contains(&BossKind::Spider)
@@ -110,6 +115,7 @@ impl BossKind {
             BossKind::Wasp => "VENOM SPIT  (Right click / G)",
             BossKind::Dragonfly => "AIR SPIN  (attack in the air)",
             BossKind::Spider => "WALL WALK  (push into a wall, W / S)",
+            BossKind::Centipede => "BURROW  (aim into rubble, E)",
         }
     }
 }
@@ -126,10 +132,11 @@ pub enum BossKind {
     Roach,
     Dragonfly,
     Spider,
+    Centipede,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 4] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider];
+    pub const ALL: [BossKind; 5] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -138,6 +145,7 @@ impl BossKind {
             BossKind::Wasp => terrain.wasp,
             BossKind::Dragonfly => terrain.dragonfly,
             BossKind::Spider => terrain.spider,
+            BossKind::Centipede => terrain.centipede,
         }
     }
 
@@ -145,16 +153,10 @@ impl BossKind {
     fn spawn(self, commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
         let Some(marker) = self.marker(terrain) else { return };
         let arena = Arena::find(self, terrain);
-        let e = match self {
-            BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
-            BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
-            BossKind::Dragonfly => dragonfly::spawn(commands, meshes, materials, &arena),
-            BossKind::Spider => spider::spawn(commands, meshes, materials, &arena, terrain),
-        };
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
-        let arena_rect = match self {
+        let mut arena_rect = match self {
             BossKind::Roach => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
-            BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider => chamber(terrain, marker, 70),
+            BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
         let region = terrain
@@ -164,6 +166,17 @@ impl BossKind {
             .min_by(|a, b| a.rect.size().element_product().total_cmp(&b.rect.size().element_product()))
             .map_or(Rect::from_center_half_size(marker, Vec2::new(1000.0, 700.0)), |a| a.rect)
             .union(arena_rect);
+        // The centipede's domain is the whole cave system: it wakes as soon as you set foot in it.
+        if self == BossKind::Centipede {
+            arena_rect = region;
+        }
+        let e = match self {
+            BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
+            BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
+            BossKind::Dragonfly => dragonfly::spawn(commands, meshes, materials, &arena),
+            BossKind::Spider => spider::spawn(commands, meshes, materials, &arena, terrain),
+            BossKind::Centipede => centipede::spawn(commands, meshes, materials, &arena, terrain, region),
+        };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
         commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect }, Sense::default()));
     }
@@ -171,7 +184,7 @@ impl BossKind {
 
 /// The open space around `at` (flood fill through non-solid cells, at most
 /// `radius` sketch pixels away), as a rectangle.
-fn chamber(terrain: &Terrain, at: Vec2, radius: i32) -> Rect {
+pub(crate) fn chamber(terrain: &Terrain, at: Vec2, radius: i32) -> Rect {
     let start = terrain.to_cell(at);
     let (mut lo, mut hi) = (start, start);
     let mut seen = std::collections::HashSet::from([start]);
@@ -234,6 +247,7 @@ impl Arena {
             BossKind::Wasp => terrain.wasp.unwrap_or(fallback + Vec2::Y * 230.0),
             BossKind::Dragonfly => terrain.dragonfly.unwrap_or(fallback + Vec2::Y * 230.0),
             BossKind::Spider => terrain.spider.unwrap_or(fallback + Vec2::Y * 230.0),
+            BossKind::Centipede => terrain.centipede.unwrap_or(fallback + Vec2::Y * 230.0),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.
@@ -487,7 +501,7 @@ fn visit_next_boss(
     }
 }
 
-fn slash_bosses(
+pub(crate) fn slash_bosses(
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
     mut punch: ResMut<ZoomPunch>,

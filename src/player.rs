@@ -146,6 +146,9 @@ pub struct Player {
     pub slipping: f32,
     /// On a wall (wall walking): which side it is on (-1 left, 1 right).
     pub climbing: Option<f32>,
+    /// Burrowing through rubble (`burrow.rs`): a dig in progress, and the way through that `E` would take now.
+    pub burrow: Option<crate::burrow::Burrow>,
+    pub burrow_target: Option<crate::burrow::Path>,
     climb_lock: f32,
     /// Seconds left of the current dash.
     pub dash: f32,
@@ -363,6 +366,11 @@ pub fn move_player(
         .aim_at
         .map_or(Vec2::ZERO, |at| at - neck)
         .normalize_or(Vec2::new(p.facing, 0.0));
+
+    // Underground: `burrow.rs` moves it.
+    if p.burrow.is_some() {
+        return;
+    }
 
     if keys.just_pressed(KeyCode::F4) {
         p.flying = !p.flying;

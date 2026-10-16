@@ -601,7 +601,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -617,7 +617,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
                     a.floor + 600.0,
                 ))],
                 // Her home and the whole chamber she fights in.
-                BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider => vec![
+                BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => vec![
                     Zone::Circle(a.home, WASP_CLEAR),
                     Zone::Rect(Rect::new(a.left - 400.0, a.floor - 250.0, a.right + 400.0, a.home.y.max(a.floor) + 500.0)),
                 ],
@@ -718,6 +718,14 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
             (MobKind::Spider, 0.25),
             (MobKind::Flea, 0.2),
             (MobKind::Rat, 0.2),
+        ],
+        // The cave system's crawlers: what lives in the dark it digs through.
+        BossKind::Centipede => vec![
+            (MobKind::Grub, 0.3),
+            (MobKind::Roachling, 0.25),
+            (MobKind::Flea, 0.2),
+            (MobKind::Spider, 0.15),
+            (MobKind::Rat, 0.1),
         ],
         // Its webs: spiders everywhere, and what gets caught in them.
         BossKind::Spider => vec![

@@ -696,7 +696,8 @@ pub fn update_anim_state(
     // In the air, with the dragonfly's power and when it's ready: the spin.
     let attack = keys.any_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left);
     let free = a.slash.is_none() && a.spin.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
-    a.eat = keys.just_pressed(KeyCode::KeyE) && free;
+    // (`E` at rubble with a way through burrows instead, see `burrow.rs`.)
+    a.eat = keys.just_pressed(KeyCode::KeyE) && free && p.burrow_target.is_none() && p.burrow.is_none();
     a.spin_cooldown = (a.spin_cooldown - dt).max(0.0);
     if attack && free && !a.eat {
         a.slash_aim = p.aim;
