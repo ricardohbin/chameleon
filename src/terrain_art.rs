@@ -193,7 +193,7 @@ impl Fields {
 /// A tile being painted on another thread (`TerrainPart`, so a reload drops it
 /// and the painting is cancelled).
 #[derive(Component)]
-pub struct TileTask(Task<(Image, Image, [Option<Image>; 2])>, IVec2);
+pub struct TileTask(Task<(Image, Image, [Option<Image>; 3])>, IVec2);
 
 /// A flat stand-in for the tile starting at grid cell `.0`, so the ground
 /// around the player shows on the very first frame; it goes when the painted
@@ -346,10 +346,14 @@ pub fn finish_tiles(
                 .add_child(back);
             // The stone in the color of the boss that ruled it, on the color layer, hidden until
             // that color washes over it.
-            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach]) {
+            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper]) {
                 let Some(blue) = blue else { continue };
                 let center = tf.translation.truncate();
-                let home = if boss == BossKind::Spider { terrain.spider } else { terrain.roach };
+                let home = match boss {
+                    BossKind::Spider => terrain.spider,
+                    BossKind::Roach => terrain.roach,
+                    _ => terrain.grasshopper,
+                };
                 let dist = home.map_or(0.0, |home| (center.distance(home) - extent * 0.5).max(0.0));
                 let material = colors.add(ColorMaterial { texture: Some(images.add(blue)), alpha_mode: AlphaMode2d::Blend, color: Color::WHITE.with_alpha(0.0), ..default() });
                 commands.spawn((
@@ -367,7 +371,7 @@ pub fn finish_tiles(
 }
 
 /// The tile's solid ground (front) and its interiors (back), as two images.
-fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 2]) {
+fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 3]) {
     let px = TILE as usize * TEX;
     // Two extra texel rows above each tile, to find the lit top edges.
     const PAD: usize = 2;
@@ -376,8 +380,9 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 2]
     let cover_back = outline::rasterize(&c.structure, origin, TEX as f32, px, px + PAD);
     let mut front = vec![0u8; px * px * 4];
     let mut back = vec![0u8; px * px * 4];
-    // The stone of the regions of the Weaver (blue limestone) and the Gutter King (sulfur yellow) again, in their colors (only if the tile has any).
-    let mut tinted: [Option<Vec<u8>>; 2] = [None, None];
+    // The ground of the regions of the Weaver (blue limestone), the Gutter King (sulfur yellow) and
+    // the Sawleg (brown: the crumbling blocks and the park) again, in their colors (only if the tile has any).
+    let mut tinted: [Option<Vec<u8>>; 3] = [None, None, None];
     for j in 0..px {
         for i in 0..px {
             let u = x0 as f32 + (i as f32 + 0.5) / TEX as f32;
@@ -395,6 +400,8 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 2]
                 let (which, [r, g, b]) = match c.fields.style(u, v) {
                     Style::Catacombs => (0, catacombs::limestone_blue([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0))),
                     Style::Trash | Style::Sewer => (1, sulfur_yellow([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0))),
+                    Style::Concrete => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &BRICK_BROWN)),
+                    Style::Park => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &SOIL_BROWN)),
                     _ => continue,
                 };
                 let data = tinted[which].get_or_insert_with(|| vec![0u8; px * px * 4]);
@@ -417,10 +424,19 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 2]
 /// The sewer's and the dump's ground once the Gutter King's yellow is back: brick and junk
 /// dyed sulfur, from the painted texel `c` (its brightness picks the shade).
 fn sulfur_yellow(c: Rgb, k: f32) -> Rgb {
-    const RAMP: [(f32, Rgb); 4] = [(0.0, [0.07, 0.06, 0.02]), (0.22, [0.27, 0.22, 0.08]), (0.55, [0.66, 0.55, 0.20]), (1.0, [0.95, 0.88, 0.52])];
+    shade(c, k, &[(0.0, [0.07, 0.06, 0.02]), (0.22, [0.27, 0.22, 0.08]), (0.55, [0.66, 0.55, 0.20]), (1.0, [0.95, 0.88, 0.52])])
+}
+
+/// The crumbling blocks once the Sawleg's brown is back: weathered brick and rusted concrete.
+const BRICK_BROWN: [(f32, Rgb); 4] = [(0.0, [0.07, 0.04, 0.03]), (0.22, [0.26, 0.15, 0.10]), (0.55, [0.56, 0.34, 0.23]), (1.0, [0.86, 0.68, 0.54])];
+/// The park's soil once the Sawleg's brown is back: dark, rich earth.
+const SOIL_BROWN: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.01]), (0.22, [0.22, 0.13, 0.06]), (0.55, [0.48, 0.31, 0.16]), (1.0, [0.78, 0.60, 0.40])];
+
+/// The painted texel `c` in a color ramp (its brightness picks the shade).
+fn shade(c: Rgb, k: f32, ramp: &[(f32, Rgb)]) -> Rgb {
     let lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * k / 0.55;
-    let i = RAMP.iter().position(|(at, _)| lum < *at).unwrap_or(RAMP.len() - 1).max(1);
-    let ((a, ca), (b, cb)) = (RAMP[i - 1], RAMP[i]);
+    let i = ramp.iter().position(|(at, _)| lum < *at).unwrap_or(ramp.len() - 1).max(1);
+    let ((a, ca), (b, cb)) = (ramp[i - 1], ramp[i]);
     mix(ca, cb, ((lum - a) / (b - a)).clamp(0.0, 1.0))
 }
 
