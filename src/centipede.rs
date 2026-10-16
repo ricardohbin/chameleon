@@ -58,7 +58,7 @@ pub(crate) static SPEC: BossSpec = BossSpec {
 };
 
 /// How much bigger than its original design it is: the art is drawn at the old size and scaled.
-const BIG: f32 = 3.5;
+const BIG: f32 = 4.5;
 /// Plates in the chain (the head is the first), the distance between them.
 const SEGS: usize = 26;
 const SPACING: f32 = 17.0 * BIG;
@@ -71,7 +71,11 @@ const SKIN: f32 = 13.0 * BIG;
 /// How far the sway takes it off its line.
 const SWAY: f32 = 5.0 * BIG;
 
-const CRAWL: f32 = 520.0;
+const CRAWL: f32 = 380.0;
+/// How fast it can change the direction it crawls in (radians per second): no sharp turns.
+const TURN: f32 = 1.0;
+/// Seconds of circling without getting a chance to strike before it changes plans.
+const PATIENCE: f32 = 6.0;
 /// Circling the chameleon: the radius far away and close in.
 const FAR: f32 = 340.0 * BIG * 0.4;
 const NEAR: f32 = 110.0 * BIG * 0.5;
@@ -93,6 +97,11 @@ const BITING: usize = 3;
 /// Moving less than this over `STUCK_TIME` means it is stuck.
 const STUCK_MOVE: f32 = 120.0;
 const STUCK_TIME: f32 = 2.0;
+/// Digging through the rock: cruising speed and how fast it can turn (radians per second).
+const TUNNEL_SPEED: f32 = 900.0;
+const TUNNEL_TURN: f32 = 1.3;
+/// How deep it goes in before it starts steering through the rock.
+const DIG_IN: f32 = 250.0;
 /// Distance between the points of the trail the body follows, and how many it keeps.
 const STEP: f32 = 24.0;
 const TRAIL: usize = (LENGTH / STEP) as usize + 40;
@@ -180,6 +189,19 @@ struct Centipede {
     wander_goal: Vec2,
     /// Where it was struck dead: the head goes there and stays as the carcass.
     dead_at: Vec2,
+    /// The dead head: 0 flying to where it was struck, 1 falling, 2 at rest.
+    dead_phase: u8,
+    /// Direction it crawls along the surface (turns slowly).
+    tdir: Vec2,
+    /// Where it has been lately (a point every 200 units): it avoids going over the same ground.
+    visited: VecDeque<Vec2>,
+    /// Seconds spent circling without striking.
+    frus: f32,
+    /// Velocity of the head (it has inertia), and its speed while digging.
+    vel: Vec2,
+    speed: f32,
+    /// Distance dug through solid rock in this tunnel.
+    dug: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -204,8 +226,9 @@ enum State {
     Lunge(f32),
     /// Going into the rock (seconds so far).
     Dive(f32),
-    /// Underground, heading for `exit`; the crack opens once `locked`.
-    Tunnel { t: f32, total: f32, exit: Vec2, normal: Vec2, far: bool, intro: bool, locked: bool },
+    /// Digging through the rock toward `exit` (or back home), for real: the head is somewhere.
+    /// The crack opens once `locked`.
+    Tunnel { t: f32, exit: Vec2, normal: Vec2, far: bool, intro: bool, locked: bool, home: bool },
     /// Out of the hole, `d` units so far.
     Emerge { d: f32, normal: Vec2, far: bool, intro: bool },
     /// Walking on the back wall (seconds left).
@@ -416,6 +439,13 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             wander: 0.0,
             wander_goal: head,
             dead_at: head,
+            dead_phase: 0,
+            tdir: Vec2::X,
+            visited: VecDeque::new(),
+            frus: 0.0,
+            vel: Vec2::ZERO,
+            speed: 0.0,
+            dug: 0.0,
             rng,
         },
     ));
@@ -483,7 +513,7 @@ fn escape(terrain: &Terrain, p: Vec2) -> Vec2 {
 /// A surface point to come out of: (point just inside the rock, normal), picked around the
 /// chameleon (`far`: far from it instead). Near, it likes the spots that are inconvenient: the
 /// floor under its feet, the ceiling over its head, the wall where it is heading.
-fn pick_exit(terrain: &Terrain, rng: &mut Rng, domain: Rect, ppos: Vec2, pvel: Vec2, grounded: bool, far: bool, avoid: Vec2) -> Option<(Vec2, Vec2)> {
+fn pick_exit(terrain: &Terrain, rng: &mut Rng, domain: Rect, ppos: Vec2, pvel: Vec2, grounded: bool, far: bool, avoid: Vec2, from: Vec2) -> Option<(Vec2, Vec2)> {
     let mut best: Option<(f32, Vec2, Vec2)> = None;
     for _ in 0..48 {
         let dir = Vec2::from_angle(rng.range(0.0, TAU));
@@ -512,6 +542,12 @@ fn pick_exit(terrain: &Terrain, rng: &mut Rng, domain: Rect, ppos: Vec2, pvel: V
         if hit.distance(avoid) < 500.0 {
             score -= 1.0;
         }
+        if !far {
+            // Sneaks round: likes coming out on the other side of the chameleon from where it is,
+            // and not too far to dig.
+            let (a, b) = ((hit - ppos).normalize_or_zero(), (from - ppos).normalize_or_zero());
+            score += 1.6 * 0.5 * (1.0 - a.dot(b)) - hit.distance(from) / 4000.0;
+        }
         if best.is_none_or(|b| score > b.0) {
             best = Some((score, hit, n));
         }
@@ -532,16 +568,24 @@ fn crawl(s: &mut Centipede, terrain: &Terrain, goal: Vec2, speed: f32, offset: f
         let n = s.n;
         let perp = n.perp();
         let to_goal = (goal - pos).normalize_or_zero();
-        let score = |sign: f32| (perp * sign).dot(to_goal) + 0.3 * (perp * sign).dot(s.heading);
+        // Leans away from the ground it has already covered.
+        let score = |sign: f32| (perp * sign).dot(to_goal) + 0.3 * (perp * sign).dot(s.heading) - 0.45 * crowd(&s.visited, pos + perp * sign * 350.0);
         s.sign_cd -= dt;
         if score(-s.sign) > score(s.sign) + 0.8 && s.sign_cd <= 0.0 {
             s.sign = -s.sign;
             s.sign_cd = 2.5;
         }
-        let along = speed * (1.0 + 0.08 * (s.phase * 2.0).sin());
+        // The way along the surface turns slowly (a U-turn is a wide arc out from the surface),
+        // and it slows down to do it.
+        let want = perp * s.sign;
+        let diff = s.tdir.angle_to(want);
+        let turn = if diff.abs() > 2.6 { s.tdir.perp_dot(n).signum() * TURN * dt } else { diff.clamp(-TURN * dt, TURN * dt) };
+        s.tdir = Vec2::from_angle(s.tdir.to_angle() + turn);
+        let slow = 1.0 - 0.55 * (diff.abs() / PI);
+        let along = speed * slow * (1.0 + 0.08 * (s.phase * 2.0).sin());
         let sway = s.phase.sin() * SWAY;
         let radial = ((offset + sway - d) * 3.0).clamp(-900.0, 900.0);
-        vel = perp * s.sign * along + n * radial;
+        vel = s.tdir * along + n * radial;
         s.phase += along * dt * 0.0045;
     } else if let Some((_, n)) = probe(terrain, pos, 1400.0) {
         // In the open: reaches for the nearest surface.
@@ -549,6 +593,9 @@ fn crawl(s: &mut Centipede, terrain: &Terrain, goal: Vec2, speed: f32, offset: f
     } else {
         vel = s.heading * speed - Vec2::Y * 500.0;
     }
+    // Inertia: it steers by changing its velocity, not its position (out of the rock it is quick).
+    let vel = if terrain.solid_at(pos) { vel } else { s.vel.lerp(vel, 1.0 - (-3.0 * dt).exp()) };
+    s.vel = vel;
     s.head += vel * dt;
     if speed > 1.0 && vel.length() > 20.0 {
         let to = vel.normalize();
@@ -560,6 +607,29 @@ fn crawl(s: &mut Centipede, terrain: &Terrain, goal: Vec2, speed: f32, offset: f
         }
         s.head += s.n * 20.0;
     }
+}
+
+/// Moves the head toward `dir` at `speed` the way a heavy body does: the direction of its velocity
+/// turns at most `turn` radians per second, and the speed changes by at most `accel` per second.
+/// A new intention never changes where it is going at once.
+fn steer(s: &mut Centipede, dir: Vec2, speed: f32, turn: f32, accel: f32, dt: f32) {
+    let v = s.vel;
+    let cur = if v.length() > 80.0 { v.normalize() } else { dir };
+    let now = turn_toward(cur, dir, turn * dt);
+    let sp = v.length() + (speed - v.length()).clamp(-accel * dt, accel * dt);
+    s.vel = now * sp;
+    s.heading = now;
+    s.head += s.vel * dt;
+}
+
+/// Speed-up for getting back to the chameleon when far from it.
+fn catch_up(dist: f32) -> f32 {
+    1.0 + ((dist - 1200.0) / 1200.0).clamp(0.0, 2.0)
+}
+
+/// How much of the ground around `q` it has already covered.
+fn crowd(visited: &VecDeque<Vec2>, q: Vec2) -> f32 {
+    visited.iter().map(|v| (1.0 - v.distance(q) / 350.0).max(0.0)).sum()
 }
 
 /// Turn the unit vector `from` toward `to` by at most `max` radians.
@@ -671,9 +741,18 @@ fn think(
             State::Dormant => {
                 if hunting {
                     // It wakes under your feet, as it means to go on: cracks open near you.
-                    let exit = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, false, s.head);
+                    let exit = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, false, s.head, s.head);
                     match exit {
-                        Some((exit, normal)) => State::Tunnel { t: 0.0, total: 2.4, exit, normal, far: false, intro: true, locked: false },
+                        Some((exit, normal)) => {
+                            s.head = boss.home;
+                            s.heading = (exit - s.head).normalize_or(Vec2::Y);
+                            s.trail = (0..TRAIL).map(|_| s.head).collect();
+                            s.buried = true;
+                            s.d_in = 0.0;
+                            s.dug = 0.0;
+                            s.speed = 0.0;
+                            State::Tunnel { t: 0.0, exit, normal, far: false, intro: true, locked: false, home: false }
+                        }
                         None => State::Dormant,
                     }
                 } else {
@@ -706,6 +785,9 @@ fn think(
                 let a = (s.head - ppos).to_angle() + s.orbit_dir * 0.6;
                 let mut goal = ppos + Vec2::from_angle(a) * r;
                 let showing = s.taunt > 0.0;
+                if hunting && !showing && s.wander <= 0.0 {
+                    s.frus += dt;
+                }
                 let mut lift = 0.0;
                 if showing {
                     // Head raised, swaying: look at me.
@@ -722,7 +804,8 @@ fn think(
                         s.wander = 0.0;
                     }
                 }
-                crawl(s, &terrain, goal, CRAWL * rage * if showing { 0.2 } else if wandering { 0.7 } else { 1.0 }, SKIN + lift, dt);
+                let hurry = if wandering || showing { 1.0 } else { catch_up(s.head.distance(ppos)) };
+                crawl(s, &terrain, goal, CRAWL * rage * hurry * if showing { 0.2 } else if wandering { 0.7 } else { 1.0 }, SKIN + lift, dt);
 
                 // Stuck, or off chasing nothing: it digs through.
                 let far = s.head.distance(ppos) > 2400.0 && !wandering;
@@ -750,6 +833,14 @@ fn think(
                     State::Stalk(8.0)
                 } else if wandering {
                     State::Crawl
+                } else if hunting && !showing && s.frus > PATIENCE {
+                    // All this circling and no opening: the long way round, or under.
+                    if begin_detour(s, &terrain, ppos) {
+                        State::Crawl
+                    } else {
+                        begin_dive(s);
+                        s.state
+                    }
                 } else if hunting && !showing && (s.force_dive || s.act_cd <= 0.0) {
                     let roll = s.rng.next();
                     s.act_cd = s.rng.range(4.0, 7.0) / rage;
@@ -780,7 +871,8 @@ fn think(
                 s.engage += (1.0 - s.engage) * (1.0 - (-3.0 * dt).exp());
                 let a = (s.head - ppos).to_angle() + s.orbit_dir * 0.5;
                 let goal = ppos + Vec2::from_angle(a) * NEAR;
-                crawl(s, &terrain, goal, CRAWL * 1.2 * rage, SKIN, dt);
+                s.frus += dt;
+                crawl(s, &terrain, goal, CRAWL * 1.2 * rage * catch_up(s.head.distance(ppos)), SKIN, dt);
                 if hunting && s.head.distance(ppos) < STRIKE_RANGE && sees(s.head) {
                     State::Windup { t: 0.0, back: false }
                 } else if left - dt <= 0.0 || !hunting {
@@ -797,6 +889,7 @@ fn think(
                 let dur = if back { 1.2 } else { WINDUP / rage };
                 let k = (w / dur).min(1.0);
                 s.jaws = s.jaws.max(k);
+                s.frus = 0.0;
                 if back {
                     // Swinging forward out of the wall.
                     depth_goal = 0.0;
@@ -814,11 +907,11 @@ fn think(
 
             State::Lunge(left) => {
                 let dir = s.lunge_dir;
-                s.heading = dir;
                 s.jaws = 1.0;
                 let hit_rock = terrain.solid_at(s.head + dir * 60.0);
                 if !hit_rock {
-                    s.head += dir * LUNGE_SPEED * rage * dt;
+                    // Accelerates into it.
+                    steer(s, dir, LUNGE_SPEED * rage, 4.0, 3500.0, dt);
                 }
                 if hit_rock || left - dt <= 0.0 {
                     // Pulls back: disengages, sometimes straight into the rock.
@@ -837,9 +930,14 @@ fn think(
             }
 
             State::Dive(tm) => {
+                if !s.buried {
+                    // Keeps aiming at the nearest rock; it turns toward it, it doesn't snap.
+                    if let Some((_, n)) = probe(&terrain, s.head, 700.0) {
+                        s.dive_dir = (-n * 0.85 + s.heading * 0.45).normalize_or(-n);
+                    }
+                }
                 let dir = s.dive_dir;
-                s.heading = s.heading.lerp(dir, 1.0 - (-12.0 * dt).exp()).normalize_or(dir);
-                s.head += dir * DIVE_SPEED * rage * dt;
+                steer(s, dir, DIVE_SPEED * rage, 1.8, 900.0, dt);
                 let step = s.head.distance(before);
                 if !s.buried && terrain.solid_at(s.head) {
                     // Through the surface: the body goes in after it.
@@ -852,47 +950,46 @@ fn think(
                     s.d_in += step;
                     s.hide_front = s.d_in;
                 }
-                if s.buried && s.d_in >= LENGTH + 200.0 && !boss.awake {
-                    // Home: asleep underground again.
-                    s.head = boss.home;
-                    s.hide_front = f32::INFINITY;
-                    s.hide_rear = f32::INFINITY;
-                    s.buried = false;
-                    State::Dormant
-                } else if s.buried && s.d_in >= LENGTH + 200.0 {
-                    // All of it is in the rock. Where to? Near the chameleon, or far away to taunt it.
-                    let far = s.rng.chance(0.35);
-                    let exit = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, far, s.head)
-                        .or_else(|| pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, !far, s.head));
-                    s.hide_front = f32::INFINITY;
-                    match exit {
-                        Some((exit, normal)) => {
-                            let total = if far { s.rng.range(1.5, 2.0) } else { s.rng.range(1.3, 1.9) } / rage;
-                            State::Tunnel { t: 0.0, total, exit, normal, far, intro: false, locked: false }
-                        }
-                        None => {
-                            // Nowhere to come out: back where it went in.
-                            s.hide_front = f32::NEG_INFINITY;
-                            State::Crawl
+                if s.buried && s.d_in >= DIG_IN {
+                    // Deep enough: from here it steers through the rock. Near the chameleon (round the
+                    // flank), or far away to taunt it; or home, when there is nobody to hunt.
+                    s.dug = s.d_in;
+                    s.speed = DIVE_SPEED * rage;
+                    if !boss.awake {
+                        State::Tunnel { t: 0.0, exit: boss.home, normal: Vec2::Y, far: false, intro: false, locked: false, home: true }
+                    } else {
+                        let far = s.rng.chance(0.35);
+                        let exit = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, far, s.head, s.head)
+                            .or_else(|| pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, !far, s.head, s.head));
+                        match exit {
+                            Some((exit, normal)) => State::Tunnel { t: 0.0, exit, normal, far, intro: false, locked: false, home: false },
+                            None => {
+                                // Nowhere to come out: back where it went in.
+                                s.hide_front = f32::NEG_INFINITY;
+                                s.buried = false;
+                                State::Crawl
+                            }
                         }
                     }
-                } else if !s.buried && tm > 1.0 {
+                } else if !s.buried && tm > 2.5 {
                     State::Crawl
                 } else {
                     State::Dive(tm + dt)
                 }
             }
 
-            State::Tunnel { t: tt, total, mut exit, mut normal, far, intro, mut locked } => {
+            State::Tunnel { t: tt, mut exit, mut normal, far, intro, mut locked, home } => {
                 let tt = tt + dt;
-                s.head = exit;
+                let cruise = TUNNEL_SPEED * rage;
+                s.speed += (cruise - s.speed) * (1.0 - (-1.5 * dt).exp());
                 // Until the crack opens it follows the chameleon underground.
-                if !locked && hunting && !intro && (tt * 2.2).fract() < (dt * 2.2) {
-                    if let Some((e, n)) = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, far, exit) {
+                if !locked && !home && hunting && !intro && (tt * 2.2).fract() < (dt * 2.2) {
+                    if let Some((e, n)) = pick_exit(&terrain, &mut s.rng, s.domain, ppos, p.vel, p.grounded, far, exit, s.head) {
                         (exit, normal) = (e, n);
                     }
                 }
-                if !locked && tt >= total - TELEGRAPH {
+                let dist = s.head.distance(exit);
+                if !locked && !home && dist < cruise * TELEGRAPH {
                     locked = true;
                     let mat = materials.add(ColorMaterial { color: CRACK.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() });
                     commands.spawn((
@@ -904,33 +1001,58 @@ fn think(
                     ));
                 }
                 if locked {
-                    let k = ((tt - (total - TELEGRAPH)) / TELEGRAPH).clamp(0.0, 1.0);
+                    let k = (1.0 - dist / (cruise * TELEGRAPH)).clamp(0.0, 1.0);
                     shake.add(0.5 * dt * (0.4 + k));
                     if s.rng.chance(dt * (8.0 + 30.0 * k)) {
                         burst(&mut commands, &assets, &mut s.rng, exit, normal, 1, 300.0 + 250.0 * k);
                     }
                 }
-                if tt >= total {
-                    // Out it comes.
-                    s.head = exit - normal * 24.0;
-                    before = s.head;
-                    s.heading = normal;
-                    s.trail = (1..=TRAIL).map(|i| s.head - normal * STEP * i as f32).collect();
-                    s.hide_front = f32::NEG_INFINITY;
-                    s.hide_rear = 0.0;
+                // Steers for the point below the exit, then up through it, with some inertia.
+                let aim = if !home && dist > 600.0 { exit - normal * 350.0 } else { exit };
+                let want = (aim - s.head).normalize_or(s.heading);
+                s.heading = turn_toward(s.heading, want, TUNNEL_TURN * dt);
+                s.head += s.heading * s.speed * dt;
+                let step = s.head.distance(before);
+                s.d_in += step;
+                if terrain.solid_at(s.head) {
+                    s.dug += step;
+                }
+                // The rock itself hides what is in it (see the visibility below).
+                s.hide_front = f32::NEG_INFINITY;
+                s.hide_rear = if intro && s.d_in < LENGTH + 3.0 * SPACING { s.d_in } else { f32::INFINITY };
+
+                if home && dist < 120.0 {
+                    // Home: asleep in the rock again.
+                    s.head = boss.home;
+                    s.hide_front = f32::INFINITY;
+                    s.hide_rear = f32::INFINITY;
                     s.buried = false;
-                    burst(&mut commands, &assets, &mut s.rng, exit, normal, 40, 1300.0);
-                    shake.add(0.7);
-                    stop.add(0.05);
-                    // Whatever is right over the hole gets thrown.
-                    let d = ppos - exit;
-                    if alive && d.length() < 260.0 && d.dot(normal) > -60.0 {
-                        boss::hurt_player(&mut p, ppos, exit, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
-                    }
-                    s.anchor = (s.head, t);
-                    State::Emerge { d: 0.0, normal, far, intro }
+                    State::Dormant
                 } else {
-                    State::Tunnel { t: tt, total, exit, normal, far, intro, locked }
+                    // Out: where the crack was, or through the far side when the rock is too thin.
+                    let thin = !home && !locked && s.dug > 250.0 && dist > 400.0 && !terrain.solid_at(s.head + s.heading * 60.0);
+                    let out = if !home && dist < 100.0 { Some((exit, normal)) } else if thin { Some((s.head, s.heading)) } else { None };
+                    match out {
+                        Some((at, normal)) => {
+                            s.head = at - normal * 24.0;
+                            before = s.head;
+                            s.heading = normal;
+                            s.hide_front = f32::NEG_INFINITY;
+                            s.hide_rear = if intro { s.d_in } else { f32::INFINITY };
+                            s.buried = false;
+                            burst(&mut commands, &assets, &mut s.rng, at, normal, 40, 1300.0);
+                            shake.add(0.7);
+                            stop.add(0.05);
+                            // Whatever is right over the hole gets thrown.
+                            let d = ppos - at;
+                            if alive && d.length() < 260.0 && d.dot(normal) > -60.0 {
+                                boss::hurt_player(&mut p, ppos, at, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                            }
+                            s.anchor = (s.head, t);
+                            State::Emerge { d: 0.0, normal, far, intro }
+                        }
+                        None => State::Tunnel { t: tt, exit, normal, far, intro, locked, home },
+                    }
                 }
             }
 
@@ -939,8 +1061,7 @@ fn think(
                 let speed = (EMERGE_SPEED + (300.0 - EMERGE_SPEED) * prog * prog) * rage;
                 let to = (ppos - s.head).normalize_or(normal);
                 let dir = if to.dot(normal) > 0.0 { normal.lerp(to, 0.35 * prog).normalize_or(normal) } else { normal };
-                s.heading = dir;
-                s.head += dir * speed * dt;
+                steer(s, dir, speed, 2.5, 3000.0, dt);
                 s.jaws = s.jaws.max(0.8);
                 let d = d + speed * dt;
                 if d >= EMERGE_LEN {
@@ -989,6 +1110,21 @@ fn think(
             State::Dead(td) => State::Dead(td + dt),
         };
 
+        // What isn't steered by `crawl` hands its momentum on.
+        if !matches!(s.state, State::Crawl | State::Stalk(_) | State::Windup { back: false, .. } | State::Dormant | State::Dead(_)) {
+            s.vel = ((s.head - before) / dt).clamp_length_max(2500.0);
+            if s.vel.length() > 100.0 {
+                s.tdir = s.vel.normalize();
+            }
+        }
+        if !matches!(s.state, State::Dormant | State::Dead(_)) && s.visited.back().is_none_or(|v| v.distance(s.head) > 200.0) {
+            let head = s.head;
+            s.visited.push_back(head);
+            if s.visited.len() > 60 {
+                s.visited.pop_front();
+            }
+        }
+
         // Which side of the world it is on.
         let back_now = matches!(s.state, State::Back(_) | State::Windup { back: true, .. });
         if back_now {
@@ -1005,22 +1141,32 @@ fn think(
             let td = if let State::Dead(td) = s.state { td } else { 0.0 };
             s.hide_front = f32::NEG_INFINITY;
             s.hide_rear = f32::INFINITY;
-            // Only the head is left: it drops where the last blow landed.
-            let Centipede { pts, dead_vel, dead_at, .. } = &mut *s;
-            let to = *dead_at - pts[0];
-            if to.length() > 12.0 {
-                pts[0] += to.normalize() * (3000.0 * dt).min(to.length());
-                dead_vel[0] = Vec2::ZERO;
-            } else {
-                dead_vel[0].y -= 1800.0 * dt;
-                dead_vel[0].x *= (-4.0 * dt).exp();
-                pts[0] += dead_vel[0] * dt;
-                if terrain.solid_at(pts[0]) {
-                    if let Some(y) = terrain.surface(pts[0], 600.0) {
-                        pts[0].y = y + SEG_R * 0.6;
+            // Only the head is left: it flies to where the last blow landed, falls, and stays there.
+            let Centipede { pts, dead_vel, dead_at, dead_phase, .. } = &mut *s;
+            match *dead_phase {
+                0 => {
+                    let to = *dead_at - pts[0];
+                    if to.length() > 12.0 {
+                        pts[0] += to.normalize() * (3000.0 * dt).min(to.length());
+                    } else {
+                        *dead_phase = 1;
                         dead_vel[0] = Vec2::ZERO;
                     }
                 }
+                1 => {
+                    dead_vel[0].y -= 1800.0 * dt;
+                    pts[0] += dead_vel[0] * dt;
+                    if terrain.solid_at(pts[0] - Vec2::Y * SEG_R * 0.6) {
+                        for _ in 0..40 {
+                            if !terrain.solid_at(pts[0] - Vec2::Y * SEG_R * 0.6) {
+                                break;
+                            }
+                            pts[0].y += 4.0;
+                        }
+                        *dead_phase = 2;
+                    }
+                }
+                _ => {}
             }
             let _ = td;
             s.head = s.pts[0];
@@ -1036,14 +1182,14 @@ fn think(
             let Centipede { pts, trail, .. } = &mut *s;
             body(head, trail, pts);
         }
-        let (fr, rr, back, dead) = (s.hide_front, s.hide_rear, s.depth > 0.5, matches!(s.state, State::Dead(_)));
+        let (fr, rr, dead) = (s.hide_front, s.hide_rear, matches!(s.state, State::Dead(_)));
         for k in 0..SEGS {
             let sk = k as f32 * SPACING;
             let a = ((sk - (fr - 80.0)) / 180.0).clamp(0.0, 1.0);
             let b = ((rr - sk) / 180.0).clamp(0.0, 1.0);
             let mut v = a.min(b);
             // On the back wall (or dead) the rock hides it.
-            if (back || dead) && terrain.solid_at(s.pts[k]) {
+            if terrain.solid_at(s.pts[k]) {
                 v = 0.0;
             }
             if dead && k > 0 {
@@ -1053,7 +1199,7 @@ fn think(
         }
 
         // Its back is ground: the chameleon can walk along the plates that are out in front.
-        let walkable = s.depth < 0.5 && !matches!(s.state, State::Dead(_) | State::Dormant | State::Tunnel { .. });
+        let walkable = s.depth < 0.5 && !matches!(s.state, State::Dead(_) | State::Dormant);
         for (pe, plate, mut pl, mut ptf) in &mut plates {
             if plate.owner != me {
                 continue;
@@ -1103,12 +1249,12 @@ fn think(
         let root = pick.map_or(s.head, |(k, _)| s.pts[k]);
         tf.translation.x = root.x;
         tf.translation.y = root.y;
-        boss.guard = pick.is_none() || matches!(s.state, State::Tunnel { .. } | State::Dormant);
+        boss.guard = pick.is_none() || matches!(s.state, State::Dormant);
         boss.staged = !s.introduced;
 
         // The head and neck bite whatever they touch.
         let biters = if matches!(s.state, State::Lunge(_) | State::Emerge { .. }) { BITING + 2 } else { BITING };
-        if alive && !matches!(s.state, State::Dead(_) | State::Dormant | State::Tunnel { .. }) {
+        if alive && !matches!(s.state, State::Dead(_) | State::Dormant) {
             for k in 0..biters {
                 if !exposed(k) {
                     continue;
@@ -1156,7 +1302,7 @@ fn begin_wander(s: &mut Centipede, terrain: &Terrain, ppos: Vec2) -> bool {
         if !s.domain.contains(hit) || hit.distance(ppos) < 1200.0 || hit.distance(s.head) < 1000.0 {
             continue;
         }
-        let score = s.rng.range(0.0, 1.0) + hit.distance(ppos) / 4000.0;
+        let score = s.rng.range(0.0, 1.0) + hit.distance(ppos) / 4000.0 - 0.5 * crowd(&s.visited, hit);
         if best.is_none_or(|b| score > b.0) {
             best = Some((score, hit));
         }
@@ -1164,6 +1310,32 @@ fn begin_wander(s: &mut Centipede, terrain: &Terrain, ppos: Vec2) -> bool {
     let Some((_, goal)) = best else { return false };
     s.wander_goal = goal;
     s.wander = s.rng.range(6.0, 10.0);
+    s.frus = 0.0;
+    true
+}
+
+/// Circling gets nowhere: takes the long way round to the other side of the chameleon.
+fn begin_detour(s: &mut Centipede, terrain: &Terrain, ppos: Vec2) -> bool {
+    let away = (s.head - ppos).normalize_or(Vec2::X);
+    let mut best: Option<(f32, Vec2)> = None;
+    for _ in 0..32 {
+        let dir = Vec2::from_angle(s.rng.range(0.0, TAU));
+        if dir.dot(away) > -0.2 {
+            continue;
+        }
+        let Some(hit) = terrain.raycast(ppos, ppos + dir * s.rng.range(700.0, 1600.0)) else { continue };
+        if !s.domain.contains(hit) || hit.distance(s.head) < 600.0 {
+            continue;
+        }
+        let score = s.rng.range(0.0, 1.0) - 0.6 * crowd(&s.visited, hit);
+        if best.is_none_or(|b| score > b.0) {
+            best = Some((score, hit));
+        }
+    }
+    let Some((_, goal)) = best else { return false };
+    s.wander_goal = goal;
+    s.wander = s.rng.range(7.0, 11.0);
+    s.frus = 0.0;
     true
 }
 
@@ -1178,6 +1350,7 @@ fn sweep_plates(mut commands: Commands, plates: Query<(Entity, &Plate)>, bosses:
 
 /// Starts burrowing into the surface under it.
 fn begin_dive(s: &mut Centipede) {
+    s.frus = 0.0;
     s.wander = 0.0;
     s.dive_dir = (-s.n * 0.85 + s.heading * 0.45).normalize_or(-s.n);
     s.buried = false;
