@@ -42,6 +42,16 @@ pub const SCYTHE_REACH: f32 = 1.35;
 pub const SCYTHE_DAMAGE: i32 = 2;
 /// The wave with the scythe claws: a cold cyan edge.
 const SCYTHE_WAVE: Color = Color::srgb(0.75, 1.0, 1.0);
+/// The power blow (earned from the crab): holding attack after a slash charges it
+/// (no more repeated slashes while held); released once charged for `BLOW_CHARGE`,
+/// the next slash is a blow: a wide fan `BLOW_REACH` long, `BLOW_FAN` radians each
+/// side of the aim, taking `BLOW_DAMAGE` health.
+pub const BLOW_CHARGE: f32 = 3.0;
+pub const BLOW_REACH: f32 = SLASH_REACH * 2.4;
+const BLOW_FAN: f32 = 1.1;
+pub const BLOW_DAMAGE: i32 = 5;
+/// The blow's wave: deep indigo-white.
+const BLOW_WAVE: Color = Color::srgb(0.70, 0.76, 1.0);
 /// The air spin (earned from the dragonfly): attacking in the air whirls the
 /// chameleon around once, cutting a wide fan toward the aim, untouchable for
 /// `SPIN_GUARD`; then it needs `SPIN_COOLDOWN` before the next one.
@@ -239,6 +249,10 @@ pub struct ChameleonAnim {
     climb: f32,
     /// The mantis's scythe claws: a wider, deadlier slash.
     scythe: bool,
+    /// Seconds attack has been held with the crab's power (charging a blow), `None` when released.
+    charge: Option<f32>,
+    /// The current slash is a power blow.
+    blow: bool,
     rng: u32,
 }
 
@@ -546,6 +560,8 @@ pub fn spawn_chameleon(
         death: 0.0,
         climb: 0.0,
         scythe: false,
+        charge: None,
+        blow: false,
         rng: 0x9E37_79B9,
     });
 }
@@ -703,13 +719,28 @@ pub fn update_anim_state(
 
     // Claw slash: holding the button keeps slashing, one right after another.
     // In the air, with the dragonfly's power and when it's ready: the spin.
+    // With the crab's power, holding it charges a power blow instead (a press still slashes once).
     let attack = keys.any_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left);
     let free = a.slash.is_none() && a.spin.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
     // (`E` at rubble with a way through burrows instead, see `burrow.rs`.)
     a.eat = keys.just_pressed(KeyCode::KeyE) && free && p.burrow_target.is_none() && p.burrow.is_none();
     a.spin_cooldown = (a.spin_cooldown - dt).max(0.0);
     a.scythe = defeated.scythe();
-    if attack && free && !a.eat {
+    let power = defeated.blow();
+    let mut released = false;
+    if power && attack && !dead && p.stun <= 0.0 {
+        a.charge = Some(a.charge.map_or(0.0, |c| c + dt));
+    } else if let Some(c) = a.charge.take() {
+        released = c >= BLOW_CHARGE && !dead;
+    }
+    if released {
+        // Let loose: the blow, whatever the claws were doing.
+        a.slash_aim = p.aim;
+        a.slash_id += 1;
+        a.spin = None;
+        a.slash = Some(0.0);
+        a.blow = true;
+    } else if attack && free && !a.eat && a.charge.is_none_or(|c| c < 0.15) {
         a.slash_aim = p.aim;
         a.slash_id += 1;
         if !p.grounded && !p.swimming && defeated.spin() && a.spin_cooldown <= 0.0 {
@@ -721,6 +752,9 @@ pub fn update_anim_state(
         }
     }
     a.slash = a.slash.map(|t| t + dt).filter(|&t| t < SLASH_TIME);
+    if a.slash.is_none() {
+        a.blow = false;
+    }
     a.spin = a.spin.map(|t| t + dt).filter(|&t| t < SPIN_TIME && !dead);
     a.bite = a.bite.map(|t| t + dt).filter(|&t| t < BITE_TIME && !dead);
     a.spat = a.spat.map(|t| t + dt).filter(|&t| t < SPIT_TIME);
@@ -965,11 +999,11 @@ fn slash_wave(
     }
     // Barely there: a quick ripple that widens and fades.
     *vis = Visibility::Inherited;
-    let grow = if a.scythe { SCYTHE_REACH } else { 1.0 };
+    let grow = if a.blow { BLOW_REACH / SLASH_REACH } else if a.scythe { SCYTHE_REACH } else { 1.0 };
     tf.scale = Vec3::new(1.0, sweep, 1.0) * (0.9 + 0.25 * k) * grow;
     if let Some(mut mat) = materials.get_mut(&wave.0) {
-        let color = if a.scythe { SCYTHE_WAVE } else { WAVE };
-        mat.color = color.with_alpha(if a.scythe { 0.7 } else { 0.55 } * (1.0 - k).powf(1.3));
+        let (color, alpha) = if a.blow { (BLOW_WAVE, 0.9) } else if a.scythe { (SCYTHE_WAVE, 0.7) } else { (WAVE, 0.55) };
+        mat.color = color.with_alpha(alpha * (1.0 - k).powf(1.3));
     }
 }
 
@@ -1084,6 +1118,9 @@ impl ChameleonAnim {
         if self.spin.is_some() {
             return in_fan(ppos, self.slash_aim, SPIN_REACH, SPIN_FAN, pos, radius);
         }
+        if self.blow {
+            return in_fan(ppos, self.slash_aim, BLOW_REACH, BLOW_FAN, pos, radius);
+        }
         let center = slash_center(ppos, facing);
         (pos - center).dot(self.slash_aim) > -radius * 0.5 && pos.distance(center) < self.slash_reach() + radius
     }
@@ -1096,7 +1133,23 @@ impl ChameleonAnim {
     /// Health the current attack takes from what it cuts: the scythe claws cut
     /// deeper on a plain slash (the spin stays as it is).
     pub fn damage(&self) -> i32 {
-        if self.scythe && self.spin.is_none() { SCYTHE_DAMAGE } else { 1 }
+        if self.blow {
+            BLOW_DAMAGE
+        } else if self.scythe && self.spin.is_none() {
+            SCYTHE_DAMAGE
+        } else {
+            1
+        }
+    }
+
+    /// How long attack has been held charging a power blow (`None`: not charging).
+    pub fn charge(&self) -> Option<f32> {
+        self.charge
+    }
+
+    /// The current slash is a power blow.
+    pub fn blowing(&self) -> bool {
+        self.blow
     }
 
     /// Which way the current attack throws a target at `pos`: along the slash,

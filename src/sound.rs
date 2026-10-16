@@ -166,6 +166,8 @@ fn voices(
             BossKind::Grasshopper => &clips.grasshopper,
             BossKind::Rat => &clips.rat,
             BossKind::Mantis => &clips.mantis,
+            // No recording of its own yet: it fights in silence.
+            BossKind::Crab => continue,
         };
         commands.spawn((
             Voice(e),

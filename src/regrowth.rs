@@ -30,7 +30,7 @@ const FLASH: Color = Color::srgb(0.9, 0.9, 1.0);
 fn delay(boss: BossKind) -> f32 {
     match boss {
         BossKind::Wasp => 3.6,
-        BossKind::Roach | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis => 0.8,
+        BossKind::Roach | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab => 0.8,
     }
 }
 /// How fast the wave spreads, world units per second, and how much faster it gets
@@ -51,10 +51,10 @@ impl Plugin for RegrowthPlugin {
 /// When each boss's color was earned (virtual seconds), `None` while it hasn't been.
 #[derive(Resource, Default)]
 pub struct Regrowth {
-    since: [Option<f32>; 9],
+    since: [Option<f32>; 10],
     now: f32,
     /// How far each wave has got (world units from the boss's home).
-    reach: [Option<f32>; 9],
+    reach: [Option<f32>; 10],
 }
 
 /// The colors themselves (the bosses' own, lightly).
@@ -67,6 +67,7 @@ pub const VIOLET: Color = Color::srgb_u8(0xb8, 0x00, 0xff);
 pub const BROWN: Color = Color::srgb_u8(0x8f, 0x56, 0x3b);
 pub const RED: Color = Color::srgb_u8(0xac, 0x32, 0x32);
 pub const CYAN: Color = Color::srgb_u8(0x00, 0xff, 0xff);
+pub const INDIGO: Color = Color::srgb_u8(0x5b, 0x6e, 0xe1);
 
 /// How far from its home a boss's color is felt in the air.
 const FELT: f32 = 4500.0;
@@ -82,6 +83,7 @@ fn index(boss: BossKind) -> usize {
         BossKind::Grasshopper => 6,
         BossKind::Rat => 7,
         BossKind::Mantis => 8,
+        BossKind::Crab => 9,
     }
 }
 
@@ -101,7 +103,7 @@ impl Regrowth {
             // The Weaver's blue and the Razorwing's pink wash over the screen while their wave
             // runs over the world (it starts `delay` after the kill) and are gone once the
             // world is painted. Only the Gutter King's yellow stays: the smog is his.
-            BossKind::Spider | BossKind::Dragonfly | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis => smooth(t / 0.6) * (1.0 - smooth((t - 3.6) / 3.0)),
+            BossKind::Spider | BossKind::Dragonfly | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab => smooth(t / 0.6) * (1.0 - smooth((t - 3.6) / 3.0)),
             BossKind::Roach => 1.0,
         }
     }
@@ -119,6 +121,7 @@ impl Regrowth {
             BossKind::Grasshopper => terrain.grasshopper,
             BossKind::Rat => terrain.rat,
             BossKind::Mantis => terrain.mantis,
+            BossKind::Crab => terrain.crab,
         };
         let dist = home.map_or(f32::MAX, |h| h.distance(eye));
         (self.reveal(boss, dist), (1.0 - dist / FELT).clamp(0.0, 1.0))
@@ -211,18 +214,18 @@ fn tint_and_pulse(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut flash: ResMut<ScreenFlash>,
     mut shake: ResMut<Shake>,
-    mut waved: Local<[bool; 9]>,
+    mut waved: Local<[bool; 10]>,
 ) {
     let eye = camera.translation.truncate();
     let (mut tf, mat) = tint.into_inner();
     tf.translation.x = eye.x;
     tf.translation.y = eye.y;
     let (mut rgb, mut alpha) = (Vec3::ZERO, 0.0);
-    for (boss, color, strength) in [(BossKind::Wasp, GREEN, 0.03), (BossKind::Roach, YELLOW, 0.15), (BossKind::Dragonfly, PINK, 0.1), (BossKind::Spider, BLUE, 0.1), (BossKind::Centipede, PURPLE, 0.1), (BossKind::Frog, VIOLET, 0.1), (BossKind::Grasshopper, BROWN, 0.1), (BossKind::Rat, RED, 0.1), (BossKind::Mantis, CYAN, 0.1)] {
+    for (boss, color, strength) in [(BossKind::Wasp, GREEN, 0.03), (BossKind::Roach, YELLOW, 0.15), (BossKind::Dragonfly, PINK, 0.1), (BossKind::Spider, BLUE, 0.1), (BossKind::Centipede, PURPLE, 0.1), (BossKind::Frog, VIOLET, 0.1), (BossKind::Grasshopper, BROWN, 0.1), (BossKind::Rat, RED, 0.1), (BossKind::Mantis, CYAN, 0.1), (BossKind::Crab, INDIGO, 0.1)] {
         let (revealed, near) = regrowth.felt_at(boss, &terrain, eye);
         let mut a = revealed * (if boss == BossKind::Wasp { 0.0 } else { 0.04 } + strength * near * near);
         // A transition, not a lasting cast: the blue lets go once the world is painted.
-        if matches!(boss, BossKind::Spider | BossKind::Dragonfly | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis) {
+        if matches!(boss, BossKind::Spider | BossKind::Dragonfly | BossKind::Centipede | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab) {
             a *= regrowth.wash(boss);
         }
         let c = color.to_srgba();

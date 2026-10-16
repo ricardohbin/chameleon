@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`, `mantis`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`, `mantis`, `crab`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -23,7 +23,7 @@ use crate::{
     feeding::Morsel,
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    centipede, dragonfly, frog, grasshopper, king_rat, mantis, spider,
+    centipede, crab, dragonfly, frog, grasshopper, king_rat, mantis, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -70,7 +70,7 @@ impl Plugin for BossPlugin {
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
 /// air spin, the spider walking on walls, the centipede burrowing through rubble, the frog moving
 /// through water as if on land, the grasshopper the charged big jump, the King Rat breathing the sewer air, the mantis
-/// the scythe claws (a wider, deadlier slash). F8 forgets them.
+/// the scythe claws (a wider, deadlier slash), the crab the power blow. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -121,6 +121,11 @@ impl Defeated {
         self.0.contains(&BossKind::Mantis)
     }
 
+    /// Holding attack charges a power blow (released = struck, `chameleon::BLOW_*`).
+    pub fn blow(&self) -> bool {
+        self.0.contains(&BossKind::Crab)
+    }
+
     /// Pushing into a wall: walking on it.
     pub fn climb(&self) -> bool {
         self.0.contains(&BossKind::Spider)
@@ -144,6 +149,7 @@ impl BossKind {
             BossKind::Grasshopper => "BIG JUMP  (hold S to charge, release)",
             BossKind::Rat => "SEWER RAT  (the sewer air no longer hurts you)",
             BossKind::Mantis => "SCYTHE CLAWS  (a wider slash that cuts deeper)",
+            BossKind::Crab => "POWER BLOW  (hold attack 3 s, release)",
         }
     }
 }
@@ -165,10 +171,11 @@ pub enum BossKind {
     Grasshopper,
     Rat,
     Mantis,
+    Crab,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 9] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis];
+    pub const ALL: [BossKind; 10] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -182,6 +189,7 @@ impl BossKind {
             BossKind::Grasshopper => terrain.grasshopper,
             BossKind::Rat => terrain.rat,
             BossKind::Mantis => terrain.mantis,
+            BossKind::Crab => terrain.crab,
         }
     }
 
@@ -191,7 +199,7 @@ impl BossKind {
         let arena = Arena::find(self, terrain);
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let mut arena_rect = match self {
-            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
+            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis | BossKind::Crab => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
             BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
@@ -216,6 +224,10 @@ impl BossKind {
         if self == BossKind::Rat {
             arena_rect = king_rat::wake_area(terrain, &arena, region);
         }
+        // The crab fights on its shore and in the water beside it: it wakes when you come near either.
+        if self == BossKind::Crab {
+            arena_rect = crab::wake_area(terrain, &arena);
+        }
         let e = match self {
             BossKind::Wasp => wasp::spawn(commands, meshes, materials, &arena),
             BossKind::Roach => roach::spawn(commands, meshes, materials, &arena),
@@ -226,6 +238,7 @@ impl BossKind {
             BossKind::Grasshopper => grasshopper::spawn(commands, meshes, materials, &arena),
             BossKind::Rat => king_rat::spawn(commands, meshes, materials, &arena, terrain, region),
             BossKind::Mantis => mantis::spawn(commands, meshes, materials, &arena),
+            BossKind::Crab => crab::spawn(commands, meshes, materials, &arena, terrain),
         };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
         commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect, zones }, Sense::default()));
@@ -336,6 +349,7 @@ impl Arena {
             BossKind::Grasshopper => terrain.grasshopper.unwrap_or(fallback),
             BossKind::Rat => terrain.rat.unwrap_or(fallback),
             BossKind::Mantis => terrain.mantis.unwrap_or(fallback),
+            BossKind::Crab => terrain.crab.unwrap_or(fallback),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.
@@ -581,8 +595,8 @@ fn lairs(
     }
 }
 
-/// The order F2 visits the bosses in (the frog last).
-const VISIT_ORDER: [BossKind; 9] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog];
+/// The order F2 visits the bosses in (the frog, then the crab, last).
+const VISIT_ORDER: [BossKind; 10] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog, BossKind::Crab];
 
 /// F2: jump to the next boss's lair (it wakes) and heal up.
 fn visit_next_boss(

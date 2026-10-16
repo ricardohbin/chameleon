@@ -333,7 +333,7 @@ fn marker(commands: &mut Commands, point: Vec2, scale: f32, color: Color) {
 
 fn ecosystem(t: &Terrain,a: &Area) -> Option<BossKind> {
     if a.rect.contains(t.spawn) {return None;}
-    let bosses: Vec<_> = [(BossKind::Roach,t.roach),(BossKind::Wasp,t.wasp),(BossKind::Dragonfly,t.dragonfly),(BossKind::Spider,t.spider),(BossKind::Centipede,t.centipede),(BossKind::Frog,t.frog),(BossKind::Grasshopper,t.grasshopper),(BossKind::Rat,t.rat),(BossKind::Mantis,t.mantis)].into_iter().filter_map(|(k,p)|Some((k,p?))).collect();
+    let bosses: Vec<_> = [(BossKind::Roach,t.roach),(BossKind::Wasp,t.wasp),(BossKind::Dragonfly,t.dragonfly),(BossKind::Spider,t.spider),(BossKind::Centipede,t.centipede),(BossKind::Frog,t.frog),(BossKind::Grasshopper,t.grasshopper),(BossKind::Rat,t.rat),(BossKind::Mantis,t.mantis),(BossKind::Crab,t.crab)].into_iter().filter_map(|(k,p)|Some((k,p?))).collect();
     bosses.iter().find(|(_,p)|a.rect.contains(*p)).or_else(||bosses.iter().min_by(|a1,b1| {
         let d=|p: Vec2| p.distance(p.clamp(a.rect.min,a.rect.max));d(a1.1).total_cmp(&d(b1.1))
     })).map(|(k,_)|*k)
@@ -341,7 +341,7 @@ fn ecosystem(t: &Terrain,a: &Area) -> Option<BossKind> {
 
 fn annotations(commands: &mut Commands,t: &Terrain,bounds: Rect,s: f32,live: &[(mobs::MobKind,Vec2)]) {
     let white=Color::srgb(0.95,0.95,0.9); let mut occupied=Vec::new();
-    for (i,(point,spec,kind)) in [(t.roach,&crate::roach::SPEC,BossKind::Roach),(t.wasp,&crate::wasp::SPEC,BossKind::Wasp),(t.dragonfly,&crate::dragonfly::SPEC,BossKind::Dragonfly),(t.spider,&crate::spider::SPEC,BossKind::Spider),(t.centipede,&crate::centipede::SPEC,BossKind::Centipede),(t.frog,&crate::frog::SPEC,BossKind::Frog),(t.grasshopper,&crate::grasshopper::SPEC,BossKind::Grasshopper),(t.rat,&crate::king_rat::SPEC,BossKind::Rat),(t.mantis,&crate::mantis::SPEC,BossKind::Mantis)].into_iter().enumerate() {
+    for (i,(point,spec,kind)) in [(t.roach,&crate::roach::SPEC,BossKind::Roach),(t.wasp,&crate::wasp::SPEC,BossKind::Wasp),(t.dragonfly,&crate::dragonfly::SPEC,BossKind::Dragonfly),(t.spider,&crate::spider::SPEC,BossKind::Spider),(t.centipede,&crate::centipede::SPEC,BossKind::Centipede),(t.frog,&crate::frog::SPEC,BossKind::Frog),(t.grasshopper,&crate::grasshopper::SPEC,BossKind::Grasshopper),(t.rat,&crate::king_rat::SPEC,BossKind::Rat),(t.mantis,&crate::mantis::SPEC,BossKind::Mantis),(t.crab,&crate::crab::SPEC,BossKind::Crab)].into_iter().enumerate() {
         let Some(point)=point else {continue};
         let rect=Rect::from_center_size(Vec2::new(bounds.min.x+(240.0+i as f32*470.0)*s,bounds.max.y-90.0*s),Vec2::new(450.0,145.0)*s);
         panel(commands,format!("{}\nSpawn: {:.0}, {:.0} (colored square)\nHP: {} | radius: {:.1} | aggro: {:.0}\nFood: {:.1} | reward: {}\nEnrages at half HP",spec.name,point.x,point.y,spec.hp,spec.radius,spec.aggro,spec.food,kind.power()),rect,s,spec.color);

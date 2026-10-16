@@ -144,6 +144,8 @@ pub struct Terrain {
     pub rat: Option<Vec2>,
     /// The mantis: on the ground below its marker (feet position).
     pub mantis: Option<Vec2>,
+    /// The crab: on the ground below its marker (feet position).
+    pub crab: Option<Vec2>,
     /// Sketch hints (gray blobs) asking for a falling platform: center, size (world units) and slope (rise per run, up positive).
     pub falling_hints: Vec<(Vec2, Vec2, f32)>,
     /// The same for the fixed slabs.
@@ -206,6 +208,7 @@ impl Terrain {
             grasshopper: None,
             rat: None,
             mantis: None,
+            crab: None,
             falling_hints: Vec::new(),
             fixed_hints: Vec::new(),
             areas: Vec::new(),
@@ -225,6 +228,7 @@ impl Terrain {
         t.grasshopper = marker(MarkerKind::Grasshopper).map(|p| t.rest(to_world(p)));
         t.rat = marker(MarkerKind::Rat).map(|p| t.rest(to_world(p)));
         t.mantis = marker(MarkerKind::Mantis).map(|p| t.rest(to_world(p)));
+
         let hints = |kind| sketch.markers.iter().filter(|m| m.kind == kind).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
         t.falling_hints = hints(MarkerKind::Falling);
         t.fixed_hints = hints(MarkerKind::Fixed);
@@ -239,6 +243,10 @@ impl Terrain {
             let rect = Rect::from_corners(to_world(a), to_world(b));
             t.features.push(Feature { name: name.into(), rect, slide: false, crumbles: false, electrified: false, rubble: false, water: Some(kind) });
         }
+
+        t.crab = marker(MarkerKind::Crab).map(|p| t.rest(to_world(p)));
+        t.falling_hints = sketch.markers.iter().filter(|m| m.kind == MarkerKind::Falling).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
+
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();

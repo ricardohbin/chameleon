@@ -213,9 +213,13 @@ impl Fields {
 pub struct TileTask(Task<Painted>, IVec2);
 
 /// A painted tile: its ground (front), its interiors (back), the ground again in the colors of
-/// the bosses that ruled it (`tinted`), and its interiors in color (`back_tinted`, the mall's shops
-/// in the King Rat's red).
-type Painted = (Image, Image, [Option<Image>; 5], Option<Image>);
+/// the bosses that ruled it (`tinted`), and the interiors that turn color (`back_tinted`, per
+/// `BACK_TINTS`: gray, and in color), left out of `back`.
+type Painted = (Image, Image, [Option<Image>; 6], [Option<(Image, Image)>; 2]);
+
+/// The interiors that turn color, the boss whose color they get, and its ramp: the mall's shops
+/// in the King Rat's red, the old sewer in the Plague Frog's violet blood.
+const BACK_TINTS: [(Style, BossKind, &[(f32, Rgb)]); 2] = [(Style::Mall, BossKind::Rat, &SHOP_RED), (Style::Sewer, BossKind::Frog, &SEWER_VIOLET)];
 
 /// A tile's gray interiors over a colored copy on the underlay (`camera::underlay_layer`):
 /// they fade out as that copy (the `Vine` `.0`) is revealed.
@@ -367,10 +371,12 @@ pub fn finish_tiles(
                     Transform::from_xyz(0.0, 0.0, Z_BACK),
                 ))
                 .id();
-            // The mall's shops in the King Rat's red, under the world: the gray ones fade over it.
-            if let (Some(red), Some(home)) = (back_tinted, terrain.rat) {
-                let dist = (tf.translation.truncate().distance(home) - extent * 0.5).max(0.0);
-                let material = colors.add(ColorMaterial { texture: Some(images.add(red)), alpha_mode: AlphaMode2d::Blend, color: Color::WHITE.with_alpha(0.0), ..default() });
+            // The interiors in their boss's color, under the world: their gray copy fades over it.
+            for (part, (_, boss, _)) in back_tinted.into_iter().zip(BACK_TINTS) {
+                let Some((gray, color)) = part else { continue };
+                let home = if boss == BossKind::Rat { terrain.rat } else { terrain.frog };
+                let dist = home.map_or(0.0, |home| (tf.translation.truncate().distance(home) - extent * 0.5).max(0.0));
+                let material = colors.add(ColorMaterial { texture: Some(images.add(color)), alpha_mode: AlphaMode2d::Blend, color: Color::WHITE.with_alpha(0.0), ..default() });
                 let vine = commands
                     .spawn((
                         Mesh2d(meshes.add(Rectangle::new(extent, extent))),
@@ -378,11 +384,19 @@ pub fn finish_tiles(
                         Transform::from_xyz(0.0, 0.0, Z_BACK + 0.001),
                         crate::camera::underlay_layer(),
                         Visibility::Hidden,
-                        crate::regrowth::Vine { boss: BossKind::Rat, dist, stem: material.clone(), leaf: material, shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
+                        crate::regrowth::Vine { boss, dist, stem: material.clone(), leaf: material, shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
                         ChildOf(e),
                     ))
                     .id();
-                commands.entity(back).insert(FadeBack(vine));
+                let gray = commands
+                    .spawn((
+                        Sprite { custom_size: Some(Vec2::splat(extent)), ..Sprite::from_image(images.add(gray)) },
+                        Layer::Back,
+                        Transform::default(),
+                        FadeBack(vine),
+                    ))
+                    .id();
+                commands.entity(back).add_child(gray);
             }
             commands
                 .entity(e)
@@ -391,7 +405,7 @@ pub fn finish_tiles(
                 .add_child(back);
             // The stone in the color of the boss that ruled it, on the color layer, hidden until
             // that color washes over it.
-            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis]) {
+            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab]) {
                 let Some(blue) = blue else { continue };
                 let center = tf.translation.truncate();
                 let home = match boss {
@@ -399,6 +413,7 @@ pub fn finish_tiles(
                     BossKind::Roach => terrain.roach,
                     BossKind::Rat => terrain.rat,
                     BossKind::Mantis => terrain.mantis,
+                    BossKind::Crab => terrain.crab,
                     _ => terrain.grasshopper,
                 };
                 let dist = home.map_or(0.0, |home| (center.distance(home) - extent * 0.5).max(0.0));
@@ -429,11 +444,11 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
     let mut back = vec![0u8; px * px * 4];
     // The ground of the regions of the Weaver (blue limestone), the Gutter King (sulfur yellow),
     // the Sawleg (brown: the crumbling blocks and the park), the King Rat (red: the subway's
-    // tiles and marble) and the Reaper (cyan: the mall's checkered floors) again, in their colors
-    // (only if the tile has any).
-    let mut tinted: [Option<Vec<u8>>; 5] = [None, None, None, None, None];
-    // The mall's shops (interiors) in the King Rat's red.
-    let mut back_tinted: Option<Vec<u8>> = None;
+    // tiles and marble), the Reaper (cyan: the mall's checkered floors) and the crab (indigo: the
+    // dam's concrete) again, in their colors (only if the tile has any).
+    let mut tinted: [Option<Vec<u8>>; 6] = [None, None, None, None, None, None];
+    // The interiors that turn color (`BACK_TINTS`): gray, and in color.
+    let mut back_tinted: [Option<(Vec<u8>, Vec<u8>)>; 2] = [None, None];
     for j in 0..px {
         for i in 0..px {
             let u = x0 as f32 + (i as f32 + 0.5) / TEX as f32;
@@ -447,10 +462,15 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
                 front[k + n] = to_u8(f[n]);
                 back[k + n] = to_u8(b[n]);
             }
-            if b[3] > 0.0 && c.fields.style(u, v) == Style::Mall {
-                let [r, g, bl] = shade([b[0], b[1], b[2]], 2f32.powf(-DEFAULT_CONTRAST / 2.0), &SHOP_RED);
-                let data = back_tinted.get_or_insert_with(|| vec![0u8; px * px * 4]);
-                data[k..k + 4].copy_from_slice(&[to_u8(r), to_u8(g), to_u8(bl), to_u8(b[3])]);
+            if b[3] > 0.0 {
+                let style = c.fields.style(u, v);
+                if let Some(which) = BACK_TINTS.iter().position(|t| t.0 == style) {
+                    let [r, g, bl] = shade([b[0], b[1], b[2]], 2f32.powf(-DEFAULT_CONTRAST / 2.0), BACK_TINTS[which].2);
+                    let (gray, color) = back_tinted[which].get_or_insert_with(|| (vec![0u8; px * px * 4], vec![0u8; px * px * 4]));
+                    gray[k..k + 4].copy_from_slice(&back[k..k + 4]);
+                    color[k..k + 4].copy_from_slice(&[to_u8(r), to_u8(g), to_u8(bl), to_u8(b[3])]);
+                    back[k..k + 4].fill(0);
+                }
             }
             if f[3] > 0.0 {
                 let (which, [r, g, b]) = match c.fields.style(u, v) {
@@ -460,6 +480,7 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
                     Style::Park => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &SOIL_BROWN)),
                     Style::Subway => (3, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_RED)),
                     Style::Mall => (4, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_CYAN)),
+                    Style::Dam => (5, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &DAM_INDIGO)),
                     _ => continue,
                 };
                 let data = tinted[which].get_or_insert_with(|| vec![0u8; px * px * 4]);
@@ -476,7 +497,7 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
             RenderAssetUsages::RENDER_WORLD,
         )
     };
-    (image(front), image(back), tinted.map(|t| t.map(image)), back_tinted.map(image))
+    (image(front), image(back), tinted.map(|t| t.map(image)), back_tinted.map(|t| t.map(|(gray, color)| (image(gray), image(color)))))
 }
 
 /// The sewer's and the dump's ground once the Gutter King's yellow is back: brick and junk
@@ -493,6 +514,10 @@ const SOIL_BROWN: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.01]), (0.22, [0.22, 0.
 const TILE_RED: [(f32, Rgb); 4] = [(0.0, [0.07, 0.02, 0.02]), (0.22, [0.27, 0.07, 0.07]), (0.55, [0.62, 0.20, 0.19]), (1.0, [0.90, 0.62, 0.56])];
 /// The mall's shops (its interiors) once the King Rat's red is back: deep red storefronts.
 const SHOP_RED: [(f32, Rgb); 4] = [(0.0, [0.05, 0.01, 0.01]), (0.22, [0.24, 0.05, 0.05]), (0.55, [0.55, 0.14, 0.13]), (1.0, [0.85, 0.45, 0.40])];
+/// The old sewer (its interiors) once the Plague Frog's violet is back: brick stained in its blood.
+const SEWER_VIOLET: [(f32, Rgb); 4] = [(0.0, [0.03, 0.0, 0.05]), (0.22, [0.18, 0.02, 0.27]), (0.55, [0.50, 0.05, 0.72]), (1.0, [0.85, 0.58, 1.0])];
+/// The dam once the crab's indigo is back: wet blue-gray concrete, deep indigo shadows.
+const DAM_INDIGO: [(f32, Rgb); 4] = [(0.0, [0.02, 0.02, 0.07]), (0.22, [0.10, 0.12, 0.30]), (0.55, [0.30, 0.36, 0.72]), (1.0, [0.72, 0.76, 0.96])];
 /// The mall once the Reaper's cyan is back: glossy teal checker tiles, aqua highlights.
 const TILE_CYAN: [(f32, Rgb); 4] = [(0.0, [0.01, 0.06, 0.07]), (0.22, [0.04, 0.22, 0.25]), (0.55, [0.12, 0.55, 0.60]), (1.0, [0.62, 0.95, 0.96])];
 

@@ -35,6 +35,8 @@ const GRASSHOPPER_MARK: [u8; 3] = [0x8f, 0x56, 0x3b];
 const RAT_MARK: [u8; 3] = [0xac, 0x32, 0x32];
 /// Cyan `#00ffff`: the mantis (no channel test match: green and blue both high).
 const MANTIS_MARK: [u8; 3] = [0x00, 0xff, 0xff];
+/// Dark blue `#5b6ee1`: the crab (the channel test has no blue class).
+const CRAB_MARK: [u8; 3] = [0x5b, 0x6e, 0xe1];
 
 /// Light purple `#bc75be`: asks `level::loose` for a falling platform, over a back wall (`#976099` over open air).
 const FALLING_MARK: [u8; 3] = [0xbc, 0x75, 0xbe];
@@ -84,6 +86,9 @@ pub enum MarkerKind {
     /// Blue-gray `#8f9ed5` (`SLUDGE_MARK`, over a wall) or `#7682ac` (`SLUDGE_OPEN_MARK`, over open air):
     /// the blob's bounding box is a pool of sludge.
     Sludge,
+    /// Dark blue `#5b6ee1` (`CRAB_MARK`, its blood): the crab boss (rests on the ground).
+    Crab,
+
 }
 
 pub struct Marker {
@@ -179,6 +184,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
         }
         if is(MANTIS_MARK) {
             marks[i] = Some(MarkerKind::Mantis);
+            continue;
+        }
+        if is(CRAB_MARK) {
+            marks[i] = Some(MarkerKind::Crab);
             continue;
         }
         if is(FROG_MARK) {
@@ -313,6 +322,7 @@ fn unbake(packed: &[u8], version: u8) -> Result<Sketch, String> {
             12 => MarkerKind::Fixed,
             13 => MarkerKind::ClearWater,
             14 => MarkerKind::Sludge,
+            15 => MarkerKind::Crab,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));
