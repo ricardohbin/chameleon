@@ -44,6 +44,9 @@ const SLIPPERY_DRIFT: f32 = 90.0;
 const DASH_SPEED: f32 = 1100.0;
 const DASH_TIME: f32 = 0.25;
 const DASH_COOLDOWN: f32 = 0.45;
+/// A dash spends this much of the (swimming) strength, and needs at least `DASH_MIN_STRENGTH` left.
+const DASH_COST: f32 = 0.25;
+const DASH_MIN_STRENGTH: f32 = 0.3;
 const DASH_KEYS: [KeyCode; 3] = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::KeyK];
 /// Wall walking (earned by beating the spider): pushing into a tall wall
 /// gets the chameleon on it; W/S walk up and down at `CLIMB_SPEED`, Space
@@ -167,7 +170,6 @@ pub struct Player {
     pub drop: f32,
     /// Seconds left of the current dash.
     pub dash: f32,
-    dash_ready: bool,
     dash_cooldown: f32,
     /// Which way the current dash goes.
     dash_dir: f32,
@@ -704,18 +706,20 @@ pub fn move_player(
         }
 
         // --- Dash (keeps its speed afterwards, so it carries a jump much further) ---
-        p.dash_ready |= p.grounded;
         p.dash = (p.dash - dt).max(0.0);
         p.dash_cooldown = (p.dash_cooldown - dt).max(0.0);
+        // Only from firm ground: not in the air, on a wall, in the water or sliding down a slope.
+        let firm = p.grounded && climbing.is_none() && !swimming && slide.is_none();
         if keys.any_just_pressed(DASH_KEYS)
             && defeated.dash()
-            && p.dash_ready
+            && firm
+            && p.swim >= DASH_MIN_STRENGTH
             && p.dash_cooldown <= 0.0
             && p.stun <= 0.0
             && !dead
         {
+            p.swim = (p.swim - DASH_COST).max(0.0);
             p.dash = DASH_TIME;
-            p.dash_ready = false;
             p.dash_cooldown = DASH_COOLDOWN;
             p.dash_dir = if dir != 0.0 { dir } else { p.facing };
         }

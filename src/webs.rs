@@ -164,7 +164,8 @@ fn wear(
             let near = center.clamp(c.center - c.half, c.center + c.half);
             if anim.reaches(at, p.facing, near, 0.0) {
                 c.slash = anim.slash_id;
-                c.hurt(SLASH, 0.18);
+                // The touch of death (F3) cuts it down in one blow.
+                c.hurt(if p.god.smites() { 1.0 } else { SLASH }, 0.18);
             }
         }
         let side = at.x - c.center.x;

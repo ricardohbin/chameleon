@@ -353,7 +353,7 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
     v.push(("Slash", if mouse { "F / LMB" } else { "F" }));
     v.push(("Feed", "E"));
     if defeated.dash() {
-        v.push(("Dash", "Shift / K"));
+        v.push(("Dash (ground, uses strength)", "Shift / K"));
     }
     if defeated.spit() {
         v.push(("Spit", if mouse { "Q / RMB" } else { "Q" }));

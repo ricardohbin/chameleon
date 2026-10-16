@@ -49,7 +49,7 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Jump (hold for higher) | `Space` / `W` / `Up` |
 | Slash (hold to keep slashing) | `F` / `J` / left mouse button, toward the mouse |
 | Eat remains | `E` |
-| Dash | `Shift` / `K` |
+| Dash (on firm ground only; costs strength, like swimming) | `Shift` / `K` |
 | Venom spit | `Q` / right mouse button |
 | Shield | `G` |
 | Air spin | attack while in the air |

@@ -13,7 +13,7 @@ use bevy::{
 };
 
 use crate::{
-    boss::BossKind,
+    boss::{BossKind, Defeated},
     camera::{self, MainCamera},
     regrowth::Regrowth,
     shapes::Rng,
@@ -23,10 +23,12 @@ use crate::{
 /// Vents farther than this from the camera don't smoke (nobody sees them).
 const SHOWN_WITHIN: f32 = 2400.0;
 
-/// The toxic fumes' color (r, g, b ranges): gray for now, the boss's purple later.
+/// The toxic fumes' color (r, g, b ranges): gray until the Plague Frog falls.
 const TOXIC_TINT: [(f32, f32); 3] = [(0.62, 0.78), (0.62, 0.78), (0.62, 0.78)];
+/// The same fumes once the frog is dead: its poison violet.
+const TOXIC_TINT_FROG: [(f32, f32); 3] = [(0.62, 0.74), (0.05, 0.2), (0.9, 1.0)];
 /// How opaque a toxic cloud gets at its thickest.
-const TOXIC_PEAK: f32 = 0.5;
+const TOXIC_PEAK: f32 = 0.28;
 /// Clouds per second per 100 000 square units of fumes in view.
 const TOXIC_DENSITY: f32 = 2.2;
 
@@ -169,6 +171,7 @@ fn drift(
 fn toxic_air(
     time: Res<Time>,
     terrain: Res<Terrain>,
+    defeated: Res<Defeated>,
     cloud: Res<Cloud>,
     camera: Single<&Transform, With<MainCamera>>,
     mut owed: Local<f32>,
@@ -199,7 +202,8 @@ fn toxic_air(
         if terrain.solid_at(at) {
             continue;
         }
-        let tint = Color::srgba(rng.range(TOXIC_TINT[0].0, TOXIC_TINT[0].1), rng.range(TOXIC_TINT[1].0, TOXIC_TINT[1].1), rng.range(TOXIC_TINT[2].0, TOXIC_TINT[2].1), 0.0);
+        let range = if defeated.wade() { &TOXIC_TINT_FROG } else { &TOXIC_TINT };
+        let tint = Color::srgba(rng.range(range[0].0, range[0].1), rng.range(range[1].0, range[1].1), rng.range(range[2].0, range[2].1), 0.0);
         let material = materials.add(ColorMaterial { color: tint, alpha_mode: AlphaMode2d::Blend, ..default() });
         commands.spawn((
             Mesh2d(cloud.0.clone()),
