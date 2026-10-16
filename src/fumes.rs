@@ -23,11 +23,18 @@ use crate::{
 /// Vents farther than this from the camera don't smoke (nobody sees them).
 const SHOWN_WITHIN: f32 = 2400.0;
 
+/// The toxic fumes' color (r, g, b ranges): gray for now, the boss's purple later.
+const TOXIC_TINT: [(f32, f32); 3] = [(0.62, 0.78), (0.62, 0.78), (0.62, 0.78)];
+/// How opaque a toxic cloud gets at its thickest.
+const TOXIC_PEAK: f32 = 0.5;
+/// Clouds per second per 100 000 square units of fumes in view.
+const TOXIC_DENSITY: f32 = 2.2;
+
 pub struct FumesPlugin;
 
 impl Plugin for FumesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, make_cloud).add_systems(Update, (emit, ambient, drift).chain());
+        app.add_systems(Startup, make_cloud).add_systems(Update, (emit, ambient, toxic_air, drift).chain());
     }
 }
 
@@ -157,9 +164,65 @@ fn drift(
     }
 }
 
+/// The "feature: toxic fumes" slices: dense banks of fumes drifting inside the
+/// marked area only (and nowhere else), whatever the region's style.
+fn toxic_air(
+    time: Res<Time>,
+    terrain: Res<Terrain>,
+    cloud: Res<Cloud>,
+    camera: Single<&Transform, With<MainCamera>>,
+    mut owed: Local<f32>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut commands: Commands,
+) {
+    let eye = camera.translation.truncate();
+    let view = Rect::from_center_half_size(eye, Vec2::new(1300.0, 700.0));
+    let zones: Vec<Rect> = terrain.toxic_zones().map(|z| z.intersect(view)).filter(|z| !z.is_empty()).collect();
+    let area: f32 = zones.iter().map(|z| z.width() * z.height()).sum();
+    if area <= 0.0 {
+        *owed = 0.0;
+        return;
+    }
+    *owed += (area / 100_000.0 * TOXIC_DENSITY).min(14.0) * time.delta_secs();
+    let mut rng = Rng(((time.elapsed_secs() * 6007.0) as u32).wrapping_mul(2654435761) | 1);
+    while *owed >= 1.0 {
+        *owed -= 1.0;
+        rng.next();
+        // Pick a zone in proportion to its visible area.
+        let mut pick = rng.range(0.0, area);
+        let zone = zones.iter().find(|z| {
+            pick -= z.width() * z.height();
+            pick <= 0.0
+        });
+        let Some(zone) = zone.or(zones.last()) else { continue };
+        let at = Vec2::new(rng.range(zone.min.x, zone.max.x), rng.range(zone.min.y, zone.max.y));
+        if terrain.solid_at(at) {
+            continue;
+        }
+        let tint = Color::srgba(rng.range(TOXIC_TINT[0].0, TOXIC_TINT[0].1), rng.range(TOXIC_TINT[1].0, TOXIC_TINT[1].1), rng.range(TOXIC_TINT[2].0, TOXIC_TINT[2].1), 0.0);
+        let material = materials.add(ColorMaterial { color: tint, alpha_mode: AlphaMode2d::Blend, ..default() });
+        commands.spawn((
+            Mesh2d(cloud.0.clone()),
+            MeshMaterial2d(material.clone()),
+            Transform::from_translation(at.extend(-0.22 + rng.range(0.0, 0.05))),
+            camera::color_layer(),
+            Puff {
+                age: 0.0,
+                life: rng.range(8.0, 13.0),
+                vel: Vec2::new(rng.range(-14.0, 14.0), rng.range(-3.0, 10.0)),
+                size: rng.range(220.0, 420.0),
+                phase: rng.range(0.0, std::f32::consts::TAU),
+                strength: 1.0,
+                peak: TOXIC_PEAK,
+                material,
+            },
+        ));
+    }
+}
+
 /// Out of the vents and everywhere around: once a color is back the air around
 /// the camera carries it. The Gutter King's yellow: banks of sulfur fumes
-/// drifting across the screen (thick in the dump, the sewer, the plant and the
+/// drifting across the screen (thick in the dump, the plant and the
 /// cave, thin elsewhere). The Venom Mother's green: a rain of glowing spores.
 fn ambient(
     time: Res<Time>,
@@ -174,7 +237,7 @@ fn ambient(
 ) {
     let dt = time.delta_secs();
     let eye = camera.translation.truncate();
-    let fumy = matches!(terrain.style_at(eye), Style::Trash | Style::Sewer | Style::Treatment | Style::Cave | Style::Sinkhole);
+    let fumy = matches!(terrain.style_at(eye), Style::Trash | Style::Treatment | Style::Cave | Style::Sinkhole);
     let mut rng = Rng(((time.elapsed_secs() * 7919.0) as u32).wrapping_mul(2246822519) | 1);
     // Low banks of pale green mist drifting over the ground of her region.
     let (_, near) = regrowth.felt_at(BossKind::Wasp, &terrain, eye);

@@ -112,6 +112,8 @@ pub struct Feature {
     pub electrified: bool,
     /// "rubble": loose rock the chameleon can burrow through (`burrow.rs`).
     pub rubble: bool,
+    /// "toxic" / "fumes": the air here is thick with fumes (`fumes.rs`).
+    pub toxic: bool,
     /// A pool drawn with the water colors of the sketch (`sketch::MarkerKind::ClearWater` / `Sludge`).
     pub water: Option<crate::water::Kind>,
 }
@@ -241,7 +243,7 @@ impl Terrain {
             };
             let (a, b) = (m.at - m.extent / 2.0 - lo.as_vec2(), m.at + m.extent / 2.0 - lo.as_vec2());
             let rect = Rect::from_corners(to_world(a), to_world(b));
-            t.features.push(Feature { name: name.into(), rect, slide: false, crumbles: false, electrified: false, rubble: false, water: Some(kind) });
+            t.features.push(Feature { name: name.into(), rect, slide: false, crumbles: false, electrified: false, rubble: false, toxic: false, water: Some(kind) });
         }
 
         t.crab = marker(MarkerKind::Crab).map(|p| t.rest(to_world(p)));
@@ -255,7 +257,8 @@ impl Terrain {
                 let crumbles = n.contains("fall apart") || n.contains("falls apart") || n.contains("crumbl");
                 let electrified = n.contains("track") || n.contains("rail") || n.contains("electrif");
                 let rubble = n.contains("rubble");
-                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified, rubble, water: None });
+                let toxic = n.contains("toxic") || n.contains("fumes");
+                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified, rubble, toxic, water: None });
             } else {
                 t.areas.push(Area { style: Style::from_name(&s.name), name: s.name, rect, slide });
             }
@@ -426,6 +429,11 @@ impl Terrain {
     /// The features covering `p`.
     pub fn features_at(&self, p: Vec2) -> impl Iterator<Item = &Feature> {
         self.features.iter().filter(move |f| f.rect.contains(p))
+    }
+
+    /// The "toxic fumes" feature rectangles.
+    pub fn toxic_zones(&self) -> impl Iterator<Item = Rect> + '_ {
+        self.features.iter().filter(|f| f.toxic).map(|f| f.rect)
     }
 
     /// Slope of the ground under `feet` (rise per unit of x; positive = uphill to the right).
