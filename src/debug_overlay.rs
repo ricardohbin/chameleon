@@ -55,13 +55,16 @@ const BAD: Color = Color::srgb(1.0, 0.2, 0.2);
 const VEL: Color = Color::srgb(1.0, 1.0, 0.2);
 const PATH: Color = Color::srgb(0.2, 0.9, 1.0);
 
-fn setup(mut commands: Commands, mut store: ResMut<GizmoConfigStore>) {
+fn setup(mut commands: Commands, mut store: ResMut<GizmoConfigStore>, builtin: Option<Res<crate::BuiltinFont>>) {
     // On the color layer: the world camera is grayscale.
     let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
     config.render_layers = camera::color_layer();
     config.line.width = 2.0;
     config.enabled = false;
-    let font = TextFont { font_size: FontSize::Px(12.0), ..default() };
+    let mut font = TextFont { font_size: FontSize::Px(12.0), ..default() };
+    if let Some(builtin) = builtin {
+        font.font = bevy::text::FontSource::Handle(builtin.0.clone());
+    }
     let color = TextColor(Color::srgb(0.9, 0.95, 0.9));
     commands.spawn((
         Panel,

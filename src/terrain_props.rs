@@ -216,7 +216,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         sites.sort_by_key(|s| s.key);
         (sites, facade_spots(&found))
     });
-    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), blue: Blue::default(), mats };
+    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: crate::level::loose_marks(terrain).into_iter().map(|p| (p, Kind::Ground)).collect(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), blue: Blue::default(), mats };
     commands.spawn((job, TerrainPart, terrain_art::WorldArt));
 }
 

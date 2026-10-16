@@ -3,6 +3,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=build.rs");
+    check_bake();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -44,5 +45,34 @@ END
         println!("cargo:rustc-link-arg-bins={}", obj.display());
     } else {
         println!("cargo:warning=windres failed: the exe keeps the default icon");
+    }
+}
+
+/// Release builds embed `assets/world.baked`, not the sketch itself: refuse to build one that is older than
+/// `assets/world.aseprite` (the sketch was edited and nobody ran the bake since).
+fn check_bake() {
+    println!("cargo:rerun-if-changed=assets/world.aseprite");
+    println!("cargo:rerun-if-changed=assets/world.baked");
+    println!("cargo:rerun-if-env-changed=GHORE_SKIP_BAKE_CHECK");
+    if std::env::var("PROFILE").as_deref() != Ok("release") || std::env::var_os("GHORE_SKIP_BAKE_CHECK").is_some() {
+        return;
+    }
+    let modified = |path: &str| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let (Some(sketch), Some(baked)) = (modified("assets/world.aseprite"), modified("assets/world.baked")) else { return };
+    if sketch > baked {
+        panic!(
+            "
+
+assets/world.aseprite is newer than assets/world.baked, and release builds embed the baked one,
+             so this build would ship an out-of-date world.
+
+             To fix it:
+               1. cargo run -- diff    (review what changed in the sketch since the last bake, and interpret it)
+               2. cargo run -- bake    (write assets/world.baked)
+               3. build the release again
+
+             To build anyway (e.g. after a fresh checkout reset the file times), set GHORE_SKIP_BAKE_CHECK=1.
+"
+        );
     }
 }

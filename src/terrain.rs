@@ -112,6 +112,8 @@ pub struct Feature {
     pub electrified: bool,
     /// "rubble": loose rock the chameleon can burrow through (`burrow.rs`).
     pub rubble: bool,
+    /// A pool drawn with the water colors of the sketch (`sketch::MarkerKind::ClearWater` / `Sludge`).
+    pub water: Option<crate::water::Kind>,
 }
 
 /// Cloned to paint the art and place props on other threads.
@@ -144,6 +146,8 @@ pub struct Terrain {
     pub mantis: Option<Vec2>,
     /// Sketch hints (gray blobs) asking for a falling platform: center, size (world units) and slope (rise per run, up positive).
     pub falling_hints: Vec<(Vec2, Vec2, f32)>,
+    /// The same for the fixed slabs.
+    pub fixed_hints: Vec<(Vec2, Vec2, f32)>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -203,6 +207,7 @@ impl Terrain {
             rat: None,
             mantis: None,
             falling_hints: Vec::new(),
+            fixed_hints: Vec::new(),
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -220,7 +225,20 @@ impl Terrain {
         t.grasshopper = marker(MarkerKind::Grasshopper).map(|p| t.rest(to_world(p)));
         t.rat = marker(MarkerKind::Rat).map(|p| t.rest(to_world(p)));
         t.mantis = marker(MarkerKind::Mantis).map(|p| t.rest(to_world(p)));
-        t.falling_hints = sketch.markers.iter().filter(|m| m.kind == MarkerKind::Falling).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
+        let hints = |kind| sketch.markers.iter().filter(|m| m.kind == kind).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();
+        t.falling_hints = hints(MarkerKind::Falling);
+        t.fixed_hints = hints(MarkerKind::Fixed);
+        // Water: the bounding box of each water-colored blob.
+        for m in &sketch.markers {
+            let (kind, name) = match m.kind {
+                MarkerKind::ClearWater => (crate::water::Kind::Clear, "feature: water"),
+                MarkerKind::Sludge => (crate::water::Kind::Sludge, "feature: sludge"),
+                _ => continue,
+            };
+            let (a, b) = (m.at - m.extent / 2.0 - lo.as_vec2(), m.at + m.extent / 2.0 - lo.as_vec2());
+            let rect = Rect::from_corners(to_world(a), to_world(b));
+            t.features.push(Feature { name: name.into(), rect, slide: false, crumbles: false, electrified: false, rubble: false, water: Some(kind) });
+        }
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();
@@ -229,7 +247,7 @@ impl Terrain {
                 let crumbles = n.contains("fall apart") || n.contains("falls apart") || n.contains("crumbl");
                 let electrified = n.contains("track") || n.contains("rail") || n.contains("electrif");
                 let rubble = n.contains("rubble");
-                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified, rubble });
+                t.features.push(Feature { name: s.name, rect, slide, crumbles, electrified, rubble, water: None });
             } else {
                 t.areas.push(Area { style: Style::from_name(&s.name), name: s.name, rect, slide });
             }

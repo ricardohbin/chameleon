@@ -65,6 +65,11 @@ impl Pin {
     }
 }
 
+/// Points along the loose platforms, which the props are placed around.
+pub fn loose_marks(terrain: &Terrain) -> Vec<Vec2> {
+    loose::marks(terrain)
+}
+
 /// Where the moving pieces are (for the dev tour): the pins, and one loose platform of each material.
 pub fn pin_spots(terrain: &Terrain) -> Vec<(String, Vec2)> {
     let pins = PINS.iter().map(|p| (format!("{:?}", p.kind).to_lowercase(), p.place()));

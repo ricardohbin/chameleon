@@ -344,7 +344,9 @@ pub fn input(
         if side != 0 && r[menu.sel].act.adjustable() {
             activate = Some((menu.sel, side));
         }
-        if key(&[KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Space, KeyCode::KeyF]) || pad(GamepadButton::South) {
+        let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+        let enter = key(&[KeyCode::Enter, KeyCode::NumpadEnter]) && !alt; // Alt+Enter toggles fullscreen
+        if enter || key(&[KeyCode::Space, KeyCode::KeyF]) || pad(GamepadButton::South) {
             activate = Some((menu.sel, 0));
         }
         // The mouse: hovering picks a row; a click on an arrow steps that value,
@@ -434,7 +436,15 @@ pub fn input(
     // Nothing reaches the game while it is up, nor on the frame it goes away
     // (the Enter that left it must not become a jump).
     if menu.open || was_open {
-        let held: Vec<KeyCode> = keys.get_pressed().copied().chain(keys.get_just_pressed().copied()).filter(|k| !is_function_key(*k)).collect();
+        // Alt stays visible (it would otherwise read as released on the next Enter), and so does
+        // an Alt+Enter, which `toggle_fullscreen` still has to see.
+        let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
+        let held: Vec<KeyCode> = keys
+            .get_pressed()
+            .copied()
+            .chain(keys.get_just_pressed().copied())
+            .filter(|k| !is_function_key(*k) && !matches!(k, KeyCode::AltLeft | KeyCode::AltRight) && !(alt && *k == KeyCode::Enter))
+            .collect();
         for k in held {
             keys.reset(k);
         }

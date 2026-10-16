@@ -48,8 +48,16 @@ mod water;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, WindowMode};
 
+/// Bevy's built-in font, preserved before the game font replaces the default.
+#[derive(Resource)]
+pub struct BuiltinFont(pub Handle<Font>);
+
 /// Every `Text` without an explicit font uses Bevy's default font asset: swap it for ours.
-fn install_default_font(mut fonts: ResMut<Assets<Font>>) {
+fn install_default_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+    // Keep Bevy's built-in font reachable (the debug overlay uses it).
+    if let Some(builtin) = fonts.get(AssetId::default()).cloned() {
+        commands.insert_resource(BuiltinFont(fonts.add(builtin)));
+    }
     let font = Font::from_bytes(include_bytes!("../assets/fonts/GhoreSerif.ttf").to_vec());
     fonts.insert(AssetId::default(), font).unwrap();
 }
@@ -101,7 +109,8 @@ fn main() {
         .run();
 }
 
-/// Click inside the game to confine the cursor; Escape or losing focus releases it.
+/// Click inside the game to confine the cursor; Escape, Pause or losing focus releases it.
+/// The menu and pause keep it free, and the click that closes them doesn't recapture it.
 /// While confined the cursor is a crosshair (`hud.rs`).
 fn capture_mouse(
     keys: Res<ButtonInput<KeyCode>>,
@@ -109,12 +118,21 @@ fn capture_mouse(
     menu: Res<menu::Menu>,
     settings: Res<settings::Settings>,
     mut window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    time: Res<Time<Virtual>>,
+    mut was_idle: Local<bool>,
 ) {
     let (window, cursor) = &mut *window;
-    // Only the mouse scheme aims with it; the menu needs it free.
-    if !window.focused || menu.open || settings.scheme != settings::Scheme::MouseKeyboard || keys.just_pressed(KeyCode::Escape) {
+    // The menu and the pause screen both need the mouse free.
+    let idle = menu.open || time.is_paused();
+    let menu_was_open = std::mem::replace(&mut *was_idle, idle);
+    // Only the mouse scheme aims with it.
+    if !window.focused
+        || idle
+        || settings.scheme != settings::Scheme::MouseKeyboard
+        || keys.any_just_pressed([KeyCode::Escape, KeyCode::KeyP, KeyCode::Pause])
+    {
         cursor.grab_mode = CursorGrabMode::None;
-    } else if window.cursor_position().is_some() && mouse.get_just_pressed().next().is_some() {
+    } else if !menu_was_open && window.cursor_position().is_some() && mouse.get_just_pressed().next().is_some() {
         cursor.grab_mode = CursorGrabMode::Confined;
     }
 }

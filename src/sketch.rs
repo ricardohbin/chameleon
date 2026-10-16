@@ -36,10 +36,19 @@ const RAT_MARK: [u8; 3] = [0xac, 0x32, 0x32];
 /// Cyan `#00ffff`: the mantis (no channel test match: green and blue both high).
 const MANTIS_MARK: [u8; 3] = [0x00, 0xff, 0xff];
 
-/// Gray `#847e87`: asks `level::loose` for a falling platform (it would read as background structure).
-const FALLING_MARK: [u8; 3] = [0x84, 0x7e, 0x87];
-/// Light steel `#9badb7`: the same hint, over open air instead of a back wall.
-const FALLING_OPEN_MARK: [u8; 3] = [0x9b, 0xad, 0xb7];
+/// Light purple `#bc75be`: asks `level::loose` for a falling platform, over a back wall (`#976099` over open air).
+const FALLING_MARK: [u8; 3] = [0xbc, 0x75, 0xbe];
+/// The same hint, over open air instead of a back wall.
+const FALLING_OPEN_MARK: [u8; 3] = [0x97, 0x60, 0x99];
+/// Green `#34744e` (`#29573c` over open air): the same slab, but fixed in place.
+const FIXED_MARK: [u8; 3] = [0x34, 0x74, 0x4e];
+const FIXED_OPEN_MARK: [u8; 3] = [0x29, 0x57, 0x3c];
+/// Clear water: `#97e6e6` over a back wall, `#629292` over open air. The filled box is the pool.
+const CLEAR_WATER_MARK: [u8; 3] = [0x97, 0xe6, 0xe6];
+const CLEAR_WATER_OPEN_MARK: [u8; 3] = [0x62, 0x92, 0x92];
+/// Sludge: `#8f9ed5` over a back wall, `#7682ac` over open air.
+const SLUDGE_MARK: [u8; 3] = [0x8f, 0x9e, 0xd5];
+const SLUDGE_OPEN_MARK: [u8; 3] = [0x76, 0x82, 0xac];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
@@ -60,12 +69,21 @@ pub enum MarkerKind {
     Grasshopper,
     /// Dull red `#ac3232` (`RAT_MARK`, its blood): the King Rat boss (rests on the ground).
     Rat,
-    /// Gray `#847e87` (`FALLING_MARK`): a hint to place a falling platform here
-    /// (the marked pixels themselves stay open air).
+    /// Purple `#bc75be` (`FALLING_MARK`, over a wall) or `#976099` (`FALLING_OPEN_MARK`, over open air):
+    /// a hint to place a falling platform here.
     Falling,
     /// Cyan `#00ffff` (`MANTIS_MARK`, its blood): the mantis boss (rests on the ground).
     /// After `Falling`: the baked format stores the variant index.
     Mantis,
+    /// Green `#34744e` (`FIXED_MARK`, over a wall) or `#29573c` (`FIXED_OPEN_MARK`, over open air):
+    /// the same slab, fixed in place.
+    Fixed,
+    /// Light cyan `#97e6e6` (`CLEAR_WATER_MARK`, over a wall) or `#629292` (`CLEAR_WATER_OPEN_MARK`, over open air):
+    /// the blob's bounding box is a pool of clear water.
+    ClearWater,
+    /// Blue-gray `#8f9ed5` (`SLUDGE_MARK`, over a wall) or `#7682ac` (`SLUDGE_OPEN_MARK`, over open air):
+    /// the blob's bounding box is a pool of sludge.
+    Sludge,
 }
 
 pub struct Marker {
@@ -128,6 +146,21 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
             cells[i] = if is(FALLING_MARK) { Cell::Back } else { Cell::Air };
             continue;
         }
+        if is(FIXED_MARK) || is(FIXED_OPEN_MARK) {
+            marks[i] = Some(MarkerKind::Fixed);
+            cells[i] = if is(FIXED_MARK) { Cell::Back } else { Cell::Air };
+            continue;
+        }
+        if is(CLEAR_WATER_MARK) || is(CLEAR_WATER_OPEN_MARK) {
+            marks[i] = Some(MarkerKind::ClearWater);
+            cells[i] = if is(CLEAR_WATER_MARK) { Cell::Back } else { Cell::Air };
+            continue;
+        }
+        if is(SLUDGE_MARK) || is(SLUDGE_OPEN_MARK) {
+            marks[i] = Some(MarkerKind::Sludge);
+            cells[i] = if is(SLUDGE_MARK) { Cell::Back } else { Cell::Air };
+            continue;
+        }
         if is(DRAGONFLY_MARK) {
             marks[i] = Some(MarkerKind::Dragonfly);
             continue;
@@ -178,7 +211,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
     // Markers may be drawn over the ground: under them, continue whatever surrounds them.
     for y in 0..h {
         for x in 0..w {
-            if marks[y * w + x].is_none() || marks[y * w + x] == Some(MarkerKind::Falling) {
+            if matches!(marks[y * w + x], None | Some(MarkerKind::Falling | MarkerKind::Fixed | MarkerKind::ClearWater | MarkerKind::Sludge)) {
                 continue;
             }
             let side = |dir: isize| {
@@ -277,6 +310,9 @@ fn unbake(packed: &[u8], version: u8) -> Result<Sketch, String> {
             9 => MarkerKind::Rat,
             10 => MarkerKind::Falling,
             11 => MarkerKind::Mantis,
+            12 => MarkerKind::Fixed,
+            13 => MarkerKind::ClearWater,
+            14 => MarkerKind::Sludge,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));
@@ -332,7 +368,9 @@ fn find_markers(marks: &[Option<MarkerKind>], w: usize, h: usize) -> Vec<Marker>
         // Least-squares line through the blob (y down), when it is spread out horizontally.
         let var_x = sxx - sum.x * sum.x / n;
         let slope = if var_x > 1.0 { (sxy - sum.x * sum.y / n) / var_x } else { 0.0 };
-        out.push(Marker { kind, at: sum / n, extent: hi - lo, slope });
+        // Water fills the blob's bounding box, so its position is that box's center (not the centroid of a slanted shape).
+        let at = if matches!(kind, MarkerKind::ClearWater | MarkerKind::Sludge) { (lo + hi) / 2.0 } else { sum / n };
+        out.push(Marker { kind, at, extent: hi - lo, slope });
     }
     out
 }

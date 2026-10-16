@@ -1,6 +1,8 @@
 //! Loose platforms: pieces of the world that give way under your weight.
 //!
-//! They are not hand-pinned: `plan` walks the terrain grid and finds
+//! They are only placed where the sketch has a falling hint (the props are
+//! placed around them). `plan` walks the terrain grid and finds the fits,
+//! each hint taking the nearest one:
 //! * **bridges**: a gap between two ledges at (nearly) the same height, small
 //!   enough to jump, covered by a slab. It may cover a vertical path (the gap
 //!   is a shaft) but never a horizontal or inclined one: the headroom above must
@@ -38,14 +40,10 @@ const MAX_SLOPE: f32 = 1.15;
 const DROP: i32 = 6;
 /// How far a piece reaches into the ground it is fixed to.
 const OVERLAP: f32 = 6.0;
-/// No loose piece closer than this (pixels) to another.
-const SPACING: f32 = 30.0;
-/// How far (world units) from a sketch hint (gray `#847e87`) a piece may be found to answer it.
-const HINT_REACH: f32 = PX * 20.0;
+/// How far (world units) from a sketch hint (falling or fixed) a piece may be found to answer it.
+const HINT_REACH: f32 = PX * 8.0;
 /// How far (cells) a hinted piece looks for a wall to dig its ends into.
 const HINT_DIG: i32 = 8;
-/// Nothing is placed this close (world units) to where the game starts.
-const SPAWN_CLEAR: f32 = 320.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -125,6 +123,8 @@ pub struct Loose {
     b: Vec2,
     /// Which ends are fixed to ground: (left, right).
     hold: (bool, bool),
+    /// Never falls (a hint of the fixed kind).
+    fixed: bool,
 }
 
 impl Loose {
@@ -167,15 +167,7 @@ fn incline_fits(t: &Terrain, a: Vec2, b: Vec2) -> bool {
     })
 }
 
-struct Candidate {
-    loose: Loose,
-    /// Position in sketch cells (for spacing).
-    at: Vec2,
-    luck: f32,
-    bridge: bool,
-}
-
-/// Finds where loose pieces fit in the world.
+/// Finds the loose pieces: one per hint drawn in the sketch (none are placed at random).
 pub fn plan(t: &Terrain) -> Vec<Loose> {
     let size = t.size();
     let solid = |x: i32, y: i32| t.solid(IVec2::new(x, y));
@@ -189,7 +181,7 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
     // Air in the columns `xs` over the rows `ys`.
     let clear = |xs: std::ops::RangeInclusive<i32>, ys: std::ops::RangeInclusive<i32>| xs.into_iter().all(|x| ys.clone().all(|y| air(x, y)));
 
-    let mut found: Vec<Candidate> = Vec::new();
+    let mut found: Vec<Loose> = Vec::new();
     for y in HEADROOM + 3..size.y - DROP - 4 {
         for x in 4..size.x - 4 {
             if !ledge(x, y) {
@@ -235,12 +227,7 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
                         let center = Vec2::new((a + b) / 2.0, top_of(ys));
                         if !dash_zone(center) {
                             let kind = Kind::of(t.style_at(center), hash(x, y, 1));
-                            found.push(Candidate {
-                                loose: Loose { kind, a: Vec2::new(a, top_of(ys)), b: Vec2::new(b, top_of(ys)), hold: (true, true) },
-                                at: Vec2::new((x + xx) as f32 / 2.0, ys as f32),
-                                luck: hash(x, y, 2),
-                                bridge: true,
-                            });
+                            found.push(Loose { kind, a: Vec2::new(a, top_of(ys)), b: Vec2::new(b, top_of(ys)), hold: (true, true), fixed: false });
                         }
                         continue;
                     }
@@ -260,12 +247,7 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
                     if let Some((a, b)) = found_incline {
                         let center = (a + b) / 2.0;
                         if !dash_zone(center) {
-                            found.push(Candidate {
-                                loose: Loose { kind: Kind::of(t.style_at(center), hash(x, y, 1)), a, b, hold: (true, true) },
-                                at: Vec2::new((x + (b.x - a.x) as i32 / 16) as f32, y as f32),
-                                luck: hash(x, y, 2),
-                                bridge: true,
-                            });
+                            found.push(Loose { kind: Kind::of(t.style_at(center), hash(x, y, 1)), a, b, hold: (true, true), fixed: false });
                         }
                         continue;
                     }
@@ -298,33 +280,30 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
                 if open && !neighbor {
                     let center = (l + r) / 2.0;
                     if !dash_zone(center) {
-                        found.push(Candidate {
-                            loose: Loose { kind: Kind::of(t.style_at(center), hash(x, y, 1)), a: l, b: r, hold: (dir == 1, dir == -1) },
-                            at: Vec2::new((x + dir * len / 2) as f32, y as f32),
-                            luck: hash(x, y, 2),
-                            bridge: false,
-                        });
+                        found.push(Loose { kind: Kind::of(t.style_at(center), hash(x, y, 1)), a: l, b: r, hold: (dir == 1, dir == -1), fixed: false });
                     }
                 }
             }
         }
     }
 
-    // Hints drawn in the sketch: the nearest candidate to each is taken, whatever the dice say.
-    let mut kept: Vec<Candidate> = Vec::new();
-    for &(hint, size, slope) in &t.falling_hints {
+    // Hints drawn in the sketch: the nearest candidate to each is taken.
+    let mut kept: Vec<Loose> = Vec::new();
+    for (hint, size, slope, fixed) in t.falling_hints.iter().map(|h| (h.0, h.1, h.2, false)).chain(t.fixed_hints.iter().map(|h| (h.0, h.1, h.2, true))) {
         // The hint's own slope (flat below ~0.15), so a level blob never becomes a diagonal slab.
         let want = if slope.abs() < 0.15 { 0.0 } else { slope.clamp(-MAX_SLOPE, MAX_SLOPE) };
         // A candidate answers it when it points the same way and is about as long as the blob.
-        let answers = |c: &Candidate| {
-            let (a, b) = (c.loose.a, c.loose.b);
+        let answers = |c: &Loose| {
+            let (a, b) = (c.a, c.b);
             (b.y - a.y) / (b.x - a.x).abs().max(1.0) * (b.x - a.x).signum() >= want - 0.25
                 && (b.y - a.y) / (b.x - a.x).abs().max(1.0) * (b.x - a.x).signum() <= want + 0.25
                 && (b - a).length() >= size.x * 0.7
         };
-        let nearest = found.iter().enumerate().filter(|(_, c)| answers(c)).map(|(i, c)| (i, c.loose.center().distance(hint))).filter(|&(_, d)| d <= HINT_REACH).min_by(|a, b| a.1.total_cmp(&b.1));
+        let nearest = found.iter().enumerate().filter(|(_, c)| answers(c)).map(|(i, c)| (i, c.center().distance(hint))).filter(|&(_, d)| d <= HINT_REACH).min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((i, _)) = nearest {
-            kept.push(found.swap_remove(i));
+            let mut piece = found.swap_remove(i);
+            piece.fixed = fixed;
+            kept.push(piece);
             continue;
         }
         // Nothing fits: best effort, a slab following the blob (its width and slope), with its ends dug into any wall just past them.
@@ -342,23 +321,21 @@ pub fn plan(t: &Terrain) -> Vec<Loose> {
             }
         }
         let cell = t.to_cell(hint);
-        kept.push(Candidate { loose: Loose { kind: Kind::of(t.style_at(hint), hash(cell.x, cell.y, 1)), a, b, hold }, at: cell.as_vec2(), luck: 0.0, bridge: true });
+        kept.push(Loose { kind: Kind::of(t.style_at(hint), hash(cell.x, cell.y, 1)), a, b, hold, fixed });
     }
+    kept
+}
 
-    // Most gaps get one, only some ledges do. Keep clear of the spawn and of each other.
-    found.sort_by(|a, b| b.bridge.cmp(&a.bridge).then(a.luck.total_cmp(&b.luck)));
-    for c in found {
-        let wanted = if c.bridge { 0.9 } else { 0.4 };
-        if hash(c.at.x as i32, c.at.y as i32, 4) > wanted || c.loose.center().distance(t.spawn) < SPAWN_CLEAR {
-            continue;
-        }
-        let spacing = if c.bridge { SPACING } else { SPACING * 1.5 };
-        if kept.iter().any(|k| k.at.distance(c.at) < spacing) {
-            continue;
-        }
-        kept.push(c);
-    }
-    kept.into_iter().map(|c| c.loose).collect()
+/// Points along the planned pieces (top line, ends dug in), so the props keep clear of them.
+pub fn marks(t: &Terrain) -> Vec<Vec2> {
+    plan(t)
+        .iter()
+        .flat_map(|l| {
+            let (a, b) = l.line();
+            let n = ((b - a).length() / 20.0).ceil().max(1.0) as i32;
+            (0..=n).map(move |i| a.lerp(b, i as f32 / n as f32))
+        })
+        .collect()
 }
 
 /// The first piece of each material, for the dev tour.
@@ -394,9 +371,10 @@ impl Builder<'_, '_, '_> {
         let tilt = dir.y.atan2(dir.x);
         // The body hangs below the top line, perpendicular to it.
         let center = (a + b) / 2.0 - Vec2::new(-dir.y, dir.x) * (h / 2.0);
-        let mut platform = Platform::new(Vec2::new(w / 2.0, h / 2.0), l.kind.color(), true, false);
+        let mut platform = Platform::new(Vec2::new(w / 2.0, h / 2.0), l.kind.color(), true, l.fixed);
         platform.tilt = if tilt.abs() < 0.01 { 0.0 } else { tilt };
-        let e = self.root(center, platform, Some(Motion::crumble_in(l.kind.delay())));
+        let motion = (!l.fixed).then(|| Motion::crumble_in(l.kind.delay()));
+        let e = self.root(center, platform, motion);
         if platform_tilted(tilt) {
             self.commands.entity(e).insert(Transform::from_translation(center.extend(0.0)).with_rotation(Quat::from_rotation_z(tilt)));
         }
@@ -407,6 +385,9 @@ impl Builder<'_, '_, '_> {
             Kind::Planks => self.planks_body(e, w, h),
         }
         // What stays behind where it was fixed.
+        if l.fixed {
+            return;
+        }
         if l.hold.0 {
             self.remnant(e, l.kind, l.a, 1.0);
         }

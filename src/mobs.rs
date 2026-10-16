@@ -851,7 +851,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
         })
         .collect();
     // Nothing lives (or flies) in the water.
-    let flooded = |p: Vec2| terrain.features.iter().any(|f| crate::water::Kind::is_water(&f.name) && f.rect.contains(p));
+    let flooded = |p: Vec2| terrain.features.iter().any(|f| f.water.is_some() && f.rect.contains(p));
     let banned = |p: Vec2| p.distance(terrain.spawn) < SPAWN_CLEAR || zones.iter().any(|z| z.contains(p)) || flooded(p);
 
     let mut placed: Vec<(MobKind, Vec2)> = Vec::new();

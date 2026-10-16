@@ -431,8 +431,11 @@ impl<'a> Diff<'a> {
             MarkerKind::Frog => [184, 0, 255],
             MarkerKind::Grasshopper => [143, 86, 59],
             MarkerKind::Rat => [172, 50, 50],
-            MarkerKind::Falling => [0x84, 0x7e, 0x87],
+            MarkerKind::Falling => [0x97, 0x60, 0x99],
             MarkerKind::Mantis => [0, 255, 255],
+            MarkerKind::Fixed => [0x29, 0x57, 0x3c],
+            MarkerKind::ClearWater => [0x62, 0x92, 0x92],
+            MarkerKind::Sludge => [0x76, 0x82, 0xac],
         };
         for m in &self.markers {
             if let MarkerChange::Moved(k, at, _) | MarkerChange::Removed(k, at) = m {
@@ -453,7 +456,7 @@ impl<'a> Diff<'a> {
 /// Pairs markers of the same kind, nearest first.
 fn diff_markers(old: &View, new: &View) -> Vec<MarkerChange> {
     let mut out = Vec::new();
-    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly, MarkerKind::Spider, MarkerKind::Centipede, MarkerKind::Frog, MarkerKind::Grasshopper, MarkerKind::Rat, MarkerKind::Mantis, MarkerKind::Falling] {
+    for kind in [MarkerKind::Origin, MarkerKind::Player, MarkerKind::Roach, MarkerKind::Wasp, MarkerKind::Dragonfly, MarkerKind::Spider, MarkerKind::Centipede, MarkerKind::Frog, MarkerKind::Grasshopper, MarkerKind::Rat, MarkerKind::Mantis, MarkerKind::Falling, MarkerKind::Fixed, MarkerKind::ClearWater, MarkerKind::Sludge] {
         let mut a: Vec<Vec2> = old.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         let mut b: Vec<Vec2> = new.markers().filter(|m| m.0 == kind).map(|m| m.1).collect();
         while !a.is_empty() && !b.is_empty() {

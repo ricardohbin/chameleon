@@ -248,7 +248,7 @@ impl Ground {
         let fits = |f: Vec2| {
             region.contains(f)
                 && !terrain.box_hits(f + Vec2::Y * (FOOT + 4.0), Vec2::new(6.0, FOOT * 0.85))
-                && !terrain.features.iter().any(|w| crate::water::Kind::is_water(&w.name) && w.rect.contains(f + Vec2::Y * 4.0))
+                && !terrain.features.iter().any(|w| w.water.is_some() && w.rect.contains(f + Vec2::Y * 4.0))
         };
         let mut sides = [Vec::new(), Vec::new()];
         for (side, dir) in sides.iter_mut().zip([-1.0f32, 1.0]) {

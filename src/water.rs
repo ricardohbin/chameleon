@@ -1,16 +1,16 @@
-//! Water: the empty space inside "feature: … water / flood / sludge / pool"
-//! slices of the sketch is filled with it (every non-solid cell in the slice,
-//! up to the slice's top edge). The water is drawn in front of the chameleon
+//! Water: the empty space inside the water-colored boxes of the sketch (see
+//! `sketch::MarkerKind::ClearWater` / `Sludge`) is filled with it (every
+//! non-solid cell in the box, up to its top edge). The water is drawn in front of the chameleon
 //! (see through, or not, depending on what it is), has a surface that ripples
 //! (springs per column, kicked by splashes and by swimming), droplets and
 //! bubbles. The swimming rules live in `player.rs` (it reads `Waters::sample`
 //! and each `Kind`'s `Traits`).
 //!
-//! Two kinds, picked by keyword in the slice name:
-//! * **Sludge** ("sludge", "flood", "sewage"): thick, dark, almost opaque. Slow
+//! Two kinds, picked by the box's color:
+//! * **Sludge** (`#7682ac` / `#8f9ed5`): thick, dark, almost opaque. Slow
 //!   to move through, wears the swimmer out fast, holds a fall like mud, big
 //!   lazy bubbles that pop.
-//! * **Clear** ("water", "pool", "lake"): light, see-through, fast ripples,
+//! * **Clear** (`#629292` / `#97e6e6`): light, see-through, fast ripples,
 //!   small bright droplets, easy to swim in.
 
 use bevy::{
@@ -145,24 +145,6 @@ impl Kind {
             Kind::Clear => &CLEAR,
             Kind::Sludge => &SLUDGE,
         }
-    }
-
-    /// Picked from a feature slice's name (sludge first: "flood water sludge" is sludge).
-    fn from_name(name: &str) -> Option<Kind> {
-        let n = name.to_lowercase();
-        let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-        if has(&["sludge", "flood", "sewage"]) {
-            Some(Kind::Sludge)
-        } else if has(&["water", "pool", "lake"]) {
-            Some(Kind::Clear)
-        } else {
-            None
-        }
-    }
-
-    /// Is this a water feature slice?
-    pub fn is_water(feature_name: &str) -> bool {
-        Kind::from_name(feature_name).is_some()
     }
 
     fn index(self) -> usize {
@@ -423,7 +405,7 @@ fn rebuild(
     waters.pools = terrain
         .features
         .iter()
-        .filter_map(|f| Pool::new(&terrain, Kind::from_name(&f.name)?, f.rect))
+        .filter_map(|f| Pool::new(&terrain, f.water?, f.rect))
         .collect();
     for (i, pool) in waters.pools.iter().enumerate() {
         commands.spawn((
