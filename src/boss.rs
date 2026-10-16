@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -22,7 +22,7 @@ use bevy::prelude::*;
 use crate::{
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    centipede, dragonfly, frog, spider,
+    centipede, dragonfly, frog, grasshopper, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -67,7 +67,7 @@ impl Plugin for BossPlugin {
 /// The bosses beaten so far, in order. Each one gives a power for good: the
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
 /// air spin, the spider walking on walls, the centipede burrowing through rubble, the frog moving
-/// through water as if on land. F8 forgets them.
+/// through water as if on land, the grasshopper the charged big jump. F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -103,6 +103,11 @@ impl Defeated {
         self.0.contains(&BossKind::Frog)
     }
 
+    /// Holding down on the ground charges a big jump (released = launched).
+    pub fn leap(&self) -> bool {
+        self.0.contains(&BossKind::Grasshopper)
+    }
+
     /// Pushing into a wall: walking on it.
     pub fn climb(&self) -> bool {
         self.0.contains(&BossKind::Spider)
@@ -123,6 +128,7 @@ impl BossKind {
             BossKind::Spider => "WALL WALK  (push into a wall, W / S)",
             BossKind::Centipede => "BURROW  (aim into rubble, E)",
             BossKind::Frog => "WATER WALK  (water no longer slows or tires you)",
+            BossKind::Grasshopper => "BIG JUMP  (hold S to charge, release)",
         }
     }
 }
@@ -141,10 +147,11 @@ pub enum BossKind {
     Spider,
     Centipede,
     Frog,
+    Grasshopper,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 6] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog];
+    pub const ALL: [BossKind; 7] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -155,6 +162,7 @@ impl BossKind {
             BossKind::Spider => terrain.spider,
             BossKind::Centipede => terrain.centipede,
             BossKind::Frog => terrain.frog,
+            BossKind::Grasshopper => terrain.grasshopper,
         }
     }
 
@@ -164,7 +172,7 @@ impl BossKind {
         let arena = Arena::find(self, terrain);
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let mut arena_rect = match self {
-            BossKind::Roach | BossKind::Frog => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
+            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
             BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
@@ -186,6 +194,7 @@ impl BossKind {
             BossKind::Spider => spider::spawn(commands, meshes, materials, &arena, terrain),
             BossKind::Centipede => centipede::spawn(commands, meshes, materials, &arena, terrain, region),
             BossKind::Frog => frog::spawn(commands, meshes, materials, &arena),
+            BossKind::Grasshopper => grasshopper::spawn(commands, meshes, materials, &arena),
         };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
         commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect }, Sense::default()));
@@ -259,6 +268,7 @@ impl Arena {
             BossKind::Spider => terrain.spider.unwrap_or(fallback + Vec2::Y * 230.0),
             BossKind::Centipede => terrain.centipede.unwrap_or(fallback + Vec2::Y * 230.0),
             BossKind::Frog => terrain.frog.unwrap_or(fallback),
+            BossKind::Grasshopper => terrain.grasshopper.unwrap_or(fallback),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.

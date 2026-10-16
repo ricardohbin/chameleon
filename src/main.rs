@@ -11,6 +11,7 @@ mod map_export;
 mod features;
 mod fumes;
 mod frog;
+mod grasshopper;
 mod feeding;
 mod gore;
 mod hud;
@@ -71,7 +72,7 @@ fn main() {
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin, centipede::CentipedePlugin, burrow::BurrowPlugin, frog::FrogPlugin))
+        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin, centipede::CentipedePlugin, burrow::BurrowPlugin, frog::FrogPlugin, grasshopper::GrasshopperPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),

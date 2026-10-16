@@ -67,6 +67,12 @@ const GROUND_ACCEL: f32 = 2200.0;
 const AIR_ACCEL: f32 = 1300.0;
 const GRAVITY: f32 = 2000.0;
 const JUMP_SPEED: f32 = 740.0;
+/// The grasshopper's big jump: fully charged it takes off at this speed (~3x as high,
+/// still under the fall-damage height). Holding down charges it, full after
+/// `CHARGE_TIME` seconds; let go sooner than `CHARGE_MIN` and nothing happens.
+const BIG_JUMP_SPEED: f32 = 1300.0;
+pub const CHARGE_TIME: f32 = 1.5;
+const CHARGE_MIN: f32 = 0.2;
 const FLIGHT_ACCEL: f32 = 2000.0;
 const FLIGHT_SPEED: f32 = 700.0;
 const FLIGHT_BRAKE: f32 = 10.0;
@@ -148,6 +154,9 @@ pub struct Player {
     pub slipping: f32,
     /// On a wall (wall walking): which side it is on (-1 left, 1 right).
     pub climbing: Option<f32>,
+    /// The grasshopper's power: seconds spent charging the big jump (down held on
+    /// the ground, feet planted); see `charging`.
+    charge: Option<f32>,
     /// Burrowing through rubble (`burrow.rs`): a dig in progress, and the way through that `E` would take now.
     pub burrow: Option<crate::burrow::Burrow>,
     pub burrow_target: Option<crate::burrow::Path>,
@@ -188,6 +197,11 @@ pub enum Hurt {
 }
 
 impl Player {
+    /// Seconds into charging the big jump (0 = just started), if it is.
+    pub fn charging(&self) -> Option<f32> {
+        self.charge
+    }
+
     /// Take `damage` and get knocked back with velocity `knock`.
     pub fn hurt(&mut self, damage: i32, knock: Vec2) -> Hurt {
         if self.dead.is_some() || self.invuln > 0.0 || self.guard > 0.0 || self.god {
@@ -434,7 +448,7 @@ pub fn move_player(
     p.invuln = (p.invuln - dt).max(0.0);
     p.guard = (p.guard - dt).max(0.0);
     let dead = p.dead.is_some();
-    if p.stun > 0.0 || dead {
+    if p.stun > 0.0 || dead || p.charging().is_some() {
         dir = 0.0;
     }
     if dir != 0.0 {
@@ -561,25 +575,55 @@ pub fn move_player(
         } else {
             p.jump_buffer - dt
         };
-        if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead && climbing.is_none() {
-            // On steep ground the jump tilts toward the slope's normal: no hopping up walls.
-            let normal = slope.map_or(Vec2::Y, |s| Vec2::new(-s, 1.0).normalize());
-            let jump = Vec2::Y.lerp(normal, hardness).normalize();
-            let push = if swimming && !at_home {
-                wet.as_ref().map_or(1.0, |w| w.kind.t().jump)
-            } else {
-                1.0
-            };
-            p.vel.y = jump.y * JUMP_SPEED * push;
+        // On steep ground the jump tilts toward the slope's normal: no hopping up walls.
+        let normal = slope.map_or(Vec2::Y, |s| Vec2::new(-s, 1.0).normalize());
+        let jump = Vec2::Y.lerp(normal, hardness).normalize();
+        let take_off = |p: &mut Player, speed: f32| {
+            p.vel.y = jump.y * speed;
             if hardness > 0.0 {
-                p.vel.x = jump.x * JUMP_SPEED * push;
+                p.vel.x = jump.x * speed;
             }
             p.jump_buffer = 0.0;
             p.coyote = 0.0;
             p.grounded = false;
             p.ground = None;
+        };
+        // The big jump (grasshopper): holding down (S / arrow) on the ground charges it
+        // (feet planted), letting go launches it; a tap (under `CHARGE_MIN`) does nothing.
+        let down = keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
+        let can_charge = defeated.leap() && !swimming && !dead && p.stun <= 0.0 && climbing.is_none() && p.grounded;
+        let mut launched = false;
+        if let Some(held) = p.charge {
+            if !can_charge {
+                // Walked off, stunned, knocked into the air...
+                p.charge = None;
+            } else if down {
+                p.charge = Some(held + dt);
+            } else {
+                if held >= CHARGE_MIN {
+                    let k = (held / CHARGE_TIME).clamp(0.0, 1.0);
+                    let k = k * k * (3.0 - 2.0 * k);
+                    take_off(p, JUMP_SPEED + (BIG_JUMP_SPEED - JUMP_SPEED) * k);
+                    launched = true;
+                    if k >= 1.0 {
+                        shake.add(0.25);
+                    }
+                }
+                p.charge = None;
+            }
+        } else if can_charge && down {
+            p.charge = Some(0.0);
         }
-        if keys.any_just_released(jump_keys) && p.vel.y > 0.0 {
+        if p.jump_buffer > 0.0 && p.coyote > 0.0 && p.stun <= 0.0 && !dead && climbing.is_none() && !launched {
+            let push = if swimming && !at_home {
+                wet.as_ref().map_or(1.0, |w| w.kind.t().jump)
+            } else {
+                1.0
+            };
+            take_off(p, JUMP_SPEED * push);
+            p.charge = None;
+        }
+        if keys.any_just_released(jump_keys) && p.vel.y > 0.0 && !launched {
             p.vel.y *= 0.5;
         }
 

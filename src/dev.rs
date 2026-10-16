@@ -29,7 +29,7 @@ impl Plugin for DevPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, screenshot_on_f12);
         crate::map_export::register(app);
-        if std::env::var("HOLD").is_ok() || std::env::var("TAP").is_ok() {
+        if std::env::var("HOLD").is_ok() || std::env::var("TAP").is_ok() || std::env::var("PRESS").is_ok() {
             app.add_systems(PreUpdate, fake_input.after(bevy::input::InputSystems).before(crate::level::restart));
         }
         if std::env::var("START").is_ok() || std::env::var("EXIT_AFTER").is_ok() {
@@ -57,6 +57,9 @@ impl Plugin for DevPlugin {
         if std::env::var("VIOLET").is_ok() {
             app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Frog));
         }
+        if std::env::var("BROWN").is_ok() {
+            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Grasshopper));
+        }
         if std::env::var("TOUR").is_ok() {
             app.add_systems(Update, tour.after(player::move_player).before(camera::follow_player));
         }
@@ -78,7 +81,7 @@ fn screenshot_on_f12(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>, de
 }
 
 /// `HOLD=d,shift` keeps keys down; `TAP=space@1.0,k@1.1` taps keys at those
-/// seconds. Keys: a d w s space k shift f j g f1-f10 f12. For testing movement with `START`.
+/// seconds; `PRESS=s@1.0-1.2,space@1.05-2.8` holds keys down over those spans. Keys: a d w s space k shift f j g f1-f10 f12. For testing movement with `START`.
 fn fake_input(time: Res<Time<Real>>, mut keys: ResMut<ButtonInput<KeyCode>>, mut tapped: Local<Vec<KeyCode>>) {
     let code = |name: &str| match name.trim() {
         "a" => Some(KeyCode::KeyA),
@@ -121,6 +124,16 @@ fn fake_input(time: Res<Time<Real>>, mut keys: ResMut<ButtonInput<KeyCode>>, mut
         if t >= at && t - dt < at {
             keys.press(key);
             tapped.push(key);
+        }
+    }
+    for span in std::env::var("PRESS").unwrap_or_default().split(',') {
+        let Some((name, range)) = span.split_once('@') else { continue };
+        let Some((from, to)) = range.split_once('-') else { continue };
+        let (Some(key), Ok(from), Ok(to)) = (code(name), from.trim().parse::<f32>(), to.trim().parse::<f32>()) else { continue };
+        if t >= from && t < to {
+            keys.press(key);
+        } else if t >= to && t - dt < to {
+            keys.release(key);
         }
     }
 }
@@ -214,6 +227,9 @@ fn tour(
     }
     if let Some(p) = terrain.frog {
         stops.push(("frog".into(), p + Vec2::Y * player::HALF.y, 1.0));
+    }
+    if let Some(p) = terrain.grasshopper {
+        stops.push(("grasshopper".into(), p + Vec2::Y * player::HALF.y, 1.0));
     }
     let slug = |name: &str| name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
     for a in &terrain.areas {

@@ -17,6 +17,7 @@ use crate::{
     mobs::{Mob, State},
     player::{self, Player},
     shapes::Rng,
+    sound::Sfx,
 };
 
 /// Remains count as in reach a bit further than a hit (they lie on the ground).
@@ -96,6 +97,7 @@ fn feed(
     mut learned: ResMut<Learned>,
     mut bleed: MessageWriter<Bleed>,
     mut paint: MessageWriter<Paint>,
+    mut sfx: MessageWriter<Sfx>,
     player: Single<(&mut Player, &Transform, &mut ChameleonAnim)>,
     mobs: Query<(Entity, &Mob, &Transform), Without<Devoured>>,
     bosses: Query<(Entity, &Boss, &Transform, Has<PickedClean>)>,
@@ -116,6 +118,7 @@ fn feed(
 
     learned.0 = true;
     anim.bite();
+    sfx.write(Sfx::Feed);
     if meal.boss {
         p.max_hp += 1;
         commands.entity(meal.entity).insert(PickedClean);
