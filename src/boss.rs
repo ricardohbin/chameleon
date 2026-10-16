@@ -306,6 +306,14 @@ impl Boss {
         Self { spec, hp: spec.hp, home, dead: false, awake: false, staged: false, guard: false, pressure: 0.0, armor: 0.0, hit_by: 0, flash: 0.0, mats }
     }
 
+    /// Stops hunting and heals: it goes back home on its own, it is not replaced.
+    pub fn stand_down(&mut self) {
+        self.awake = false;
+        self.hp = self.spec.hp;
+        self.pressure = 0.0;
+        self.armor = 0.0;
+    }
+
     /// Second phase: below half health.
     pub fn enraged(&self) -> bool {
         self.hp * 2 <= self.spec.hp
@@ -447,16 +455,12 @@ fn spawn_all(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
 /// Bosses wake when the chameleon enters their lair, and reset when it leaves
 /// the lair or runs too far.
 fn lairs(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    terrain: Res<Terrain>,
     player: Single<(&Player, &Transform)>,
-    mut bosses: Query<(Entity, &mut Boss, &Lair, &Transform)>,
+    mut bosses: Query<(&mut Boss, &Lair, &Transform)>,
 ) {
     let (p, ptf) = *player;
     let ppos = ptf.translation.truncate();
-    for (e, mut boss, lair, tf) in &mut bosses {
+    for (mut boss, lair, tf) in &mut bosses {
         if boss.dead || p.dead.is_some() {
             continue;
         }
@@ -464,10 +468,9 @@ fn lairs(
         if !boss.awake && lair.arena.contains(ppos) {
             boss.awake = true;
             info!("{} wakes", boss.spec.name);
-        } else if boss.awake && (!inside || tf.translation.truncate().distance(ppos) > LEASH) {
+        } else if boss.awake && (!inside || (lair.kind != BossKind::Centipede && tf.translation.truncate().distance(ppos) > LEASH)) {
             info!("{} gives up and goes home", boss.spec.name);
-            commands.entity(e).despawn();
-            lair.kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
+            boss.stand_down();
         }
     }
 }
@@ -597,23 +600,14 @@ pub(crate) fn slash_bosses(
     }
 }
 
-/// The chameleon came back: living bosses heal and go home (their AI resets itself).
-/// The chameleon came back: living bosses start over, asleep at home.
-fn reset_on_respawn(
-    mut commands: Commands,
-    mut respawned: MessageReader<Respawned>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    terrain: Res<Terrain>,
-    bosses: Query<(Entity, &Boss, &Lair)>,
-) {
+/// The chameleon came back: living bosses heal and walk home, asleep (they are not replaced).
+fn reset_on_respawn(mut respawned: MessageReader<Respawned>, mut bosses: Query<&mut Boss>) {
     if respawned.read().count() == 0 {
         return;
     }
-    for (e, boss, lair) in &bosses {
+    for mut boss in &mut bosses {
         if !boss.dead {
-            commands.entity(e).despawn();
-            lair.kind.spawn(&mut commands, &mut meshes, &mut materials, &terrain);
+            boss.stand_down();
         }
     }
 }

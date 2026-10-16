@@ -135,6 +135,7 @@ fn spawn_ui(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materi
 
 /// Looks for a way through (and says so), and starts digging when `E` is pressed.
 fn scan(
+    mut last: Local<Vec2>,
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     defeated: Res<Defeated>,
@@ -146,10 +147,33 @@ fn scan(
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
     let able = defeated.burrow() && p.dead.is_none() && p.burrow.is_none() && !p.flying && !p.swimming && p.stun <= 0.0;
-    p.burrow_target = if able { find(&terrain, ppos, p.aim) } else { None };
-
     // Near rubble: say what to do.
     let near = able && terrain.features.iter().any(|f| f.rubble && f.rect.inflate(120.0).contains(ppos));
+
+    // The aim picks the way through when it points at one; otherwise the last valid way sticks,
+    // and if there is none yet, the valid direction closest to the aim is taken.
+    p.burrow_target = None;
+    if near {
+        let by_aim = find(&terrain, ppos, p.aim);
+        if let Some(path) = by_aim {
+            *last = path.dir;
+            p.burrow_target = Some(path);
+        } else if let Some(path) = find(&terrain, ppos, *last) {
+            p.burrow_target = Some(path);
+        } else {
+            let base = if p.aim == Vec2::ZERO { Vec2::X } else { p.aim.normalize() };
+            let found = (1..=12).flat_map(|i| {
+                let a = i as f32 * std::f32::consts::TAU / 24.0;
+                [a, -a]
+            }).find_map(|a| find(&terrain, ppos, Vec2::from_angle(a).rotate(base)));
+            if let Some(path) = found {
+                *last = path.dir;
+                p.burrow_target = Some(path);
+            }
+        }
+    } else {
+        *last = Vec2::ZERO;
+    }
     let (text, alpha) = match (p.burrow_target, near) {
         (Some(_), _) => ("[E]  BURROW THROUGH THE RUBBLE", 0.95),
         (None, true) => ("RUBBLE: aim through it, to the other side, and press E", 0.55),
