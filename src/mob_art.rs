@@ -116,6 +116,60 @@ impl Builder<'_, '_, '_> {
     }
 }
 
+/// How thick the black outline around every mob is, in world units: tiny gray
+/// mobs read against the gray world.
+const OUTLINE: f32 = 2.2;
+/// The outline sits this far behind its part (local z), so it is under every part of the mob.
+const OUTLINE_Z: f32 = -1.0;
+
+/// Gives every newly spawned mob a thick black outline: each opaque part gets a
+/// black copy behind it, stamped in 8 directions (`OUTLINE` world units out).
+/// Translucent parts (wings, silk) are left alone.
+pub fn outline(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut black: Local<Option<Handle<ColorMaterial>>>,
+    mobs: Query<Entity, Added<Mob>>,
+    children: Query<&Children>,
+    parts: Query<(&Mesh2d, &MeshMaterial2d<ColorMaterial>, &GlobalTransform)>,
+) {
+    let black = black.get_or_insert_with(|| materials.add(Color::BLACK)).clone();
+    for mob in &mobs {
+        for part in children.iter_descendants(mob) {
+            let Ok((mesh, mat, gt)) = parts.get(part) else { continue };
+            if materials.get(&mat.0).is_none_or(|m| m.alpha_mode == AlphaMode2d::Blend || m.color.alpha() < 1.0) {
+                continue;
+            }
+            let Some(mesh) = meshes.get(&mesh.0).and_then(|m| stamped(m, OUTLINE / gt.scale().truncate().abs().max_element().max(1e-3))) else {
+                continue;
+            };
+            commands.spawn((Mesh2d(meshes.add(mesh)), MeshMaterial2d(black.clone()), Transform::from_xyz(0.0, 0.0, OUTLINE_Z), ChildOf(part)));
+        }
+    }
+}
+
+/// `mesh` copied 8 times around, `r` out (its own units): its silhouette, grown by `r`.
+fn stamped(mesh: &Mesh, r: f32) -> Option<Mesh> {
+    let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+    let indices: Vec<u32> = mesh.indices()?.iter().map(|i| i as u32).collect();
+    let (mut out_pos, mut out_idx) = (Vec::new(), Vec::new());
+    for k in 0..8 {
+        let d = Vec2::from_angle(k as f32 * PI / 4.0) * r;
+        let base = out_pos.len() as u32;
+        out_pos.extend(pos.iter().map(|p| [p[0] + d.x, p[1] + d.y, 0.0]));
+        out_idx.extend(indices.iter().map(|i| base + i));
+    }
+    let n = out_pos.len();
+    Some(
+        Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, out_pos)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; n])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; n])
+            .with_inserted_indices(bevy::mesh::Indices::U32(out_idx)),
+    )
+}
+
 /// Spawn a mob of `kind` centered at `at` (`parent`: the nest that released it).
 pub fn spawn(
     commands: &mut Commands,

@@ -123,6 +123,7 @@ impl Plugin for MobPlugin {
                 .after(spit::move_spit),
         );
         app.add_systems(Update, reinforce.after(rebuild));
+        app.add_systems(Update, mob_art::outline);
         treatment::build(app);
         sewer::plugin(app);
     }
