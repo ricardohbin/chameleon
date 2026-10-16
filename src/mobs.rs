@@ -827,7 +827,7 @@ impl Zone {
 
 /// Where the mobs go: (kind, center) for every slice, themed after its boss.
 fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
-    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede), (BossKind::Frog, terrain.frog), (BossKind::Grasshopper, terrain.grasshopper), (BossKind::Rat, terrain.rat)]
+    let bosses: Vec<(BossKind, Vec2)> = [(BossKind::Roach, terrain.roach), (BossKind::Wasp, terrain.wasp), (BossKind::Dragonfly, terrain.dragonfly), (BossKind::Spider, terrain.spider), (BossKind::Centipede, terrain.centipede), (BossKind::Frog, terrain.frog), (BossKind::Grasshopper, terrain.grasshopper), (BossKind::Rat, terrain.rat), (BossKind::Mantis, terrain.mantis)]
         .into_iter()
         .filter_map(|(k, at)| Some((k, at?)))
         .collect();
@@ -836,7 +836,7 @@ fn plan(terrain: &Terrain) -> Vec<(MobKind, Vec2)> {
         .flat_map(|&(kind, _)| {
             let a = Arena::find(kind, terrain);
             match kind {
-                BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat => vec![Zone::Rect(Rect::new(
+                BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis => vec![Zone::Rect(Rect::new(
                     a.left - ROACH_ARENA_MARGIN,
                     a.floor - 250.0,
                     a.right + ROACH_ARENA_MARGIN,
@@ -1035,6 +1035,8 @@ pub(crate) fn menu(boss: BossKind, style: Style) -> Vec<(MobKind, f32)> {
         ],
         // Its kin, wherever it lives (`mobs/sinkhole.rs`).
         BossKind::Grasshopper => sinkhole::menu(),
+        // Its brood, wherever it hunts (`mobs/mall.rs`).
+        BossKind::Mantis => mall::menu(),
         // The King Rat's court: its packs, and the vermin that feed beside them.
         BossKind::Rat => vec![
             (MobKind::Rat, 0.45),
@@ -1320,7 +1322,7 @@ fn slash_mobs(
                 continue;
             }
         }
-        m.hp -= if p.god.smites() { player::SMITE } else { 1 };
+        m.hp -= if p.god.smites() { player::SMITE } else if slashed { anim.damage() } else { 1 };
         m.flash = 1.0;
         if m.spec.moves == Moves::Crypt {
             catacombs::struck(&mut m);

@@ -36,6 +36,12 @@ const WAVE_RADIUS: f32 = 60.0;
 /// The slash hitbox: a half-disc of this radius (world units) around the
 /// swiping shoulder, on the side the slash is aimed at. Matches the wave.
 pub const SLASH_REACH: f32 = WAVE_RADIUS * player::SCALE * 1.15;
+/// The scythe claws (earned from the mantis): the slash reaches this much farther
+/// (the wave grows with it) and takes `SCYTHE_DAMAGE` health instead of 1.
+pub const SCYTHE_REACH: f32 = 1.35;
+pub const SCYTHE_DAMAGE: i32 = 2;
+/// The wave with the scythe claws: a cold cyan edge.
+const SCYTHE_WAVE: Color = Color::srgb(0.75, 1.0, 1.0);
 /// The air spin (earned from the dragonfly): attacking in the air whirls the
 /// chameleon around once, cutting a wide fan toward the aim, untouchable for
 /// `SPIN_GUARD`; then it needs `SPIN_COOLDOWN` before the next one.
@@ -231,6 +237,8 @@ pub struct ChameleonAnim {
     death: f32,
     /// 0 = upright, 1 = on a wall (turned head up, belly to the wall).
     climb: f32,
+    /// The mantis's scythe claws: a wider, deadlier slash.
+    scythe: bool,
     rng: u32,
 }
 
@@ -537,6 +545,7 @@ pub fn spawn_chameleon(
         earned: Vec::new(),
         death: 0.0,
         climb: 0.0,
+        scythe: false,
         rng: 0x9E37_79B9,
     });
 }
@@ -699,6 +708,7 @@ pub fn update_anim_state(
     // (`E` at rubble with a way through burrows instead, see `burrow.rs`.)
     a.eat = keys.just_pressed(KeyCode::KeyE) && free && p.burrow_target.is_none() && p.burrow.is_none();
     a.spin_cooldown = (a.spin_cooldown - dt).max(0.0);
+    a.scythe = defeated.scythe();
     if attack && free && !a.eat {
         a.slash_aim = p.aim;
         a.slash_id += 1;
@@ -955,9 +965,11 @@ fn slash_wave(
     }
     // Barely there: a quick ripple that widens and fades.
     *vis = Visibility::Inherited;
-    tf.scale = Vec3::new(1.0, sweep, 1.0) * (0.9 + 0.25 * k);
+    let grow = if a.scythe { SCYTHE_REACH } else { 1.0 };
+    tf.scale = Vec3::new(1.0, sweep, 1.0) * (0.9 + 0.25 * k) * grow;
     if let Some(mut mat) = materials.get_mut(&wave.0) {
-        mat.color.set_alpha(0.55 * (1.0 - k).powf(1.3));
+        let color = if a.scythe { SCYTHE_WAVE } else { WAVE };
+        mat.color = color.with_alpha(if a.scythe { 0.7 } else { 0.55 } * (1.0 - k).powf(1.3));
     }
 }
 
@@ -1073,7 +1085,18 @@ impl ChameleonAnim {
             return in_fan(ppos, self.slash_aim, SPIN_REACH, SPIN_FAN, pos, radius);
         }
         let center = slash_center(ppos, facing);
-        (pos - center).dot(self.slash_aim) > -radius * 0.5 && pos.distance(center) < SLASH_REACH + radius
+        (pos - center).dot(self.slash_aim) > -radius * 0.5 && pos.distance(center) < self.slash_reach() + radius
+    }
+
+    /// How far the plain slash reaches (farther with the scythe claws).
+    pub fn slash_reach(&self) -> f32 {
+        if self.scythe { SLASH_REACH * SCYTHE_REACH } else { SLASH_REACH }
+    }
+
+    /// Health the current attack takes from what it cuts: the scythe claws cut
+    /// deeper on a plain slash (the spin stays as it is).
+    pub fn damage(&self) -> i32 {
+        if self.scythe && self.spin.is_none() { SCYTHE_DAMAGE } else { 1 }
     }
 
     /// Which way the current attack throws a target at `pos`: along the slash,

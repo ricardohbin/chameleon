@@ -14,6 +14,7 @@ mod fumes;
 mod frog;
 mod grasshopper;
 mod king_rat;
+mod mantis;
 mod feeding;
 mod gore;
 mod hud;
@@ -89,7 +90,7 @@ fn main() {
             hud::HudPlugin,
         ))
         .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin, centipede::CentipedePlugin, burrow::BurrowPlugin, frog::FrogPlugin, grasshopper::GrasshopperPlugin))
-        .add_plugins(king_rat::KingRatPlugin)
+        .add_plugins((king_rat::KingRatPlugin, mantis::MantisPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).after(menu::input).before(level::restart),

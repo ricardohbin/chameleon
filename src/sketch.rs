@@ -33,6 +33,8 @@ const FROG_MARK: [u8; 3] = [0xb8, 0x00, 0xff];
 const GRASSHOPPER_MARK: [u8; 3] = [0x8f, 0x56, 0x3b];
 /// Dull red `#ac3232`: the King Rat (would read as the player's red in the channel test).
 const RAT_MARK: [u8; 3] = [0xac, 0x32, 0x32];
+/// Cyan `#00ffff`: the mantis (no channel test match: green and blue both high).
+const MANTIS_MARK: [u8; 3] = [0x00, 0xff, 0xff];
 
 /// Gray `#847e87`: asks `level::loose` for a falling platform (it would read as background structure).
 const FALLING_MARK: [u8; 3] = [0x84, 0x7e, 0x87];
@@ -61,6 +63,9 @@ pub enum MarkerKind {
     /// Gray `#847e87` (`FALLING_MARK`): a hint to place a falling platform here
     /// (the marked pixels themselves stay open air).
     Falling,
+    /// Cyan `#00ffff` (`MANTIS_MARK`, its blood): the mantis boss (rests on the ground).
+    /// After `Falling`: the baked format stores the variant index.
+    Mantis,
 }
 
 pub struct Marker {
@@ -137,6 +142,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
         }
         if is(RAT_MARK) {
             marks[i] = Some(MarkerKind::Rat);
+            continue;
+        }
+        if is(MANTIS_MARK) {
+            marks[i] = Some(MarkerKind::Mantis);
             continue;
         }
         if is(FROG_MARK) {
@@ -267,6 +276,7 @@ fn unbake(packed: &[u8], version: u8) -> Result<Sketch, String> {
             8 => MarkerKind::Grasshopper,
             9 => MarkerKind::Rat,
             10 => MarkerKind::Falling,
+            11 => MarkerKind::Mantis,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

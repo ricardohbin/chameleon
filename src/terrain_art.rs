@@ -198,7 +198,7 @@ impl Fields {
 /// A tile being painted on another thread (`TerrainPart`, so a reload drops it
 /// and the painting is cancelled).
 #[derive(Component)]
-pub struct TileTask(Task<(Image, Image, [Option<Image>; 4])>, IVec2);
+pub struct TileTask(Task<(Image, Image, [Option<Image>; 5])>, IVec2);
 
 /// A flat stand-in for the tile starting at grid cell `.0`, so the ground
 /// around the player shows on the very first frame; it goes when the painted
@@ -352,13 +352,14 @@ pub fn finish_tiles(
                 .add_child(back);
             // The stone in the color of the boss that ruled it, on the color layer, hidden until
             // that color washes over it.
-            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat]) {
+            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis]) {
                 let Some(blue) = blue else { continue };
                 let center = tf.translation.truncate();
                 let home = match boss {
                     BossKind::Spider => terrain.spider,
                     BossKind::Roach => terrain.roach,
                     BossKind::Rat => terrain.rat,
+                    BossKind::Mantis => terrain.mantis,
                     _ => terrain.grasshopper,
                 };
                 let dist = home.map_or(0.0, |home| (center.distance(home) - extent * 0.5).max(0.0));
@@ -378,7 +379,7 @@ pub fn finish_tiles(
 }
 
 /// The tile's solid ground (front) and its interiors (back), as two images.
-fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 4]) {
+fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 5]) {
     let px = TILE as usize * TEX;
     // Two extra texel rows above each tile, to find the lit top edges.
     const PAD: usize = 2;
@@ -388,9 +389,10 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 4]
     let mut front = vec![0u8; px * px * 4];
     let mut back = vec![0u8; px * px * 4];
     // The ground of the regions of the Weaver (blue limestone), the Gutter King (sulfur yellow),
-    // the Sawleg (brown: the crumbling blocks and the park) and the King Rat (red: the subway's
-    // tiles and marble) again, in their colors (only if the tile has any).
-    let mut tinted: [Option<Vec<u8>>; 4] = [None, None, None, None];
+    // the Sawleg (brown: the crumbling blocks and the park), the King Rat (red: the subway's
+    // tiles and marble) and the Reaper (cyan: the mall's checkered floors) again, in their colors
+    // (only if the tile has any).
+    let mut tinted: [Option<Vec<u8>>; 5] = [None, None, None, None, None];
     for j in 0..px {
         for i in 0..px {
             let u = x0 as f32 + (i as f32 + 0.5) / TEX as f32;
@@ -411,6 +413,7 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> (Image, Image, [Option<Image>; 4]
                     Style::Concrete => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &BRICK_BROWN)),
                     Style::Park => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &SOIL_BROWN)),
                     Style::Subway => (3, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_RED)),
+                    Style::Mall => (4, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_CYAN)),
                     _ => continue,
                 };
                 let data = tinted[which].get_or_insert_with(|| vec![0u8; px * px * 4]);
@@ -442,6 +445,8 @@ const BRICK_BROWN: [(f32, Rgb); 4] = [(0.0, [0.07, 0.04, 0.03]), (0.22, [0.26, 0
 const SOIL_BROWN: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.01]), (0.22, [0.22, 0.13, 0.06]), (0.55, [0.48, 0.31, 0.16]), (1.0, [0.78, 0.60, 0.40])];
 /// The subway once the King Rat's red is back: oxblood glazed tile and rosy marble.
 const TILE_RED: [(f32, Rgb); 4] = [(0.0, [0.07, 0.02, 0.02]), (0.22, [0.27, 0.07, 0.07]), (0.55, [0.62, 0.20, 0.19]), (1.0, [0.90, 0.62, 0.56])];
+/// The mall once the Reaper's cyan is back: glossy teal checker tiles, aqua highlights.
+const TILE_CYAN: [(f32, Rgb); 4] = [(0.0, [0.01, 0.06, 0.07]), (0.22, [0.04, 0.22, 0.25]), (0.55, [0.12, 0.55, 0.60]), (1.0, [0.62, 0.95, 0.96])];
 
 /// The painted texel `c` in a color ramp (its brightness picks the shade).
 fn shade(c: Rgb, k: f32, ramp: &[(f32, Rgb)]) -> Rgb {

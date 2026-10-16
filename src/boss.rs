@@ -2,7 +2,7 @@
 //! marker in the world sketch); this module
 //! does what they all have in common: picking which boss to fight, health,
 //! getting slashed, the death spectacle, torn-off gibs, healing when the
-//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`)
+//! chameleon dies, and the HUD status. Each boss module (`wasp`, `roach`, `dragonfly`, `spider`, `centipede`, `frog`, `grasshopper`, `king_rat`, `mantis`)
 //! only builds its body and runs its own AI and corpse.
 //!
 //! Every boss with a marker in the sketch is always there, asleep in its lair
@@ -23,7 +23,7 @@ use crate::{
     feeding::Morsel,
     camera::{HitStop, Shake, ZoomPunch},
     chameleon::{self, ChameleonAnim, ColorEarned},
-    centipede, dragonfly, frog, grasshopper, king_rat, spider,
+    centipede, dragonfly, frog, grasshopper, king_rat, mantis, spider,
     gore::{Bleed, Fluid, Paint},
     hud::ScreenFlash,
     level::{self, Platform, Restart, WorldReloaded},
@@ -69,7 +69,8 @@ impl Plugin for BossPlugin {
 /// The bosses beaten so far, in order. Each one gives a power for good: the
 /// Gutter King the dash, the Venom Mother the venom spit, the dragonfly the
 /// air spin, the spider walking on walls, the centipede burrowing through rubble, the frog moving
-/// through water as if on land, the grasshopper the charged big jump, the King Rat breathing the sewer air. F8 forgets them.
+/// through water as if on land, the grasshopper the charged big jump, the King Rat breathing the sewer air, the mantis
+/// the scythe claws (a wider, deadlier slash). F8 forgets them.
 #[derive(Resource, Default)]
 pub struct Defeated(pub Vec<BossKind>);
 
@@ -115,6 +116,11 @@ impl Defeated {
         self.0.contains(&BossKind::Rat)
     }
 
+    /// The claw slash reaches farther and cuts deeper (`chameleon::SCYTHE_*`).
+    pub fn scythe(&self) -> bool {
+        self.0.contains(&BossKind::Mantis)
+    }
+
     /// Pushing into a wall: walking on it.
     pub fn climb(&self) -> bool {
         self.0.contains(&BossKind::Spider)
@@ -137,6 +143,7 @@ impl BossKind {
             BossKind::Frog => "WATER WALK  (water no longer slows or tires you)",
             BossKind::Grasshopper => "BIG JUMP  (hold S to charge, release)",
             BossKind::Rat => "SEWER RAT  (the sewer air no longer hurts you)",
+            BossKind::Mantis => "SCYTHE CLAWS  (a wider slash that cuts deeper)",
         }
     }
 }
@@ -157,10 +164,11 @@ pub enum BossKind {
     Frog,
     Grasshopper,
     Rat,
+    Mantis,
 }
 
 impl BossKind {
-    pub const ALL: [BossKind; 8] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat];
+    pub const ALL: [BossKind; 9] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis];
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -173,6 +181,7 @@ impl BossKind {
             BossKind::Frog => terrain.frog,
             BossKind::Grasshopper => terrain.grasshopper,
             BossKind::Rat => terrain.rat,
+            BossKind::Mantis => terrain.mantis,
         }
     }
 
@@ -182,7 +191,7 @@ impl BossKind {
         let arena = Arena::find(self, terrain);
         // Where it wakes: the floor it fights on, or the open chamber it flies in.
         let mut arena_rect = match self {
-            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
+            BossKind::Roach | BossKind::Frog | BossKind::Grasshopper | BossKind::Rat | BossKind::Mantis => Rect::new(arena.left, arena.floor - 100.0, arena.right, arena.floor + 500.0),
             BossKind::Wasp | BossKind::Dragonfly | BossKind::Spider | BossKind::Centipede => chamber(terrain, marker, 70),
         };
         // The lair is the slice it's drawn in (always covering its arena).
@@ -216,6 +225,7 @@ impl BossKind {
             BossKind::Frog => frog::spawn(commands, meshes, materials, &arena),
             BossKind::Grasshopper => grasshopper::spawn(commands, meshes, materials, &arena),
             BossKind::Rat => king_rat::spawn(commands, meshes, materials, &arena, terrain, region),
+            BossKind::Mantis => mantis::spawn(commands, meshes, materials, &arena),
         };
         debug!("{self:?} lair {:.0?}..{:.0?}, wakes in {:.0?}..{:.0?}", region.min, region.max, arena_rect.min, arena_rect.max);
         commands.entity(e).insert((Lair { kind: self, region, arena: arena_rect, zones }, Sense::default()));
@@ -325,6 +335,7 @@ impl Arena {
             BossKind::Frog => terrain.frog.unwrap_or(fallback),
             BossKind::Grasshopper => terrain.grasshopper.unwrap_or(fallback),
             BossKind::Rat => terrain.rat.unwrap_or(fallback),
+            BossKind::Mantis => terrain.mantis.unwrap_or(fallback),
         };
         let feet = terrain.rest(home);
         // "Relatively flat": the ground may wander this much up or down.
@@ -570,6 +581,9 @@ fn lairs(
     }
 }
 
+/// The order F2 visits the bosses in (the frog last).
+const VISIT_ORDER: [BossKind; 9] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog];
+
 /// F2: jump to the next boss's lair (it wakes) and heal up.
 fn visit_next_boss(
     keys: Res<ButtonInput<KeyCode>>,
@@ -582,8 +596,8 @@ fn visit_next_boss(
         return;
     }
     let (mut p, mut tf) = player.into_inner();
-    for _ in 0..BossKind::ALL.len() {
-        let kind = BossKind::ALL[*next % BossKind::ALL.len()];
+    for _ in 0..VISIT_ORDER.len() {
+        let kind = VISIT_ORDER[*next % VISIT_ORDER.len()];
         *next += 1;
         let Some((boss, _)) = bosses.iter().find(|(_, l)| l.kind == kind) else { continue };
         // A little away from it, on the ground.
@@ -644,8 +658,8 @@ pub(crate) fn slash_bosses(
             stop.add(0.03);
             continue;
         }
-        // F3 touch of death: any blow kills.
-        boss.hp = if p.god.smites() { 0 } else { boss.hp - 1 };
+        // F3 touch of death: any blow kills. The scythe claws cut deeper (spit doesn't).
+        boss.hp = if p.god.smites() { 0 } else { boss.hp - if slashed { anim.damage() } else { 1 } };
         boss.flash = 1.0;
         let killed = boss.hp <= 0;
         boss.dead = killed;
