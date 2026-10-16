@@ -29,6 +29,23 @@ pub fn color_layer() -> RenderLayers {
     RenderLayers::layer(COLOR_LAYER)
 }
 
+/// Render layer of the far backdrop (sky, skylines, smoke): drawn first by its own camera,
+/// gray like the world but with its own grading, so a region can tint it (`regrowth`).
+pub const BACKDROP_LAYER: usize = 2;
+
+pub fn backdrop_layer() -> RenderLayers {
+    RenderLayers::layer(BACKDROP_LAYER)
+}
+
+/// The backdrop camera (a child of the main one).
+#[derive(Component)]
+pub struct BackdropCamera;
+
+/// The backdrop's grading: gray, with `k` (0..1) of a pink cast pushed through it.
+pub fn backdrop_grading(k: f32) -> ColorGrading {
+    ColorGrading { global: ColorGradingGlobal { temperature: -0.7 * k, tint: -0.6 * k, post_saturation: WORLD_SATURATION + 0.6 * k, ..default() }, ..default() }
+}
+
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
@@ -144,6 +161,7 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
     let main = commands
         .spawn((
             Camera2d,
+            Camera { clear_color: ClearColorConfig::None, ..default() },
             MainCamera,
             Follow(spawn),
             projection(),
@@ -154,6 +172,17 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
             },
         ))
         .id();
+    // Backdrop: same view, drawn before the world (which doesn't clear), its own grading.
+    commands.spawn((
+        Camera2d,
+        Camera { order: -1, ..default() },
+        projection(),
+        backdrop_layer(),
+        BackdropCamera,
+        backdrop_grading(0.0),
+        Transform::default(),
+        ChildOf(main),
+    ));
     // Overlay: same view, drawn after the world, keeps its colors (the HUD too).
     commands.spawn((
         Camera2d,

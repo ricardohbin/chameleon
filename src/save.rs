@@ -1,7 +1,7 @@
 //! Quick save (F5) / quick load (F9).
 //!
 //! One slot, a small text file next to the executable with the same name and
-//! a `.save` extension (`camaleon.exe` → `camaleon.save`; a `target/*/deps/`
+//! a `.save` extension (`ghore.exe` → `ghore.save`; a `target/*/deps/`
 //! test build shares the file of the normal one). It holds the progress that
 //! matters: where the chameleon is and how it is (health, max health, shadow
 //! health, facing, speed) and which bosses are dead (their colors and the
@@ -22,7 +22,7 @@ use crate::{
     player::Player,
 };
 
-const HEADER: &str = "camaleon-save 1";
+const HEADER: &str = "ghore-save 1";
 
 pub struct SavePlugin;
 
@@ -66,7 +66,7 @@ struct Pending {
 }
 
 /// Next to the executable, same name, `.save`. Test builds in `deps/` (named
-/// `camaleon-<hash>.exe`) use the file of the build in the folder above.
+/// `ghore-<hash>.exe`) use the file of the build in the folder above.
 fn save_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;

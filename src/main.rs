@@ -44,7 +44,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Camaleon".into(),
+                title: "Ghore, The Chameleon".into(),
                 resolution: (1280, 720).into(),
                 ..default()
             }),
@@ -73,6 +73,7 @@ fn main() {
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),
         )
         .add_systems(Update, toggle_fullscreen)
+        .add_systems(Update, set_window_icon)
         .run();
 }
 
@@ -104,4 +105,25 @@ fn toggle_fullscreen(
             _ => WindowMode::Windowed,
         };
     }
+}
+
+/// The title-bar / taskbar icon: a close-up of the chameleon's eye (`assets/icon.png`, embedded).
+fn set_window_icon(window: Single<Entity, With<PrimaryWindow>>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Ok(img) = image::load_from_memory_with_format(include_bytes!("../assets/icon.png"), image::ImageFormat::Png) else {
+        return;
+    };
+    let img = img.into_rgba8();
+    let Ok(icon) = winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()) else {
+        return;
+    };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        // The OS window is created after `Startup`: keep trying until it exists.
+        if let Some(w) = windows.get_window(*window) {
+            w.set_window_icon(Some(icon));
+            *done = true;
+        }
+    });
 }

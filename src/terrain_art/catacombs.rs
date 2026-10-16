@@ -14,6 +14,17 @@ const GAP: Rgb = [0.07, 0.065, 0.06];
 /// The overall color of the ground (what the chameleon blends into).
 pub const GROUND: Rgb = [0.50, 0.47, 0.40];
 
+/// The same stone once the Weaver's blue is back: a blue-tinted limestone, from the
+/// painted (lit, gray-brown) texel `c`. The painted brightness picks the shade, so the
+/// blocks, joints, carvings and bones keep their shape; `k` makes up for the layer's tint.
+pub fn limestone_blue(c: Rgb, k: f32) -> Rgb {
+    const RAMP: [(f32, Rgb); 4] = [(0.0, [0.05, 0.07, 0.13]), (0.22, [0.20, 0.26, 0.38]), (0.55, [0.50, 0.59, 0.74]), (1.0, [0.82, 0.87, 0.95])];
+    let lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) * k / 0.55;
+    let i = RAMP.iter().position(|(at, _)| lum < *at).unwrap_or(RAMP.len() - 1).max(1);
+    let ((a, ca), (b, cb)) = (RAMP[i - 1], RAMP[i]);
+    mix(ca, cb, ((lum - a) / (b - a)).clamp(0.0, 1.0))
+}
+
 /// The bare material of solid ground, before lighting (`u`, `v` in units of 5 world units).
 pub fn material(u: f32, v: f32) -> Rgb {
     // Hand-stacked: courses sag and wander a little.

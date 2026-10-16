@@ -1,12 +1,14 @@
 [package]
-name = "camaleon"
+name = "ghore"
 version = "0.1.0"
 edition = "2024"
+description = "Ghore, The Chameleon"
 
 [dependencies]
 bevy = "0.20"
 miniz_oxide = "0.8"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+winit = "0.30"
 webp = { version = "0.3", default-features = false }
 
 # Small optimization for our own code in dev builds.

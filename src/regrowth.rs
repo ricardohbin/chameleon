@@ -7,7 +7,7 @@
 //! copies fade in as a wave spreading out from where she lived. The Gutter
 //! King's yellow works the same (sludge, dry grass, sulfur fumes...).
 
-use bevy::prelude::*;
+use bevy::{prelude::*, render::view::ColorGrading};
 
 use bevy::{
     asset::RenderAssetUsages, mesh::Indices, render::render_resource::PrimitiveTopology, sprite_render::AlphaMode2d,
@@ -44,7 +44,7 @@ pub struct RegrowthPlugin;
 
 impl Plugin for RegrowthPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Regrowth>().add_systems(Startup, (spawn_tint, spawn_skylight)).add_systems(Update, (regrow, tint_and_pulse, skylight).chain());
+        app.init_resource::<Regrowth>().add_systems(Startup, (spawn_tint, spawn_skylight)).add_systems(Update, (regrow, tint_and_pulse, skylight, tint_backdrop).chain());
     }
 }
 
@@ -88,7 +88,11 @@ impl Regrowth {
         };
         match boss {
             BossKind::Wasp => smooth(t / 0.4) * (1.0 - smooth((t - 0.8) / 1.8)),
-            BossKind::Roach | BossKind::Dragonfly | BossKind::Spider => 1.0,
+            // The Weaver's blue and the Razorwing's pink wash over the screen while their wave
+            // runs over the world (it starts `delay` after the kill) and are gone once the
+            // world is painted. Only the Gutter King's yellow stays: the smog is his.
+            BossKind::Spider | BossKind::Dragonfly => smooth(t / 0.6) * (1.0 - smooth((t - 3.6) / 3.0)),
+            BossKind::Roach => 1.0,
         }
     }
 
@@ -169,6 +173,7 @@ fn regrow(
 
 /// A wash of the colors over the whole screen, thickest near the home of the
 /// boss that gave them: the gray world takes on a cast, you feel it come back.
+/// (The Venom Mother's, the Razorwing's and the Weaver's only last as a transition: see `Regrowth::wash`.)
 #[derive(Component)]
 struct Tint;
 
@@ -200,7 +205,11 @@ fn tint_and_pulse(
     let (mut rgb, mut alpha) = (Vec3::ZERO, 0.0);
     for (boss, color, strength) in [(BossKind::Wasp, GREEN, 0.03), (BossKind::Roach, YELLOW, 0.15), (BossKind::Dragonfly, PINK, 0.1), (BossKind::Spider, BLUE, 0.1)] {
         let (revealed, near) = regrowth.felt_at(boss, &terrain, eye);
-        let a = revealed * (if boss == BossKind::Wasp { 0.0 } else { 0.04 } + strength * near * near);
+        let mut a = revealed * (if boss == BossKind::Wasp { 0.0 } else { 0.04 } + strength * near * near);
+        // A transition, not a lasting cast: the blue lets go once the world is painted.
+        if matches!(boss, BossKind::Spider | BossKind::Dragonfly) {
+            a *= regrowth.wash(boss);
+        }
         let c = color.to_srgba();
         rgb += Vec3::new(c.red, c.green, c.blue) * a;
         alpha += a;
@@ -326,5 +335,26 @@ fn skylight(
         if let Some(mut m) = materials.get_mut(&mat.0) {
             m.color = m.color.with_alpha(a);
         }
+    }
+}
+
+/// The Razorwing's pink stays in the far background of its own region (the treatment plant):
+/// the backdrop camera's grading lets a pink cast through while the camera is there.
+fn tint_backdrop(
+    regrowth: Res<Regrowth>,
+    terrain: Res<Terrain>,
+    camera: Single<&Transform, (With<MainCamera>, Without<camera::BackdropCamera>)>,
+    mut grading: Single<&mut ColorGrading, With<camera::BackdropCamera>>,
+    mut last: Local<f32>,
+) {
+    let eye = camera.translation.truncate();
+    let (revealed, _) = regrowth.felt_at(BossKind::Dragonfly, &terrain, eye);
+    // In its region, fading out over 1500 units around it.
+    let away = terrain.dragonfly.and_then(|d| terrain.area_at(d)).map_or(f32::MAX, |a| eye.clamp(a.rect.min, a.rect.max).distance(eye));
+    let inside = (1.0 - away / 1500.0).clamp(0.0, 1.0);
+    let k = revealed * inside * inside * (3.0 - 2.0 * inside);
+    if (k - *last).abs() > 0.002 || (k == 0.0) != (*last == 0.0) {
+        *last = k;
+        **grading = camera::backdrop_grading(k);
     }
 }

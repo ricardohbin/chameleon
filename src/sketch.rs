@@ -24,7 +24,7 @@ pub enum Cell {
 
 /// The sketch colors (RGB, ±2) that mark the dragonfly and spider bosses.
 const DRAGONFLY_MARK: [u8; 3] = [0xd1, 0xb0, 0xc6];
-const SPIDER_MARK: [u8; 3] = [0x7f, 0x9f, 0xd6];
+const SPIDER_MARK: [u8; 3] = [0x81, 0xa6, 0xf3];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {

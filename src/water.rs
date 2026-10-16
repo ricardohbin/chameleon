@@ -18,8 +18,10 @@ use bevy::{
 };
 
 use crate::{
-    camera::MainCamera,
+    boss::BossKind,
+    camera::{self, MainCamera},
     player::{self, Player},
+    regrowth::Vine,
     shapes::{ellipse_pts, fill, Rng},
     terrain::{Terrain, PX},
 };
@@ -345,6 +347,8 @@ struct WaterPart;
 struct Surface {
     pool: usize,
     mesh: Handle<Mesh>,
+    /// The blue copy on the color layer (the Weaver's color), not the gray one.
+    blue: bool,
 }
 
 #[derive(Component)]
@@ -408,6 +412,7 @@ fn rebuild(
     gfx: Res<Gfx>,
     parts: Query<Entity, With<WaterPart>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     if !terrain.is_changed() {
         return;
@@ -422,19 +427,49 @@ fn rebuild(
         .collect();
     for (i, pool) in waters.pools.iter().enumerate() {
         commands.spawn((
-            Mesh2d(meshes.add(body_mesh(&terrain, pool))),
+            Mesh2d(meshes.add(body_mesh(&terrain, pool, false))),
             MeshMaterial2d(gfx.body.clone()),
             Transform::from_xyz(0.0, 0.0, Z),
             WaterPart,
         ));
-        let mesh = meshes.add(surface_mesh(pool, 0.0, 0.0, 0.0));
+        let mesh = meshes.add(surface_mesh(pool, 0.0, 0.0, 0.0, false));
         commands.spawn((
             Mesh2d(mesh.clone()),
             MeshMaterial2d(gfx.body.clone()),
             Transform::from_xyz(0.0, 0.0, Z + 0.01),
-            Surface { pool: i, mesh },
+            Surface { pool: i, mesh, blue: false },
             WaterPart,
         ));
+        if pool.kind == Kind::Clear {
+            // The same water in blue on the color layer: fades in when the Weaver's color is
+            // back (`regrowth::Vine`: the parent shows it, the material carries the alpha).
+            let material = materials.add(ColorMaterial { color: Color::WHITE.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() });
+            let dist = terrain.spider.map_or(0.0, |home| home.distance(home.clamp(pool.bounds.min, pool.bounds.max)));
+            let blue_mesh = meshes.add(surface_mesh(pool, 0.0, 0.0, 0.0, true));
+            let parent = commands
+                .spawn((
+                    Transform::default(),
+                    Visibility::Hidden,
+                    Vine { boss: BossKind::Spider, dist, stem: material.clone(), leaf: material.clone(), shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
+                    WaterPart,
+                ))
+                .id();
+            commands.spawn((
+                Mesh2d(meshes.add(body_mesh(&terrain, pool, true))),
+                MeshMaterial2d(material.clone()),
+                Transform::from_xyz(0.0, 0.0, Z),
+                camera::color_layer(),
+                ChildOf(parent),
+            ));
+            commands.spawn((
+                Mesh2d(blue_mesh.clone()),
+                MeshMaterial2d(material),
+                Transform::from_xyz(0.0, 0.0, Z + 0.01),
+                camera::color_layer(),
+                Surface { pool: i, mesh: blue_mesh, blue: true },
+                ChildOf(parent),
+            ));
+        }
         info!(
             "water: {:?} pool, x {:.0}..{:.0}, surface at {:.0}, bottom at {:.0}",
             pool.kind, pool.bounds.min.x, pool.bounds.max.x, pool.level, pool.bounds.min.y
@@ -442,11 +477,17 @@ fn rebuild(
     }
 }
 
+/// The clear water's colors once the Weaver's blue is back (sRGBA, like `Traits`).
+const BLUE_SHALLOW: [f32; 4] = [0.30, 0.62, 0.98, 0.42];
+const BLUE_DEEP: [f32; 4] = [0.02, 0.14, 0.55, 0.72];
+const BLUE_SHINE: [f32; 4] = [0.80, 0.93, 1.0, 0.70];
+
 /// Color of the water `depth` units under the surface (linear RGBA).
-fn shade(kind: Kind, depth: f32) -> [f32; 4] {
+fn shade(kind: Kind, depth: f32, blue: bool) -> [f32; 4] {
     let t = kind.t();
     let k = 1.0 - (-depth / t.scale).exp();
-    let c: Vec<f32> = (0..4).map(|i| t.shallow[i] + (t.deep[i] - t.shallow[i]) * k).collect();
+    let (shallow, deep) = if blue { (&BLUE_SHALLOW, &BLUE_DEEP) } else { (&t.shallow, &t.deep) };
+    let c: Vec<f32> = (0..4).map(|i| shallow[i] + (deep[i] - shallow[i]) * k).collect();
     Color::srgba(c[0], c[1], c[2], c[3]).to_linear().to_f32_array()
 }
 
@@ -471,14 +512,14 @@ fn mesh_of(pos: Vec<[f32; 3]>, colors: Vec<[f32; 4]>, mut indices: Vec<u32>) -> 
 
 /// Everything under the surface: one quad per run of water cells in each row,
 /// darker and thicker with depth. The top row of open columns is the surface's.
-fn body_mesh(t: &Terrain, pool: &Pool) -> Mesh {
+fn body_mesh(t: &Terrain, pool: &Pool, blue: bool) -> Mesh {
     let c0 = t.to_cell(Vec2::new(pool.bounds.min.x + 0.01, pool.level - 0.01));
     let cols = pool.open.len();
     let rows = ((pool.level - pool.bounds.min.y) / PX).round() as i32;
     let (mut pos, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
     for r in 0..rows {
         let (top, bottom) = (pool.level - r as f32 * PX, pool.level - (r + 1) as f32 * PX);
-        let (ct, cb) = (shade(pool.kind, r as f32 * PX), shade(pool.kind, (r + 1) as f32 * PX));
+        let (ct, cb) = (shade(pool.kind, r as f32 * PX, blue), shade(pool.kind, (r + 1) as f32 * PX, blue));
         let water = |i: usize| !t.solid(IVec2::new(c0.x + i as i32, c0.y + r)) && !(r < SURF_ROWS as i32 && pool.open[i]);
         let mut i = 0;
         while i < cols {
@@ -502,14 +543,15 @@ fn body_mesh(t: &Terrain, pool: &Pool) -> Mesh {
 
 /// The top row of the open columns between `lo` and `hi` (world x), following
 /// the waves, with a bright line along it.
-fn surface_mesh(pool: &Pool, time: f32, lo: f32, hi: f32) -> Mesh {
+fn surface_mesh(pool: &Pool, time: f32, lo: f32, hi: f32, blue: bool) -> Mesh {
     let t = pool.kind.t();
     let (mut pos, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new());
     let n = pool.open.len();
     let first = (((lo - pool.bounds.min.x) / PX).floor().max(0.0)) as usize;
     let last = (((hi - pool.bounds.min.x) / PX).ceil().max(0.0) as usize).min(n);
-    let deep: Vec<[f32; 4]> = (0..=SURF_ROWS).map(|r| shade(pool.kind, r as f32 * PX)).collect();
-    let shine = Color::srgba(t.shine[0], t.shine[1], t.shine[2], t.shine[3]).to_linear().to_f32_array();
+    let deep: Vec<[f32; 4]> = (0..=SURF_ROWS).map(|r| shade(pool.kind, r as f32 * PX, blue)).collect();
+    let shine = if blue { BLUE_SHINE } else { t.shine };
+    let shine = Color::srgba(shine[0], shine[1], shine[2], shine[3]).to_linear().to_f32_array();
     let clear = [shine[0], shine[1], shine[2], 0.0];
     let mut i = first;
     while i < last {
@@ -584,7 +626,7 @@ fn animate_surface(
     for s in &surfaces {
         let Some(pool) = waters.pools.get(s.pool) else { continue };
         if let Some(mut mesh) = meshes.get_mut(&s.mesh) {
-            *mesh = surface_mesh(pool, time.elapsed_secs(), lo, hi);
+            *mesh = surface_mesh(pool, time.elapsed_secs(), lo, hi, s.blue);
         }
     }
 }

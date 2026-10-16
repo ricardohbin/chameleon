@@ -24,6 +24,7 @@ struct Export { requested: bool, annotated: bool, frame: u8, image: Option<Handl
 pub fn register(app: &mut App) {
     app.init_resource::<Export>().init_resource::<RendererReady>().add_systems(Startup, feedback)
         .add_systems(Update, export.after(crate::debug_overlay::toggle))
+        .add_systems(Update, hide_empty_feedback)
         .add_systems(PostUpdate, export_layers.before(bevy::camera::visibility::VisibilitySystems::CheckVisibility));
     app.sub_app_mut(bevy::render::RenderApp).add_systems(bevy::render::ExtractSchedule,
         |mut world: ResMut<bevy::render::MainWorld>, pipelines: Res<bevy::render::render_resource::PipelineCache>| {
@@ -52,6 +53,12 @@ fn export_layers(mut commands: Commands, state: Res<Export>,
         } else { base.with(EXPORT_WORLD) };
         if layers != Some(&updated) { commands.entity(entity).insert(updated); }
     }
+}
+
+/// No text, no dark box: the label only shows while an export reports something.
+fn hide_empty_feedback(mut label: Single<(&Text, &mut Visibility), With<Feedback>>) {
+    let (text, vis) = &mut *label;
+    **vis = if text.0.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
 }
 
 fn feedback(mut commands: Commands) {

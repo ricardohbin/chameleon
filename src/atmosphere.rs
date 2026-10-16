@@ -36,7 +36,7 @@ impl Plugin for AtmospherePlugin {
             .insert_resource(Lightning { next: 3.0, since: 99.0, rng: Rng(0xF1A5) })
             .add_systems(Startup, (setup_backdrop, spawn_lightning, spawn_particles))
             .add_systems(Update, (drift_particles, animate_smoke, animate_fire, lightning, tint_sky))
-            .add_systems(PostUpdate, (rebuild_backdrop, parallax).chain().before(TransformSystems::Propagate));
+            .add_systems(PostUpdate, (rebuild_backdrop, backdrop_layers, parallax).chain().before(TransformSystems::Propagate));
     }
 }
 
@@ -46,6 +46,19 @@ impl Plugin for AtmospherePlugin {
 pub(crate) struct Parallax {
     origin: Vec2,
     factor: Vec2,
+}
+
+/// The far layers (behind z -50) are drawn by the backdrop camera.
+fn backdrop_layers(mut commands: Commands, new: Query<(Entity, &Transform), Added<Backdrop>>, kids: Query<&Children>) {
+    for (e, tf) in &new {
+        if tf.translation.z >= -50.0 {
+            continue;
+        }
+        commands.entity(e).insert(crate::camera::backdrop_layer());
+        for d in kids.iter_descendants(e) {
+            commands.entity(d).insert(crate::camera::backdrop_layer());
+        }
+    }
 }
 
 /// Everything rebuilt when the world reloads (children go with their parents).
@@ -440,7 +453,7 @@ fn spawn_lightning(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut
     commands.spawn((flash, Parallax { origin: Vec2::ZERO, factor: Vec2::ONE }, Flash));
     let bolt_mat = materials.add(Color::srgb(0.95, 0.95, 1.0));
     let bolt = (Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))), MeshMaterial2d(bolt_mat), Transform::from_xyz(0.0, 0.0, -96.0));
-    commands.spawn((bolt, Parallax { origin: Vec2::ZERO, factor: Vec2::ONE }, Bolt, Visibility::Hidden));
+    commands.spawn((bolt, Parallax { origin: Vec2::ZERO, factor: Vec2::ONE }, Bolt, Visibility::Hidden, crate::camera::backdrop_layer()));
 }
 
 fn layer(

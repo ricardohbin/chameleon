@@ -48,18 +48,18 @@ fn theme(style: Style) -> Theme {
 
 /// Maybe a hint of `tone` at the spot `s` (`at` = its point on the surface).
 pub(super) fn hint(p: &mut Props, s: &Site, at: Vec2, style: Style, tone: Tone) {
-    let yellow = tone == Tone::Yellow;
-    let pink = tone == Tone::Pink;
     let th = match tone {
         Tone::Green => theme(style),
         Tone::Yellow => theme_yellow(style),
         Tone::Pink => theme_pink(style),
+        Tone::Blue => theme_blue(style),
     };
     let far = |q: &Vec2, d: f32| q.distance_squared(at) >= d * d;
     let others = match tone {
         Tone::Green => &p.hints,
         Tone::Yellow => &p.yellow,
         Tone::Pink => &p.pink,
+        Tone::Blue => &p.blue.spots,
     };
     if !others.iter().all(|q| far(q, GAP)) || !p.taken.iter().all(|(q, _)| far(q, 20.0 * S)) {
         return;
@@ -68,16 +68,18 @@ pub(super) fn hint(p: &mut Props, s: &Site, at: Vec2, style: Style, tone: Tone) 
         Tone::Green => 0x6d6f_7373,
         Tone::Yellow => 0x7965_6c6c,
         Tone::Pink => 0x7069_6e6b,
+        Tone::Blue => 0x626c_7565,
     });
     p.rng.next();
     // Clumps: some stretches of the region get many, most none.
-    let clump = (vines::noise(at, 600.0, match tone { Tone::Green => 9, Tone::Yellow => 17, Tone::Pink => 23 }) * 2.0).powi(2).min(2.5);
+    let clump = (vines::noise(at, 600.0, match tone { Tone::Green => 9, Tone::Yellow => 17, Tone::Pink => 23, Tone::Blue => 31 }) * 2.0).powi(2).min(2.5);
     // Thick around the home of the boss whose color it is (the Gutter King's
     // sewer and dump, the Razorwing's plant); the green is even everywhere.
     let home_of = match tone {
         Tone::Green => None,
         Tone::Yellow => p.t.roach,
         Tone::Pink => p.t.dragonfly,
+        Tone::Blue => p.t.spider,
     };
     let home = home_of.map_or(1.0, |h| 1.0 + 3.0 * (1.0 - at.distance(h) / 2600.0).clamp(0.0, 1.0));
     if !p.rng.chance(th.chance * DENSITY * clump * home) {
@@ -93,33 +95,36 @@ pub(super) fn hint(p: &mut Props, s: &Site, at: Vec2, style: Style, tone: Tone) 
         let Some((y, angle, inside)) = p.fit(s.cell, 14.0, 24.0, true) else { return };
         (at.y, tilt, indoor) = (y, angle, inside);
     }
-    let build = choose(&mut p.rng, match tone {
-        Tone::Green => table(style, s.kind),
-        Tone::Yellow => table_yellow(style, s.kind),
-        Tone::Pink => table_pink(s.kind),
-    });
+    let (build, accent) = match tone {
+        Tone::Green => (choose(&mut p.rng, table(style, s.kind)), false),
+        Tone::Yellow => (choose(&mut p.rng, table_yellow(style, s.kind)), false),
+        Tone::Pink => (choose(&mut p.rng, table_pink(s.kind)), true),
+        Tone::Blue => choose_accent(&mut p.rng, table_blue(style, s.kind)),
+    };
     let meshes = build(&mut p.rng);
     let t = p.t;
     indoor |= t.cell(t.to_cell(at + Vec2::Y * 6.0)) == Cell::Back || t.cell(t.to_cell(at + Vec2::new(flip * 6.0, 0.0))) == Cell::Back;
     // A little off in hue, lighter or darker, each its own.
-    let hue = th.hue + p.rng.range(-12.0, 12.0) * if yellow || pink { 0.6 } else { 1.0 };
-    let light = (th.light * p.rng.range(0.75, 1.3)).min(match tone { Tone::Green => 0.6, Tone::Yellow => 0.68, Tone::Pink => 0.82 });
+    let hue = th.hue + p.rng.range(-12.0, 12.0) * if tone == Tone::Green { 1.0 } else { 0.6 };
+    let light = (th.light * p.rng.range(0.75, 1.3)).min(match tone { Tone::Green => 0.6, Tone::Yellow => 0.68, Tone::Pink => 0.82, Tone::Blue => 0.78 });
     let color = Color::hsl(hue, (th.sat * p.rng.range(0.8, 1.15)).min(1.0), light);
-    let gray = if light > match tone { Tone::Green => 0.34, Tone::Yellow => 0.42, Tone::Pink => 0.5 } { M::Concrete } else { M::Soot };
+    let gray = if light > match tone { Tone::Green => 0.34, Tone::Yellow => 0.42, Tone::Pink => 0.5, Tone::Blue => 0.5 } { M::Concrete } else { M::Soot };
 
     let (home_of, boss) = match tone {
         Tone::Green => (t.wasp, crate::boss::BossKind::Wasp),
         Tone::Yellow => (t.roach, crate::boss::BossKind::Roach),
         Tone::Pink => (t.dragonfly, crate::boss::BossKind::Dragonfly),
+        Tone::Blue => (t.spider, crate::boss::BossKind::Spider),
     };
     let dist = at.distance(home_of.unwrap_or(at));
-    // Flowers: only their blossoms (the last mesh) get the color back.
-    let plain = if pink { meshes.len() - 1 } else { 0 };
+    // Flowers (and the flames, the lamps): only their last mesh gets the color back.
+    let plain = if accent { meshes.len() - 1 } else { 0 };
     dress(p, at, flip, tilt, indoor, meshes, color, gray, boss, dist, plain);
     match tone {
         Tone::Green => p.hints.push(at),
         Tone::Yellow => p.yellow.push(at),
         Tone::Pink => p.pink.push(at),
+        Tone::Blue => p.blue.spots.push(at),
     }
     p.taken.push((at, s.kind));
 }
@@ -201,6 +206,19 @@ fn hanging(rng: &mut Rng, x0: f32, x1: f32, l0: f32, l1: f32) -> Vec<Mesh> {
 }
 
 type Build = fn(&mut Rng) -> Vec<Mesh>;
+
+/// Like `choose`, for a table that says which of its builds only color their last mesh
+/// (flowers, flames, lamps: the stems and the wax stay gray).
+fn choose_accent(rng: &mut Rng, table: &[(Build, f32, bool)]) -> (Build, bool) {
+    let mut r = rng.range(0.0, table.iter().map(|e| e.1).sum());
+    for e in table {
+        r -= e.1;
+        if r <= 0.0 {
+            return (e.0, e.2);
+        }
+    }
+    (table[0].0, table[0].2)
+}
 
 fn choose(rng: &mut Rng, table: &[(Build, f32)]) -> Build {
     let mut r = rng.range(0.0, table.iter().map(|e| e.1).sum());
@@ -497,6 +515,8 @@ pub(super) enum Tone {
     Yellow,
     /// The Razorwing's: flowers, all over the world (its plant's chemicals are `chemicals.rs`).
     Pink,
+    /// The Weaver's: clean water, blue flowers, glass, plastic and the glow of things people left.
+    Blue,
 }
 
 /// The pinks: dusty, around the Razorwing's own `#d1b0c6`, a little deeper
@@ -603,6 +623,111 @@ fn climbing_blooms(rng: &mut Rng) -> Vec<Mesh> {
         heads.extend(petals(q + Vec2::new(rng.range(0.5, 3.0), 0.0), rng.range(1.4, 2.2), 5, rng.range(0.0, TAU)));
     }
     vec![stroke(&path, |_| 1.1, 1.0, 0.6, |_| 1.0), blobs(&heads, |_| 0.9)]
+}
+
+/// The blues: around the Weaver's own `#7f9fd6` (hue ~218°). Most where something natural
+/// would be blue: water, flowers, glass, the flame of a candle.
+fn theme_blue(style: Style) -> Theme {
+    let (sat, light, chance) = match style {
+        Style::Park => (0.55, 0.64, 0.20),
+        Style::Sinkhole => (0.52, 0.62, 0.16),
+        Style::Treatment | Style::Dam | Style::Cave => (0.58, 0.62, 0.16),
+        Style::Sewer | Style::Trash => (0.50, 0.60, 0.12),
+        Style::Catacombs => (0.55, 0.64, 0.10),
+        Style::Concrete | Style::Mall | Style::Subway | Style::Bunker => (0.50, 0.62, 0.08),
+    };
+    Theme { hue: 218.0, sat, light, chance }
+}
+
+/// What the Weaver's color brings back to each place: the third field says if only the
+/// last mesh of the build turns blue.
+fn table_blue(style: Style, kind: Kind) -> &'static [(Build, f32, bool)] {
+    match (style, kind) {
+        // Ruins: cornflowers in the rubble, glass bottles, faded blue paint on the walls.
+        (Style::Concrete, Kind::Ground) => &[(blossoms, 3.0, true), (bottles, 2.0, false)],
+        (Style::Concrete, Kind::Wall) => &[(sign_plate, 2.0, false), (streaks, 2.0, false)],
+        // The dump: tarps and plastic bottles.
+        (Style::Trash, Kind::Ground) => &[(tarp, 3.0, false), (bottles, 3.0, false), (pool, 1.0, false)],
+        (Style::Trash, Kind::Wall) => &[(streaks, 2.0, false), (sign_plate, 1.0, false)],
+        // The sewer, the plant and the dam: the water running clean at last.
+        (Style::Sewer, Kind::Ground) => &[(pool, 3.0, false), (bubble_pool, 2.0, false)],
+        (Style::Treatment, Kind::Ground) => &[(bubble_pool, 3.0, false), (pool, 3.0, false)],
+        (Style::Dam, Kind::Ground) => &[(pool, 3.0, false), (clover, 1.0, true)],
+        (Style::Sewer | Style::Treatment | Style::Dam, Kind::Wall) => &[(slime_fall, 3.0, false), (streaks, 2.0, false)],
+        (Style::Sewer | Style::Treatment | Style::Dam, Kind::Edge) => &[(slime_curtain, 3.0, false), (drip, 1.0, false)],
+        // The park and the sinkhole: bluebells, forget-me-nots, cornflowers.
+        (Style::Park, Kind::Ground) => &[(foxgloves, 3.0, true), (clover, 3.0, true), (blossoms, 2.0, true)],
+        (Style::Park, Kind::Wall) => &[(climbing_blooms, 1.0, true)],
+        (Style::Sinkhole, Kind::Ground) => &[(blossoms, 3.0, true), (foxgloves, 2.0, true), (pool, 2.0, false)],
+        (Style::Sinkhole, Kind::Wall) => &[(streaks, 2.0, false), (climbing_blooms, 1.0, true)],
+        // The subway: station signs, wet puddles, bottles.
+        (Style::Subway, Kind::Ground) => &[(pool, 2.0, false), (bottles, 2.0, false)],
+        (Style::Subway, Kind::Wall) => &[(sign_plate, 3.0, false), (stripes, 2.0, false)],
+        // The catacombs: candle flames burning blue, crystals in the walls.
+        (Style::Catacombs, Kind::Ground) => &[(candles, 4.0, true), (crystals, 2.0, false)],
+        (Style::Catacombs | Style::Cave, Kind::Wall) => &[(rosettes, 2.0, false), (streaks, 1.0, false)],
+        // The shopping center: bottles and a bit of garden in the planters.
+        (Style::Mall, Kind::Ground) => &[(bottles, 3.0, false), (blossoms, 1.0, true)],
+        (Style::Mall, Kind::Wall) => &[(sign_plate, 3.0, false), (streaks, 1.0, false)],
+        // The bunker: emergency beacons and stenciled plates.
+        (Style::Bunker, Kind::Ground) => &[(beacon, 3.0, true), (bottles, 1.0, false)],
+        (Style::Bunker, Kind::Wall) => &[(sign_plate, 3.0, false), (rosettes, 1.0, false)],
+        // The caves: crystals and clear pools.
+        (Style::Cave, Kind::Ground) => &[(crystals, 4.0, false), (pool, 2.0, false)],
+        (Style::Park | Style::Sinkhole | Style::Concrete | Style::Mall, Kind::Edge) => &[(hanging_blooms, 2.0, true)],
+        (_, Kind::Edge) => &[(drip, 1.0, false)],
+        (Style::Cave | Style::Catacombs | Style::Sinkhole, Kind::Ceiling) => &[(crystals_down, 3.0, false), (drips, 2.0, false)],
+        (Style::Sewer | Style::Treatment | Style::Subway | Style::Dam | Style::Trash, Kind::Ceiling) => &[(drips, 3.0, false), (drip, 2.0, false)],
+        (_, Kind::Ceiling) => &[(drip, 2.0, false), (drips, 1.0, false)],
+    }
+}
+
+/// Glass bottles standing about, a little leaning.
+fn bottles(rng: &mut Rng) -> Vec<Mesh> {
+    let mut tris = Vec::new();
+    for i in 0..2 + rng.below(3) {
+        let (x, h, w) = (-8.0 + i as f32 * 6.0 + rng.range(-1.5, 1.5), rng.range(7.0, 11.0), rng.range(1.5, 2.2));
+        let (neck, lean) = (w * 0.45, rng.range(-0.15, 0.15) * h);
+        let shoulder = h * 0.55;
+        let (a, b, c, d) = (Vec2::new(x - w, 0.0), Vec2::new(x + w, 0.0), Vec2::new(x + w, shoulder), Vec2::new(x - w, shoulder));
+        let (e, f) = (Vec2::new(x - neck + lean, h), Vec2::new(x + neck + lean, h));
+        tris.extend([[a, b, c], [a, c, d], [d, c, f], [d, f, e]]);
+    }
+    vec![triangles(&tris)]
+}
+
+/// A tarp thrown over a heap: a lumpy dome with its edge tucked in folds.
+fn tarp(rng: &mut Rng) -> Vec<Mesh> {
+    let (w, h) = (rng.range(10.0, 17.0), rng.range(6.0, 11.0));
+    let mut outline = vec![Vec2::new(-w, 0.0)];
+    for i in 1..8 {
+        let a = PI * (1.0 - i as f32 / 8.0);
+        outline.push(Vec2::new(a.cos() * w, a.sin() * h * rng.range(0.8, 1.1)));
+    }
+    outline.push(Vec2::new(w, 0.0));
+    for i in 1..6 {
+        outline.push(Vec2::new(w - i as f32 * w * 2.0 / 6.0, if i % 2 == 0 { 1.2 } else { -0.4 }));
+    }
+    let outline = smooth_closed(&outline, 2);
+    vec![fill(&outline, |q| 0.55 + 0.45 * (q.y / h).clamp(0.0, 1.0) * (0.8 + 0.2 * (q.x * 0.9).sin()))]
+}
+
+/// A painted plate on a wall (a sign, a stencil): a flat rectangle with a darker bar across it.
+fn sign_plate(rng: &mut Rng) -> Vec<Mesh> {
+    let (w, h, y) = (rng.range(6.0, 10.0), rng.range(4.0, 6.0), rng.range(-6.0, 6.0));
+    let x0 = 1.0;
+    let (a, b, c, d) = (Vec2::new(x0, y - h), Vec2::new(x0 + w, y - h), Vec2::new(x0 + w, y + h), Vec2::new(x0, y + h));
+    let bar = [Vec2::new(x0 + 1.0, y - 0.6), Vec2::new(x0 + w - 1.0, y - 0.6), Vec2::new(x0 + w - 1.0, y + 0.6), Vec2::new(x0 + 1.0, y + 0.6)];
+    vec![fill(&[a, b, c, d], |_| 0.8), fill(&bar, |_| 0.45)]
+}
+
+/// An emergency beacon on a post: the lamp turns blue.
+fn beacon(rng: &mut Rng) -> Vec<Mesh> {
+    let h = rng.range(10.0, 16.0);
+    let post = [[Vec2::new(-0.9, 0.0), Vec2::new(0.9, 0.0), Vec2::new(0.6, h)], [Vec2::new(-0.9, 0.0), Vec2::new(0.6, h), Vec2::new(-0.6, h)]];
+    let foot = [[Vec2::new(-3.5, 0.0), Vec2::new(3.5, 0.0), Vec2::new(2.0, 1.6)], [Vec2::new(-3.5, 0.0), Vec2::new(2.0, 1.6), Vec2::new(-2.0, 1.6)]];
+    let lamp: Vec<Vec2> = ellipse_pts(2.6, 3.0, 10).into_iter().map(|q| q + Vec2::new(0.0, h + 2.2)).collect();
+    vec![triangles(&[post[0], post[1], foot[0], foot[1]]), fill(&lamp, |q| 0.7 + 0.3 * ((q.y - h) / 5.0).clamp(0.0, 1.0))]
 }
 
 fn theme_yellow(style: Style) -> Theme {

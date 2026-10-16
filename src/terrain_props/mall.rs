@@ -141,6 +141,9 @@ fn ceiling(p: &mut Props, at: Vec2) -> bool {
 
 // --- Helpers ---
 
+/// Broken shop glass once the Weaver's blue is back.
+const GLASS_BLUE: Color = Color::srgb(0.62, 0.80, 0.98);
+
 /// Points of a part placed at `base`, turned by `rot`.
 fn place(pts: &[Vec2], base: Vec2, rot: f32) -> Vec<Vec2> {
     let r = Vec2::from_angle(rot);
@@ -165,7 +168,7 @@ fn shards(p: &mut Props, e: Entity, c: Vec2, spread: f32, n: usize, z: f32) {
         let d = Vec2::from_angle(a);
         tris.push([o, o + d * l, o + d.perp() * w]);
     }
-    p.part(e, triangles(&tris), M::Rim, z);
+    p.part_blue(e, triangles(&tris), M::Rim, z, Some(GLASS_BLUE));
 }
 
 // --- Floors ---
@@ -484,7 +487,7 @@ fn glass(p: &mut Props, at: Vec2) {
         let h = p.rng.range(5.0, 9.0);
         tris.push([Vec2::new(x - 2.5, 0.0), Vec2::new(x + 2.0, 0.0), Vec2::new(x + p.rng.range(-2.0, 2.0), h)]);
     }
-    p.part(e, triangles(&tris), M::Rim, 0.01);
+    p.part_blue(e, triangles(&tris), M::Rim, 0.01, Some(GLASS_BLUE));
     if p.rng.chance(0.6) {
         let y = p.rng.range(1.0, 3.0);
         p.bar(e, &[Vec2::new(-12.0, y), Vec2::new(-2.0, y + 1.5), Vec2::new(4.0, y + 4.0), Vec2::new(9.0, y + 1.0)], 1.4, M::Steel, 0.0);

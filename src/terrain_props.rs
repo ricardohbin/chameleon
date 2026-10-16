@@ -165,7 +165,32 @@ pub struct PropJob {
     pink: Vec<Vec2>,
     drums: Vec<Vec2>,
     stains: Vec<Vec2>,
+    blue: Blue,
     mats: Vec<Handle<ColorMaterial>>,
+}
+
+/// What the Weaver's blue needs to remember while the props are placed.
+#[derive(Default)]
+struct Blue {
+    /// Where the blue hints are (`moss`).
+    spots: Vec<Vec2>,
+    /// The blue materials of the metal and plastic parts, one per kind and distance band
+    /// (so the parts of a band fade in together and share one material).
+    mats: std::collections::HashMap<(i32, u8), Handle<ColorMaterial>>,
+}
+
+/// How far apart the bands of blue materials are (world units).
+const BLUE_BAND: f32 = 250.0;
+
+/// The blue a metal or plastic part turns once the Weaver's color is back: bluish steel,
+/// darker iron, bright plastic. Rust stays rust.
+fn blue_of(m: M) -> Option<Color> {
+    match m {
+        M::Steel => Some(Color::srgb(0.50, 0.63, 0.88)),
+        M::Iron => Some(Color::srgb(0.25, 0.33, 0.54)),
+        M::Plastic => Some(Color::srgb(0.20, 0.42, 0.88)),
+        _ => None,
+    }
 }
 
 pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
@@ -191,7 +216,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
         sites.sort_by_key(|s| s.key);
         (sites, facade_spots(&found))
     });
-    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), mats };
+    let job = PropJob { t, finding: Some(finding), sites: Vec::new(), facades: Vec::new(), next: 0, taken: Vec::new(), statues: Vec::new(), vined: Vec::new(), hints: Vec::new(), yellow: Vec::new(), vents: Vec::new(), curtains: Vec::new(), pink: Vec::new(), drums: Vec::new(), stains: Vec::new(), blue: Blue::default(), mats };
     commands.spawn((job, TerrainPart));
 }
 
@@ -226,6 +251,8 @@ pub fn place_props(
             pink: std::mem::take(&mut job.pink),
             drums: std::mem::take(&mut job.drums),
             stains: std::mem::take(&mut job.stains),
+            blue: std::mem::take(&mut job.blue),
+            root_at: Vec2::ZERO,
             tilt: 0.0,
             depth: BACK,
         };
@@ -241,7 +268,7 @@ pub fn place_props(
             job.next += 1;
         }
         (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents, job.curtains) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents, p.curtains);
-        (job.pink, job.drums, job.stains) = (p.pink, p.drums, p.stains);
+        (job.pink, job.drums, job.stains, job.blue) = (p.pink, p.drums, p.stains, p.blue);
         if job.next >= total {
             commands.entity(e).try_despawn();
         }
@@ -389,6 +416,10 @@ struct Props<'a, 'w, 's> {
     pink: Vec<Vec2>,
     drums: Vec<Vec2>,
     stains: Vec<Vec2>,
+    /// The Weaver's blue (`Blue`).
+    blue: Blue,
+    /// Where the last root was placed (the blue copies of its parts fade in by distance from it).
+    root_at: Vec2,
     /// Ground slope under the prop being drawn (added to its root's angle).
     tilt: f32,
     /// Depth of the prop being drawn.
@@ -468,6 +499,7 @@ impl Props<'_, '_, '_> {
         moss::vent(self, s, at, style);
         moss::hint(self, s, at, style, moss::Tone::Yellow);
         moss::hint(self, s, at, style, moss::Tone::Pink);
+        moss::hint(self, s, at, style, moss::Tone::Blue);
         let hooks = hooks(style);
         let (gap, density) = match (s.kind, style) {
             _ if let Some(h) = hooks => (h.spacing)(s.kind),
@@ -786,6 +818,7 @@ impl Props<'_, '_, '_> {
     // --- Drawing primitives ---
 
     fn root(&mut self, at: Vec2, flip: f32, angle: f32) -> Entity {
+        self.root_at = at;
         let tf = Transform::from_translation(at.extend(self.depth))
             .with_rotation(Quat::from_rotation_z(angle + self.tilt))
             .with_scale(Vec3::new(flip * S, S, 1.0));
@@ -793,7 +826,32 @@ impl Props<'_, '_, '_> {
     }
 
     fn part(&mut self, e: Entity, mesh: Mesh, m: M, z: f32) {
+        self.part_blue(e, mesh, m, z, blue_of(m));
+    }
+
+    /// A part that turns `blue` (if it does) when the Weaver's color is back: the gray part
+    /// in the world, and its blue copy on the color layer, hidden until then.
+    fn part_blue(&mut self, e: Entity, mesh: Mesh, m: M, z: f32, blue: Option<Color>) {
         let mesh = self.meshes.add(mesh);
+        if let Some(color) = blue {
+            let dist = (self.root_at.distance(self.t.spider.unwrap_or(self.root_at)) / BLUE_BAND).round() * BLUE_BAND;
+            let colors = &mut *self.colors;
+            let mat = self
+                .blue
+                .mats
+                .entry(((dist / BLUE_BAND) as i32, m as u8))
+                .or_insert_with(|| colors.add(ColorMaterial { color: color.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() }))
+                .clone();
+            self.commands.spawn((
+                Mesh2d(mesh.clone()),
+                MeshMaterial2d(mat.clone()),
+                Transform::from_xyz(0.0, 0.0, z),
+                crate::camera::color_layer(),
+                Visibility::Hidden,
+                crate::regrowth::Vine { boss: crate::boss::BossKind::Spider, dist, stem: mat.clone(), leaf: mat, shown: 0.0, base: [color; 2], lit: 0.0 },
+                ChildOf(e),
+            ));
+        }
         self.commands.spawn((Mesh2d(mesh), MeshMaterial2d(self.mats[m as usize].clone()), Transform::from_xyz(0.0, 0.0, z), ChildOf(e)));
     }
 
