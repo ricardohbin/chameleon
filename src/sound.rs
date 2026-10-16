@@ -45,6 +45,7 @@ struct Clips {
     wasp: Handle<AudioSource>,
     dragonfly: Handle<AudioSource>,
     spider: Handle<AudioSource>,
+    centipede: Handle<AudioSource>,
     airblow: Handle<AudioSource>,
 }
 
@@ -58,6 +59,7 @@ fn load(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         wasp: add(include_bytes!("../assets/audio/wasp.m4a")),
         dragonfly: add(include_bytes!("../assets/audio/dragonfly.m4a")),
         spider: add(include_bytes!("../assets/audio/spider.m4a")),
+        centipede: add(include_bytes!("../assets/audio/centipede.m4a")),
         airblow: add(include_bytes!("../assets/audio/airblow.m4a")),
     });
 }
@@ -120,7 +122,8 @@ fn voices(
         }
         *left = rng.range(VOICE_GAP.0, VOICE_GAP.1);
         let clip = match lair.kind {
-            BossKind::Roach | BossKind::Centipede => &clips.gutter,
+            BossKind::Roach => &clips.gutter,
+            BossKind::Centipede => &clips.centipede,
             BossKind::Wasp => &clips.wasp,
             BossKind::Dragonfly => &clips.dragonfly,
             BossKind::Spider => &clips.spider,
@@ -172,7 +175,7 @@ mod tests {
     /// Every embedded clip decodes (an unsupported format would panic in game).
     #[test]
     fn clips_decode() {
-        let clips: [&'static [u8]; 9] = [
+        let clips: [&'static [u8]; 10] = [
             include_bytes!("../assets/audio/slash.m4a"),
             include_bytes!("../assets/audio/blood1.m4a"),
             include_bytes!("../assets/audio/blood2.m4a"),
@@ -181,6 +184,7 @@ mod tests {
             include_bytes!("../assets/audio/wasp.m4a"),
             include_bytes!("../assets/audio/dragonfly.m4a"),
             include_bytes!("../assets/audio/spider.m4a"),
+            include_bytes!("../assets/audio/centipede.m4a"),
             include_bytes!("../assets/audio/airblow.m4a"),
         ];
         for bytes in clips {
