@@ -247,6 +247,27 @@ impl Player {
         }
     }
 
+    /// Choking on foul air (`king_rat::foul_air`): costs `damage` and a cough
+    /// (a short stagger), no knockback.
+    pub fn choke(&mut self, damage: i32) -> Hurt {
+        if self.dead.is_some() || self.god {
+            return Hurt::Ignored;
+        }
+        self.hp = (self.hp - damage).max(0);
+        self.wounds += 1;
+        self.shadow = (self.shadow - 1.0).max(0.0);
+        self.digest = 0.0;
+        self.vel.x *= 0.4;
+        self.stun = 0.25;
+        if self.hp == 0 {
+            self.dead = Some(0.0);
+            self.shadow = 0.0;
+            Hurt::Killed
+        } else {
+            Hurt::Hurt
+        }
+    }
+
     /// Put the chameleon back on the ground at `pos` (a loaded game): also its respawn spot.
     pub fn settle_at(&mut self, pos: Vec2) {
         self.safe_spot = pos;

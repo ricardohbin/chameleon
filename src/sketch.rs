@@ -31,6 +31,8 @@ const CENTIPEDE_MARK: [u8; 3] = [0xa2, 0x00, 0xa2];
 const FROG_MARK: [u8; 3] = [0xb8, 0x00, 0xff];
 /// Brown `#8f563b`: the grasshopper (dull, would read as background structure).
 const GRASSHOPPER_MARK: [u8; 3] = [0x8f, 0x56, 0x3b];
+/// Dull red `#ac3232`: the King Rat (would read as the player's red in the channel test).
+const RAT_MARK: [u8; 3] = [0xac, 0x32, 0x32];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
@@ -49,6 +51,8 @@ pub enum MarkerKind {
     Frog,
     /// Brown `#8f563b` (`GRASSHOPPER_MARK`, its blood): the grasshopper boss (rests on the ground).
     Grasshopper,
+    /// Dull red `#ac3232` (`RAT_MARK`, its blood): the King Rat boss (rests on the ground).
+    Rat,
 }
 
 pub struct Marker {
@@ -102,6 +106,10 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
         }
         if is(GRASSHOPPER_MARK) {
             marks[i] = Some(MarkerKind::Grasshopper);
+            continue;
+        }
+        if is(RAT_MARK) {
+            marks[i] = Some(MarkerKind::Rat);
             continue;
         }
         if is(FROG_MARK) {
@@ -227,6 +235,7 @@ fn unbake(packed: &[u8]) -> Result<Sketch, String> {
             6 => MarkerKind::Centipede,
             7 => MarkerKind::Frog,
             8 => MarkerKind::Grasshopper,
+            9 => MarkerKind::Rat,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

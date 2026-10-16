@@ -60,6 +60,9 @@ impl Plugin for DevPlugin {
         if std::env::var("BROWN").is_ok() {
             app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Grasshopper));
         }
+        if std::env::var("RED").is_ok() {
+            app.add_systems(Startup, |mut defeated: ResMut<crate::boss::Defeated>| defeated.add(crate::boss::BossKind::Rat));
+        }
         if std::env::var("TOUR").is_ok() {
             app.add_systems(Update, tour.after(player::move_player).before(camera::follow_player));
         }
@@ -230,6 +233,9 @@ fn tour(
     }
     if let Some(p) = terrain.grasshopper {
         stops.push(("grasshopper".into(), p + Vec2::Y * player::HALF.y, 1.0));
+    }
+    if let Some(p) = terrain.rat {
+        stops.push(("king-rat".into(), p + Vec2::Y * player::HALF.y, 1.0));
     }
     let slug = |name: &str| name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(6).collect::<Vec<_>>().join("-");
     for a in &terrain.areas {

@@ -138,6 +138,8 @@ pub struct Terrain {
     pub frog: Option<Vec2>,
     /// The grasshopper: on the ground below its marker (feet position).
     pub grasshopper: Option<Vec2>,
+    /// The King Rat: on the ground below its marker (feet position).
+    pub rat: Option<Vec2>,
     pub areas: Vec<Area>,
     pub features: Vec<Feature>,
     /// Everything drawn, in world space.
@@ -194,6 +196,7 @@ impl Terrain {
             centipede: None,
             frog: None,
             grasshopper: None,
+            rat: None,
             areas: Vec::new(),
             features: Vec::new(),
             bounds: Rect::default(),
@@ -209,6 +212,7 @@ impl Terrain {
         t.centipede = marker(MarkerKind::Centipede).map(to_world);
         t.frog = marker(MarkerKind::Frog).map(|p| t.rest(to_world(p)));
         t.grasshopper = marker(MarkerKind::Grasshopper).map(|p| t.rest(to_world(p)));
+        t.rat = marker(MarkerKind::Rat).map(|p| t.rest(to_world(p)));
         for s in sketch.slices {
             let rect = Rect::from_corners(to_world((s.rect.min - lo).as_vec2()), to_world((s.rect.max - lo).as_vec2()));
             let n = s.name.to_lowercase();
