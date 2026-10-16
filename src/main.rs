@@ -22,6 +22,7 @@ mod regrowth;
 mod roach;
 mod save;
 mod shapes;
+mod sound;
 mod sketch;
 mod sketch_tool;
 mod spider;
@@ -67,7 +68,7 @@ fn main() {
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
-        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin))
+        .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).before(level::restart),

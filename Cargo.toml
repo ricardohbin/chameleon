@@ -5,7 +5,7 @@ edition = "2024"
 description = "Ghore, The Chameleon"
 
 [dependencies]
-bevy = "0.20"
+bevy = { version = "0.20", features = ["aac", "mp4"] } # m4a sound effects
 miniz_oxide = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
 winit = "0.30"

@@ -1053,6 +1053,11 @@ impl ChameleonAnim {
         self.slash.is_some() || self.spin.is_some()
     }
 
+    /// Mid air spin (the Razorwing's power) rather than a plain slash.
+    pub fn spinning(&self) -> bool {
+        self.spin.is_some()
+    }
+
     /// True while the claws are cutting through the air.
     pub fn striking(&self) -> bool {
         self.slash.is_some_and(|t| (STRIKE.0..=STRIKE.1).contains(&(t / SLASH_TIME)))

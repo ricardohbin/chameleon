@@ -34,6 +34,7 @@ use crate::{
     mob_art,
     player::{self, Player, Respawned},
     shapes::{ellipse_pts, fill, Rng},
+    sound::Sfx,
     terrain::{Style, Terrain, PX, STEP_UP},
 };
 
@@ -814,6 +815,7 @@ fn slash_mobs(
     mut stop: ResMut<HitStop>,
     mut bleed: MessageWriter<Bleed>,
     mut paint: MessageWriter<Paint>,
+    mut sfx: MessageWriter<Sfx>,
     mut spat: MessageReader<SpitHit>,
     player: Single<(&Player, &Transform, &ChameleonAnim)>,
     mut mobs: Query<(Entity, &mut Mob, &Transform)>,
@@ -845,6 +847,7 @@ fn slash_mobs(
         m.hp -= 1;
         m.flash = 1.0;
         m.notice = Notice::Aware;
+        sfx.write(Sfx::Blood);
         rally.push(tf.translation.truncate());
         let fluid = m.spec.blood;
         let dir = (aim + Vec2::Y * 0.3).normalize();

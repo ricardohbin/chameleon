@@ -108,7 +108,7 @@ impl Plugin for DragonflyPlugin {
 }
 
 #[derive(Component)]
-struct Dragonfly {
+pub struct Dragonfly {
     vel: Vec2,
     state: State,
     facing: f32,
@@ -132,6 +132,13 @@ struct Dragonfly {
     introduced: bool,
     /// Just died: tear its wings off this frame.
     dismember: bool,
+}
+
+impl Dragonfly {
+    /// Mid-spin (its whirl of blades).
+    pub fn spinning(&self) -> bool {
+        matches!(self.state, State::Spin { .. })
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
