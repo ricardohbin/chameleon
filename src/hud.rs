@@ -79,7 +79,7 @@ struct HintLabel(usize);
 #[derive(Component)]
 struct HintKey(usize);
 
-const HINT_ROWS: usize = 14;
+const HINT_ROWS: usize = 20;
 
 /// The look of every piece of HUD text that sits on a background: white on black.
 pub const CHIP: Color = Color::srgba(0.0, 0.0, 0.0, 0.88);
@@ -353,7 +353,7 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
     v.push(("Slash", if mouse { "F / LMB" } else { "F" }));
     v.push(("Feed", "E"));
     if defeated.dash() {
-        v.push(("Dash (ground, uses strength)", "Shift / K"));
+        v.push(("Dash (ground, drains strength)", "Shift / K"));
     }
     if defeated.spit() {
         v.push(("Spit", if mouse { "Q / RMB" } else { "Q" }));
@@ -369,6 +369,21 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
     }
     if defeated.burrow() {
         v.push(("Burrow", "E at rubble"));
+    }
+    if defeated.leap() {
+        v.push(("Big jump", "Hold S, release"));
+    }
+    if defeated.blow() {
+        v.push(("Power blow", if mouse { "Hold F / LMB" } else { "Hold F" }));
+    }
+    if defeated.scythe() {
+        v.push(("Scythe claws", "Slash"));
+    }
+    if defeated.wade() {
+        v.push(("Water walk", "In water"));
+    }
+    if defeated.sewer() {
+        v.push(("Sewer air", "Passive"));
     }
     v.push(("Pause", "P"));
     v.push(("Menu", "Esc"));

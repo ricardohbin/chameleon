@@ -44,8 +44,7 @@ const SLIPPERY_DRIFT: f32 = 90.0;
 const DASH_SPEED: f32 = 1100.0;
 const DASH_TIME: f32 = 0.25;
 const DASH_COOLDOWN: f32 = 0.45;
-/// A dash spends this much of the (swimming) strength, and needs at least `DASH_MIN_STRENGTH` left.
-const DASH_COST: f32 = 0.25;
+/// A dash spends the whole (swimming) strength, and needs at least `DASH_MIN_STRENGTH` left.
 const DASH_MIN_STRENGTH: f32 = 0.3;
 const DASH_KEYS: [KeyCode; 3] = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::KeyK];
 /// Wall walking (earned by beating the spider): pushing into a tall wall
@@ -718,7 +717,7 @@ pub fn move_player(
             && p.stun <= 0.0
             && !dead
         {
-            p.swim = (p.swim - DASH_COST).max(0.0);
+            p.swim = 0.0;
             p.dash = DASH_TIME;
             p.dash_cooldown = DASH_COOLDOWN;
             p.dash_dir = if dir != 0.0 { dir } else { p.facing };
