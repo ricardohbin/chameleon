@@ -94,8 +94,9 @@ pub fn adjust_contrast(keys: Res<ButtonInput<KeyCode>>, mut contrast: ResMut<Con
 /// which resets their tint).
 pub fn fade_backs(mut backs: Query<(&FadeBack, &mut Sprite)>, vines: Query<&crate::regrowth::Vine>) {
     for (fade, mut sprite) in &mut backs {
-        let Ok(vine) = vines.get(fade.0) else { continue };
-        let alpha = 1.0 - vine.shown;
+        // Gone as soon as any of the colors over it is revealed.
+        let shown = fade.0.iter().filter_map(|&e| vines.get(e).ok()).map(|v| v.shown).fold(0.0, f32::max);
+        let alpha = 1.0 - shown;
         if (sprite.color.alpha() - alpha).abs() > 0.001 {
             sprite.color.set_alpha(alpha);
         }
@@ -215,16 +216,32 @@ pub struct TileTask(Task<Painted>, IVec2);
 /// A painted tile: its ground (front), its interiors (back), the ground again in the colors of
 /// the bosses that ruled it (`tinted`), and the interiors that turn color (`back_tinted`, per
 /// `BACK_TINTS`: gray, and in color), left out of `back`.
-type Painted = (Image, Image, [Option<Image>; 7], [Option<(Image, Image)>; 2]);
+type Painted = (Image, Image, [Option<Image>; 8], [Option<(Image, Image)>; BACK_TINTS.len()]);
 
 /// The interiors that turn color, the boss whose color they get, and its ramp: the mall's shops
-/// in the King Rat's red, the old sewer in the Plague Frog's violet blood.
-const BACK_TINTS: [(Style, BossKind, &[(f32, Rgb)]); 2] = [(Style::Mall, BossKind::Rat, &SHOP_RED), (Style::Sewer, BossKind::Frog, &SEWER_VIOLET)];
+/// in the King Rat's red, the old sewer in the Plague Frog's violet blood, the crumbling blocks'
+/// interiors in the centipede's purple, the water treatment plant's in the mantis's cyan, the caves' in the Weaver's blue, the bunker's in the Venom Mother's green, the caves' also in the beetle's orange (over the blue), the catacombs' in the beetle's orange, the subway's in the Razorwing's pink, the park's, the dump's and the dam's in the beetle's orange, the sinkhole's in the Razorwing's pink.
+const BACK_TINTS: [(Style, BossKind, &[(f32, Rgb)]); 13] = [
+    (Style::Mall, BossKind::Rat, &SHOP_RED),
+    (Style::Sewer, BossKind::Frog, &SEWER_VIOLET),
+    (Style::Concrete, BossKind::Centipede, &BLOCK_PURPLE),
+    (Style::Treatment, BossKind::Mantis, &PLANT_CYAN),
+    (Style::Cave, BossKind::Spider, &CAVE_BLUE),
+    (Style::Bunker, BossKind::Wasp, &BUNKER_GREEN),
+    (Style::Cave, BossKind::Beetle, &CAVE_ORANGE),
+    (Style::Catacombs, BossKind::Beetle, &CRYPT_ORANGE),
+    (Style::Subway, BossKind::Dragonfly, &SUBWAY_PINK),
+    (Style::Park, BossKind::Beetle, &PARK_ORANGE),
+    (Style::Trash, BossKind::Beetle, &DUMP_ORANGE),
+    (Style::Dam, BossKind::Beetle, &DAM_ORANGE),
+    (Style::Sinkhole, BossKind::Dragonfly, &SINKHOLE_PINK),
+];
 
-/// A tile's gray interiors over a colored copy on the underlay (`camera::underlay_layer`):
-/// they fade out as that copy (the `Vine` `.0`) is revealed.
+/// A tile's gray interiors over their colored copies on the underlay (`camera::underlay_layer`):
+/// they fade out as one of those copies (the `Vine`s `.0`) is revealed. Several bosses can color
+/// the same region: the later entry of `BACK_TINTS` lies over the earlier ones.
 #[derive(Component)]
-pub struct FadeBack(Entity);
+pub struct FadeBack(Vec<Entity>);
 
 /// A flat stand-in for the tile starting at grid cell `.0`, so the ground
 /// around the player shows on the very first frame; it goes when the painted
@@ -372,28 +389,45 @@ pub fn finish_tiles(
                 ))
                 .id();
             // The interiors in their boss's color, under the world: their gray copy fades over it.
-            for (part, (_, boss, _)) in back_tinted.into_iter().zip(BACK_TINTS) {
+            let mut grays: Vec<(Style, Vec<Entity>, Image)> = Vec::new();
+            for (n, (part, (style, boss, _))) in back_tinted.into_iter().zip(BACK_TINTS).enumerate() {
                 let Some((gray, color)) = part else { continue };
-                let home = if boss == BossKind::Rat { terrain.rat } else { terrain.frog };
+                let home = match boss {
+                    BossKind::Rat => terrain.rat,
+                    BossKind::Centipede => terrain.centipede,
+                    BossKind::Mantis => terrain.mantis,
+                    BossKind::Spider => terrain.spider,
+                    BossKind::Wasp => terrain.wasp,
+                    BossKind::Beetle => terrain.beetle,
+                    BossKind::Dragonfly => terrain.dragonfly,
+                    _ => terrain.frog,
+                };
                 let dist = home.map_or(0.0, |home| (tf.translation.truncate().distance(home) - extent * 0.5).max(0.0));
                 let material = colors.add(ColorMaterial { texture: Some(images.add(color)), alpha_mode: AlphaMode2d::Blend, color: Color::WHITE.with_alpha(0.0), ..default() });
                 let vine = commands
                     .spawn((
                         Mesh2d(meshes.add(Rectangle::new(extent, extent))),
                         MeshMaterial2d(material.clone()),
-                        Transform::from_xyz(0.0, 0.0, Z_BACK + 0.001),
+                        Transform::from_xyz(0.0, 0.0, Z_BACK + 0.001 * (n + 1) as f32),
                         crate::camera::underlay_layer(),
                         Visibility::Hidden,
                         crate::regrowth::Vine { boss, dist, stem: material.clone(), leaf: material, shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
                         ChildOf(e),
                     ))
                     .id();
+                match grays.iter_mut().find(|g| g.0 == style) {
+                    Some(g) => g.1.push(vine),
+                    None => grays.push((style, vec![vine], gray)),
+                }
+            }
+            // One gray copy per region, fading as soon as any of its colors is revealed.
+            for (_, vines, gray) in grays {
                 let gray = commands
                     .spawn((
                         Sprite { custom_size: Some(Vec2::splat(extent)), ..Sprite::from_image(images.add(gray)) },
                         Layer::Back,
                         Transform::default(),
-                        FadeBack(vine),
+                        FadeBack(vines),
                     ))
                     .id();
                 commands.entity(back).add_child(gray);
@@ -405,7 +439,7 @@ pub fn finish_tiles(
                 .add_child(back);
             // The stone in the color of the boss that ruled it, on the color layer, hidden until
             // that color washes over it.
-            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab, BossKind::Beetle]) {
+            for (blue, boss) in tinted.into_iter().zip([BossKind::Spider, BossKind::Roach, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab, BossKind::Beetle, BossKind::Centipede]) {
                 let Some(blue) = blue else { continue };
                 let center = tf.translation.truncate();
                 let home = match boss {
@@ -415,6 +449,7 @@ pub fn finish_tiles(
                     BossKind::Mantis => terrain.mantis,
                     BossKind::Crab => terrain.crab,
                     BossKind::Beetle => terrain.beetle,
+                    BossKind::Centipede => terrain.centipede,
                     _ => terrain.grasshopper,
                 };
                 let dist = home.map_or(0.0, |home| (center.distance(home) - extent * 0.5).max(0.0));
@@ -443,13 +478,15 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
     let cover_back = outline::rasterize(&c.structure, origin, TEX as f32, px, px + PAD);
     let mut front = vec![0u8; px * px * 4];
     let mut back = vec![0u8; px * px * 4];
-    // The ground of the regions of the Weaver (blue limestone), the Gutter King (sulfur yellow),
-    // the Sawleg (brown: the crumbling blocks and the park), the King Rat (red: the subway's
+    // The ground of the regions of the Weaver (blue: the catacombs' limestone, the water treatment
+    // plant's concrete), the Gutter King (sulfur yellow: the sewer and the dump),
+    // the Sawleg (brown: the crumbling blocks, the park and its own sinkhole), the King Rat (red: the subway's
     // tiles and marble), the Reaper (cyan: the mall's checkered floors), the crab (indigo: the
-    // dam's concrete) and the beetle (orange: the bunker) again, in their colors (only if the tile has any).
-    let mut tinted: [Option<Vec<u8>>; 7] = [None, None, None, None, None, None, None];
+    // dam's concrete), the beetle (orange: the bunker) and the centipede (purple: the cave system) again,
+    // in their colors (only if the tile has any).
+    let mut tinted: [Option<Vec<u8>>; 8] = std::array::from_fn(|_| None);
     // The interiors that turn color (`BACK_TINTS`): gray, and in color.
-    let mut back_tinted: [Option<(Vec<u8>, Vec<u8>)>; 2] = [None, None];
+    let mut back_tinted: [Option<(Vec<u8>, Vec<u8>)>; BACK_TINTS.len()] = std::array::from_fn(|_| None);
     for j in 0..px {
         for i in 0..px {
             let u = x0 as f32 + (i as f32 + 0.5) / TEX as f32;
@@ -465,25 +502,31 @@ fn paint_tile(c: &Canvas, x0: i32, y0: i32) -> Painted {
             }
             if b[3] > 0.0 {
                 let style = c.fields.style(u, v);
-                if let Some(which) = BACK_TINTS.iter().position(|t| t.0 == style) {
-                    let [r, g, bl] = shade([b[0], b[1], b[2]], 2f32.powf(-DEFAULT_CONTRAST / 2.0), BACK_TINTS[which].2);
+                let mut tinted_here = false;
+                for (which, (_, _, ramp)) in BACK_TINTS.iter().enumerate().filter(|(_, t)| t.0 == style) {
+                    let [r, g, bl] = shade([b[0], b[1], b[2]], 2f32.powf(-DEFAULT_CONTRAST / 2.0), ramp);
                     let (gray, color) = back_tinted[which].get_or_insert_with(|| (vec![0u8; px * px * 4], vec![0u8; px * px * 4]));
                     gray[k..k + 4].copy_from_slice(&back[k..k + 4]);
                     color[k..k + 4].copy_from_slice(&[to_u8(r), to_u8(g), to_u8(bl), to_u8(b[3])]);
+                    tinted_here = true;
+                }
+                if tinted_here {
                     back[k..k + 4].fill(0);
                 }
             }
             if f[3] > 0.0 {
                 let (which, [r, g, b]) = match c.fields.style(u, v) {
                     Style::Catacombs => (0, catacombs::limestone_blue([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0))),
+                    Style::Treatment => (0, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &PLANT_BLUE)),
                     Style::Trash | Style::Sewer => (1, sulfur_yellow([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0))),
                     Style::Concrete => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &BRICK_BROWN)),
                     Style::Park => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &SOIL_BROWN)),
+                    Style::Sinkhole => (2, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &SINKHOLE_BROWN)),
                     Style::Subway => (3, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_RED)),
                     Style::Mall => (4, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &TILE_CYAN)),
                     Style::Dam => (5, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &DAM_INDIGO)),
                     Style::Bunker => (6, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &BUNKER_ORANGE)),
-                    _ => continue,
+                    Style::Cave => (7, shade([f[0], f[1], f[2]], 2f32.powf(DEFAULT_CONTRAST / 2.0), &CAVE_PURPLE)),
                 };
                 let data = tinted[which].get_or_insert_with(|| vec![0u8; px * px * 4]);
                 data[k..k + 4].copy_from_slice(&[to_u8(r), to_u8(g), to_u8(b), to_u8(f[3])]);
@@ -512,14 +555,42 @@ fn sulfur_yellow(c: Rgb, k: f32) -> Rgb {
 const BRICK_BROWN: [(f32, Rgb); 4] = [(0.0, [0.07, 0.04, 0.03]), (0.22, [0.26, 0.15, 0.10]), (0.55, [0.56, 0.34, 0.23]), (1.0, [0.86, 0.68, 0.54])];
 /// The park's soil once the Sawleg's brown is back: dark, rich earth.
 const SOIL_BROWN: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.01]), (0.22, [0.22, 0.13, 0.06]), (0.55, [0.48, 0.31, 0.16]), (1.0, [0.78, 0.60, 0.40])];
+/// The sinkhole once the Sawleg's brown is back: caved-in earth and broken asphalt, raw clay.
+const SINKHOLE_BROWN: [(f32, Rgb); 4] = [(0.0, [0.06, 0.04, 0.02]), (0.22, [0.25, 0.16, 0.09]), (0.55, [0.56, 0.37, 0.22]), (1.0, [0.86, 0.72, 0.56])];
+/// The water treatment plant's ground once the Weaver's blue is back: clean blue-gray concrete and steel.
+const PLANT_BLUE: [(f32, Rgb); 4] = [(0.0, [0.02, 0.03, 0.06]), (0.22, [0.10, 0.15, 0.26]), (0.55, [0.32, 0.43, 0.66]), (1.0, [0.74, 0.82, 0.95])];
 /// The subway once the King Rat's red is back: oxblood glazed tile and rosy marble.
 const TILE_RED: [(f32, Rgb); 4] = [(0.0, [0.07, 0.02, 0.02]), (0.22, [0.27, 0.07, 0.07]), (0.55, [0.62, 0.20, 0.19]), (1.0, [0.90, 0.62, 0.56])];
 /// The mall's shops (its interiors) once the King Rat's red is back: deep red storefronts.
 const SHOP_RED: [(f32, Rgb); 4] = [(0.0, [0.05, 0.01, 0.01]), (0.22, [0.24, 0.05, 0.05]), (0.55, [0.55, 0.14, 0.13]), (1.0, [0.85, 0.45, 0.40])];
 /// The old sewer (its interiors) once the Plague Frog's violet is back: brick stained in its blood.
 const SEWER_VIOLET: [(f32, Rgb); 4] = [(0.0, [0.03, 0.0, 0.05]), (0.22, [0.18, 0.02, 0.27]), (0.55, [0.50, 0.05, 0.72]), (1.0, [0.85, 0.58, 1.0])];
+/// The crumbling blocks' interiors (and the no-region default's) once the centipede's purple is back: plum plaster and shadow.
+const BLOCK_PURPLE: [(f32, Rgb); 4] = [(0.0, [0.04, 0.0, 0.04]), (0.22, [0.20, 0.02, 0.20]), (0.55, [0.48, 0.07, 0.48]), (1.0, [0.82, 0.50, 0.82])];
+/// The water treatment plant's interiors once the Reaper's cyan is back: aqua-tiled walls, deep teal shadow.
+const PLANT_CYAN: [(f32, Rgb); 4] = [(0.0, [0.0, 0.05, 0.06]), (0.22, [0.03, 0.22, 0.25]), (0.55, [0.10, 0.55, 0.60]), (1.0, [0.60, 0.95, 0.96])];
+/// The cave system's interiors once the Weaver's blue is back: damp slate-blue hollows, deep navy shadow.
+const CAVE_BLUE: [(f32, Rgb); 4] = [(0.0, [0.01, 0.02, 0.06]), (0.22, [0.07, 0.11, 0.26]), (0.55, [0.25, 0.37, 0.65]), (1.0, [0.66, 0.78, 0.95])];
+/// The bunker's interiors once the Venom Mother's green is back: mossy olive-green walls, deep forest shadow.
+const BUNKER_GREEN: [(f32, Rgb); 4] = [(0.0, [0.01, 0.05, 0.02]), (0.22, [0.06, 0.20, 0.07]), (0.55, [0.22, 0.50, 0.15]), (1.0, [0.65, 0.90, 0.45])];
+/// The cave system's interiors once the beetle's orange is back: rust-orange hollows (over the Weaver's blue).
+const CAVE_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.06, 0.02, 0.0]), (0.22, [0.30, 0.12, 0.02]), (0.55, [0.78, 0.38, 0.05]), (1.0, [1.0, 0.76, 0.48])];
+/// The catacombs' interiors once the beetle's orange is back: torchlit ochre bone niches, umber shadow.
+const CRYPT_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.05, 0.02, 0.0]), (0.22, [0.26, 0.11, 0.02]), (0.55, [0.72, 0.36, 0.06]), (1.0, [0.98, 0.78, 0.52])];
+/// The subway's interiors once the Razorwing's pink is back: faded rose tiles, mauve shadow.
+const SUBWAY_PINK: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.04]), (0.22, [0.24, 0.15, 0.20]), (0.55, [0.62, 0.45, 0.56]), (1.0, [0.95, 0.84, 0.90])];
+/// The central park's interiors once the beetle's orange is back: autumn amber, dark umber shadow.
+const PARK_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.05, 0.03, 0.0]), (0.22, [0.28, 0.14, 0.02]), (0.55, [0.76, 0.43, 0.07]), (1.0, [1.0, 0.82, 0.50])];
+/// The trash dump's interiors once the beetle's orange is back: rusty, burnt-orange junk.
+const DUMP_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.06, 0.02, 0.0]), (0.22, [0.32, 0.11, 0.02]), (0.55, [0.80, 0.34, 0.04]), (1.0, [1.0, 0.70, 0.40])];
+/// The dam's interiors once the beetle's orange is back: sodium-lit concrete, deep rust shadow.
+const DAM_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.05, 0.02, 0.01]), (0.22, [0.26, 0.11, 0.04]), (0.55, [0.72, 0.38, 0.10]), (1.0, [0.98, 0.76, 0.52])];
+/// The sinkhole's interiors once the Razorwing's pink is back: dusty rose clay, plum shadow.
+const SINKHOLE_PINK: [(f32, Rgb); 4] = [(0.0, [0.05, 0.02, 0.04]), (0.22, [0.25, 0.13, 0.20]), (0.55, [0.66, 0.42, 0.56]), (1.0, [0.96, 0.82, 0.90])];
 /// The dam once the crab's indigo is back: wet blue-gray concrete, deep indigo shadows.
 const DAM_INDIGO: [(f32, Rgb); 4] = [(0.0, [0.02, 0.02, 0.07]), (0.22, [0.10, 0.12, 0.30]), (0.55, [0.30, 0.36, 0.72]), (1.0, [0.72, 0.76, 0.96])];
+/// The cave system's rock once the centipede's purple is back: amethyst-stained stone, deep violet shadow.
+const CAVE_PURPLE: [(f32, Rgb); 4] = [(0.0, [0.04, 0.0, 0.06]), (0.22, [0.19, 0.04, 0.24]), (0.55, [0.46, 0.14, 0.54]), (1.0, [0.82, 0.60, 0.88])];
 /// The bunker once the beetle's orange is back: hazard-orange paint over rusted plate and concrete.
 const BUNKER_ORANGE: [(f32, Rgb); 4] = [(0.0, [0.07, 0.03, 0.0]), (0.22, [0.30, 0.13, 0.02]), (0.55, [0.80, 0.42, 0.05]), (1.0, [1.0, 0.80, 0.55])];
 /// The mall once the Reaper's cyan is back: glossy teal checker tiles, aqua highlights.

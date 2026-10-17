@@ -44,7 +44,7 @@ pub struct RegrowthPlugin;
 
 impl Plugin for RegrowthPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Regrowth>().add_systems(Startup, (spawn_tint, spawn_skylight)).add_systems(Update, (regrow, tint_and_pulse, skylight, tint_backdrop).chain());
+        app.init_resource::<Regrowth>().add_systems(Startup, (spawn_tint, spawn_skylight, spawn_indigo_sky)).add_systems(Update, (regrow, tint_and_pulse, skylight, tint_backdrop, indigo_sky).chain());
     }
 }
 
@@ -207,6 +207,41 @@ fn spawn_tint(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
         camera::color_layer(),
         Tint,
     ));
+}
+
+/// The crab's indigo over the whole sky: a gradient over the backdrop (deeper at the top), on the
+/// underlay (`camera::underlay_layer`: above the gray backdrop, below the world, so only where the
+/// sky shows), faded in as its wave reaches the camera.
+#[derive(Component)]
+struct IndigoSky;
+
+fn spawn_indigo_sky(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
+    let c = INDIGO.to_linear().to_f32_array();
+    let top = [c[0] * 0.8, c[1] * 0.8, c[2] * 1.0, 0.8];
+    let bottom = [c[0] * 1.1, c[1] * 1.1, c[2] * 1.1, 0.5];
+    commands.spawn((
+        Mesh2d(meshes.add(gradient_quad(12000.0, 8000.0, top, bottom))),
+        MeshMaterial2d(materials.add(ColorMaterial { color: Color::srgba(1.0, 1.0, 1.0, 0.0), alpha_mode: AlphaMode2d::Blend, ..default() })),
+        Transform::from_xyz(0.0, 0.0, -90.0),
+        camera::underlay_layer(),
+        IndigoSky,
+    ));
+}
+
+fn indigo_sky(
+    regrowth: Res<Regrowth>,
+    terrain: Res<Terrain>,
+    camera: Single<&Transform, (With<MainCamera>, Without<IndigoSky>)>,
+    sky: Single<(&mut Transform, &MeshMaterial2d<ColorMaterial>), With<IndigoSky>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let eye = camera.translation.truncate();
+    let (revealed, _) = regrowth.felt_at(BossKind::Crab, &terrain, eye);
+    let (mut tf, mat) = sky.into_inner();
+    (tf.translation.x, tf.translation.y) = (eye.x, eye.y);
+    if let Some(mut m) = materials.get_mut(&mat.0) {
+        m.color = m.color.with_alpha(revealed);
+    }
 }
 
 fn tint_and_pulse(
