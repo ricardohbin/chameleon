@@ -600,6 +600,7 @@ pub fn hurt_player(
     ppos: Vec2,
     from: Vec2,
     damage: i32,
+    cause: &'static str,
     bleed: &mut MessageWriter<Bleed>,
     feel: (&mut Shake, &mut HitStop),
 ) {
@@ -614,7 +615,7 @@ pub fn hurt_player(
         fluid: Fluid::Red,
         sticky: false,
     };
-    match p.hurt(damage, Vec2::new(side * 380.0, 320.0)) {
+    match p.hurt(damage, Vec2::new(side * 380.0, 320.0), cause) {
         Hurt::Ignored => {}
         Hurt::Hurt => {
             shake.add(0.35);

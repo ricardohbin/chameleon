@@ -657,7 +657,7 @@ fn think(
                         stop.add(0.04);
                         throw_dust(&mut commands, &mut materials, &cloud, &mut f.rng, to);
                         if kind == Leap::Stomp && alive && (ppos.x - to.x).abs() < CRUSH_HALF + player::HALF.x && pfeet.y < to.y + CRUSH_HEIGHT {
-                            boss::hurt_player(&mut p, ppos, to + Vec2::Y * FOOT, CRUSH_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                            boss::hurt_player(&mut p, ppos, to + Vec2::Y * FOOT, CRUSH_DAMAGE, "Crushed under the Plague Frog", &mut bleed, (&mut shake, &mut stop));
                         }
                         let standing = p.grounded && p.climbing.is_none() && (pfeet.y - to.y).abs() < SHOCK_HEIGHT;
                         if alive && !p.god.on() && standing && (ppos.x - to.x).abs() < SHOCK_REACH {
@@ -783,7 +783,7 @@ fn poison(
         if c.harmful && fade > 0.5 && p.dead.is_none() && ppos.distance(tf.translation.truncate()) < radius * 0.8 {
             let stun = p.stun;
             let keep = p.vel;
-            match p.hurt(POISON_DAMAGE, keep) {
+            match p.hurt(POISON_DAMAGE, keep, "Poisoned by the Plague Frog") {
                 Hurt::Ignored => {}
                 hurt => {
                     // Poison doesn't knock you about.

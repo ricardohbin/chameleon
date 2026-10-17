@@ -168,6 +168,8 @@ pub struct Player {
     pub flying: bool,
     /// Seconds since death, `None` while alive.
     pub dead: Option<f32>,
+    /// What dealt the last blow (the death screen tells it).
+    pub cause: &'static str,
     /// Visual offset easing out the hop of climbing (or dropping) a ramp step.
     pub step: f32,
     /// Seconds left of sliding momentum (kept through the hops down a steep slope).
@@ -265,11 +267,12 @@ impl Player {
     }
 
     /// Take `damage` and get knocked back with velocity `knock`.
-    pub fn hurt(&mut self, damage: i32, knock: Vec2) -> Hurt {
+    pub fn hurt(&mut self, damage: i32, knock: Vec2, cause: &'static str) -> Hurt {
         if self.dead.is_some() || self.invuln > 0.0 || self.guard > 0.0 || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
+        self.cause = cause;
         self.wounds += 1;
         // The tick being digested is lost whole; the rest start filling again.
         self.shadow = (self.shadow - 1.0).max(0.0);
@@ -289,11 +292,12 @@ impl Player {
     /// An electric jolt (`electric.rs`): costs `damage`, a short twitch and a hop
     /// instead of a knockback, and no invulnerability, so the shocks keep coming
     /// for as long as the chameleon stays on the live rail.
-    pub fn shock(&mut self, damage: i32) -> Hurt {
+    pub fn shock(&mut self, damage: i32, cause: &'static str) -> Hurt {
         if self.dead.is_some() || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
+        self.cause = cause;
         self.wounds += 1;
         self.shadow = (self.shadow - 1.0).max(0.0);
         self.digest = 0.0;
@@ -311,11 +315,12 @@ impl Player {
 
     /// Choking on foul air (`king_rat::foul_air`): costs `damage` and a cough
     /// (a short stagger), no knockback.
-    pub fn choke(&mut self, damage: i32) -> Hurt {
+    pub fn choke(&mut self, damage: i32, cause: &'static str) -> Hurt {
         if self.dead.is_some() || self.god.on() {
             return Hurt::Ignored;
         }
         self.hp = (self.hp - damage).max(0);
+        self.cause = cause;
         self.wounds += 1;
         self.shadow = (self.shadow - 1.0).max(0.0);
         self.digest = 0.0;
@@ -859,7 +864,7 @@ pub fn move_player(
                 } else if p.invuln <= 0.0 {
                     let keep = p.vel;
                     p.harm = 0.0;
-                    if let Hurt::Hurt = p.hurt(1, keep) {
+                    if let Hurt::Hurt = p.hurt(1, keep, "Drowned") {
                         p.stun = 0.0;
                     }
                     shake.add(0.15);
@@ -1092,7 +1097,7 @@ pub fn move_player(
             if floors >= FALL_SAFE_FLOORS && !p.god.on() {
                 p.invuln = 0.0;
                 let damage = floors.floor() as i32 - FALL_SAFE_FLOORS as i32 + 1;
-                p.hurt(damage, Vec2::ZERO);
+                p.hurt(damage, Vec2::ZERO, "Fell from a deadly height");
                 shake.add(0.4);
             }
         }
@@ -1105,7 +1110,7 @@ pub fn move_player(
     let void_y = terrain.bounds.min.y - VOID_DEPTH;
     if pos.y < void_y && !dead {
         p.invuln = 0.0;
-        if let Hurt::Killed = p.hurt(1, Vec2::ZERO) {
+        if let Hurt::Killed = p.hurt(1, Vec2::ZERO, "Fell into the abyss") {
             p.vel = Vec2::ZERO;
         } else {
             pos = p.safe_spot + Vec2::Y * 30.0;

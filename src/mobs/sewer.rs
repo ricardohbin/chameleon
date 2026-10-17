@@ -330,9 +330,9 @@ fn crawl(m: &mut Mob, pos: Vec2, dx: f32, terrain: &Terrain) -> Vec2 {
 }
 
 /// Hurts the chameleon without knocking it about (a drain, a cloud): it keeps its momentum and footing.
-fn sap(p: &mut Player, ppos: Vec2, bleed: &mut MessageWriter<Bleed>, shake: &mut Shake) -> Hurt {
+fn sap(p: &mut Player, ppos: Vec2, cause: &'static str, bleed: &mut MessageWriter<Bleed>, shake: &mut Shake) -> Hurt {
     let (stun, keep) = (p.stun, p.vel);
-    let hurt = p.hurt(1, keep);
+    let hurt = p.hurt(1, keep, cause);
     if !matches!(hurt, Hurt::Ignored) {
         p.stun = stun;
         shake.add(0.15);
@@ -457,7 +457,7 @@ fn ride(m: &mut Mob, at: Vec2, w: &mut World) -> Vec2 {
     m.facing = if at.x == 0.0 { p.facing } else { -sign(at.x * p.facing) };
     m.sewer.drain -= w.dt;
     if m.sewer.drain <= 0.0 {
-        if matches!(sap(p, w.ppos, w.bleed, w.shake), Hurt::Ignored) {
+        if matches!(sap(p, w.ppos, "Drained by a bile leech", w.bleed, w.shake), Hurt::Ignored) {
             // Invulnerable just now: tries again soon.
             m.sewer.drain = 0.3;
         } else {
@@ -587,7 +587,7 @@ fn toad_hop(m: &mut Mob, pos: Vec2, toward: Option<f32>, dt: f32) {
 /// The tongue caught the chameleon: hurt and yanked in.
 fn grab(mouth: Vec2, w: &mut World) {
     let pull = (mouth - w.ppos).normalize_or_zero() * TONGUE_PULL + Vec2::Y * 140.0;
-    match w.p.hurt(1, pull) {
+    match w.p.hurt(1, pull, "Yanked in and eaten by a gullet toad") {
         Hurt::Ignored => {}
         hurt => {
             w.shake.add(0.3);
@@ -767,7 +767,7 @@ fn miasma(
             ptf.scale = Vec3::splat(radius * puff.size * (1.0 + 0.1 * (now * 2.5 + puff.phase).sin()));
         }
         if c.harmful && fade > 0.5 && p.dead.is_none() && ppos.distance(tf.translation.truncate()) < radius * 0.8 {
-            sap(&mut p, ppos, &mut bleed, &mut shake);
+            sap(&mut p, ppos, "Poisoned by a plague bloat's cloud", &mut bleed, &mut shake);
         }
     }
 }
@@ -858,7 +858,7 @@ fn newt(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &mut World) -> Ve
     let side = sign(to.x);
     let bite = |m: &mut Mob, w: &mut World| {
         m.sewer.bit = true;
-        crate::boss::hurt_player(&mut *w.p, w.ppos, pos, spec.damage, &mut *w.bleed, (&mut *w.shake, &mut *w.stop));
+        crate::boss::hurt_player(&mut *w.p, w.ppos, pos, spec.damage, "Bitten by a drain newt", &mut *w.bleed, (&mut *w.shake, &mut *w.stop));
     };
 
     if !m.sewer.dropped {

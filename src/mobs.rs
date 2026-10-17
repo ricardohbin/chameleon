@@ -276,6 +276,58 @@ impl MobKind {
             MobKind::Broodcoil => &cave::BROODCOIL,
         }
     }
+
+    /// How the death screen tells being killed by one of these.
+    pub fn killer(self) -> &'static str {
+        match self {
+            MobKind::Roachling => "Gnawed by a roachling",
+            MobKind::SewerRoach => "Run down by a sewer roach",
+            MobKind::Fly => "Nibbled to death by carrion flies",
+            MobKind::Flea => "Bitten to death by a flea",
+            MobKind::Drone => "Stung by a wasp drone",
+            MobKind::Grub => "Eaten by a wasp grub",
+            MobKind::Soldier => "Killed by a wasp soldier",
+            MobKind::Nest => "Killed by a wasp nest",
+            MobKind::Rat => "Mauled by a gutter rat pack",
+            MobKind::Spider => "Bitten by a ceiling spider",
+            MobKind::Spiderling => "Overrun by spiderlings",
+            MobKind::MantisNymph => "Speared by a mantis nymph",
+            MobKind::GhostMantis => "Pounced on by a ghost mantis",
+            MobKind::NeonMoth => "Darted by a neon moth",
+            MobKind::Ootheca => "Killed by an ootheca",
+            MobKind::MantisHatchling => "Torn up by a mantis hatchling",
+            MobKind::Naiad => "Jaw-snatched by a naiad",
+            MobKind::Siphon => "Drained by a plant mosquito",
+            MobKind::SumpLeech => "Dissolved by a sump leech",
+            MobKind::PlagueTick => "Bitten by a plague tick",
+            MobKind::BallastMole => "Burst on by a ballast mole",
+            MobKind::RatKnot => "Rolled over by a rat knot",
+            MobKind::CryptJumper => "Pounced on by a crypt jumper",
+            MobKind::GraveTrapdoor => "Ambushed by a grave trapdoor",
+            MobKind::OssuaryWolf => "Hunted down by an ossuary wolf spider",
+            MobKind::Bonestrider => "Crushed by a bonestrider",
+            MobKind::Wireworm => "Burst on by a wireworm",
+            MobKind::Bombardier => "Scalded by a bombardier beetle",
+            MobKind::Ramhorn => "Gored by a ramhorn",
+            MobKind::Sexton => "Flattened by a sexton's ball",
+            MobKind::BileLeech => "Drained by a bile leech",
+            MobKind::GulletToad => "Eaten by a gullet toad",
+            MobKind::PlagueBloat => "Killed by a plague bloat",
+            MobKind::DrainNewt => "Bitten by a drain newt",
+            MobKind::Locust => "Swept away by a locust band",
+            MobKind::RubbleCricket => "Kicked to death by a rubble cricket",
+            MobKind::MoleCricket => "Burst on by a mole cricket",
+            MobKind::WreckKatydid => "Pounced on by a wreck katydid",
+            MobKind::GalleryLouse => "Rolled over by a gallery louse",
+            MobKind::SeepLeech => "Drained by a seep leech",
+            MobKind::SpillwayCrab => "Snapped in two by a spillway crab",
+            MobKind::RubbleHermit => "Slammed by a rubble hermit crab",
+            MobKind::Hundredfoot => "Torn apart by a hundredfoot",
+            MobKind::Curlback => "Bowled over by a curlback",
+            MobKind::Burrowling => "Burst on by a burrowling",
+            MobKind::Broodcoil => "Lashed to death by a broodcoil",
+        }
+    }
 }
 
 /// How a mob gets around (and where it can be placed).
@@ -1461,7 +1513,7 @@ fn slash_mobs(
 #[derive(Default)]
 struct Deeds {
     /// It bit/stung the chameleon from here.
-    bites: Vec<(Vec2, i32)>,
+    bites: Vec<(Vec2, i32, MobKind)>,
     /// Venom spat: (from, velocity).
     spits: Vec<(Vec2, Vec2)>,
     /// Crickets called from here (`sinkhole::hear`).
@@ -1573,7 +1625,7 @@ fn think(
             let world = subway::Scene { terrain: &terrain, p: &p, ppos, t, dt };
             let step = subway::think(m, pos, sees, touching, &world, &platforms);
             if step.bite {
-                deeds.bites.push((pos, spec.damage));
+                deeds.bites.push((pos, spec.damage, m.kind));
             }
             tf.translation.x = step.next.x;
             tf.translation.y = step.next.y;
@@ -1583,7 +1635,7 @@ fn think(
             let world = bunker::World { terrain: &terrain, p: &p, ppos, t, dt };
             let step = bunker::think(m, pos, sees, &world, &mut bleed, &mut shake);
             if let Some(from) = step.bite {
-                deeds.bites.push((from, spec.damage));
+                deeds.bites.push((from, spec.damage, m.kind));
             }
             tf.translation.x = step.pos.x;
             tf.translation.y = step.pos.y;
@@ -1593,7 +1645,7 @@ fn think(
             let world = sinkhole::World { terrain: &terrain, floor: &floor, p: &p, ppos, t, dt, bands: &bands };
             let step = sinkhole::think(m, pos, sees, touching, &world);
             if step.bite {
-                deeds.bites.push((pos, spec.damage));
+                deeds.bites.push((pos, spec.damage, m.kind));
             }
             if step.call {
                 deeds.calls.push(pos);
@@ -1606,7 +1658,7 @@ fn think(
             let world = cave::World { terrain: &terrain, p: &p, ppos, dt };
             let step = cave::think(m, pos, gait, sees, &world);
             if step.bite {
-                deeds.bites.push((pos, spec.damage));
+                deeds.bites.push((pos, spec.damage, m.kind));
             }
             tf.translation.x = step.at.x;
             tf.translation.y = step.at.y;
@@ -1617,7 +1669,7 @@ fn think(
             let world = rat::World { terrain: &terrain, p: &p, anim: *anim, ppos, t, dt };
             let step = rat::think(m, pos, sees, touching, &world);
             if step.bite {
-                deeds.bites.push((pos, spec.damage));
+                deeds.bites.push((pos, spec.damage, m.kind));
             }
             let (want, face) = (step.want, step.facing);
             if !matches!(m.state, State::Hurt(_)) {
@@ -1647,7 +1699,7 @@ fn think(
             let world = mall::World { terrain: &terrain, p: &p, anim: *anim, ppos, t, dt };
             let step = mall::think(m, pos, sees, touching, &world);
             if step.bite {
-                deeds.bites.push((pos, spec.damage));
+                deeds.bites.push((pos, spec.damage, m.kind));
             }
             tf.translation.x = step.next.x;
             tf.translation.y = step.next.y;
@@ -1685,7 +1737,7 @@ fn think(
                 }
                 State::Windup(_) => State::Attack(0.0),
                 State::Attack(_) if touching => {
-                    deeds.bites.push((pos, spec.damage));
+                    deeds.bites.push((pos, spec.damage, m.kind));
                     State::Recover(0.0)
                 }
                 State::Attack(s) if s > spec.attack_time => State::Recover(0.0),
@@ -1721,7 +1773,7 @@ fn think(
             let world = dam::World { terrain: &terrain, platforms: &platforms, p: &p, ppos, dt };
             let step = dam::think(m, &mut tf, sees, touching, &world);
             if let Some(from) = step.bite {
-                deeds.bites.push((from, spec.damage));
+                deeds.bites.push((from, spec.damage, m.kind));
             }
             if step.drag {
                 dam::drag(&mut p);
@@ -1792,7 +1844,7 @@ fn think(
                     m.facing = if m.vel.x.abs() > 10.0 { m.vel.x.signum() } else { m.facing };
                 }
                 if touching && (spec.moves != Moves::Hop || m.airborne) {
-                    deeds.bites.push((pos, spec.damage));
+                    deeds.bites.push((pos, spec.damage, m.kind));
                     m.vel = match spec.moves {
                         // Scatter.
                         Moves::Swarm => (pos - ppos).normalize_or(Vec2::Y) * 260.0,
@@ -1876,8 +1928,8 @@ fn think(
             sinkhole::hear(&mut m, tf.translation.truncate(), &deeds.calls);
         }
     }
-    for (from, damage) in deeds.bites {
-        boss::hurt_player(&mut p, ppos, from, damage, &mut bleed, (&mut shake, &mut stop));
+    for (from, damage, kind) in deeds.bites {
+        boss::hurt_player(&mut p, ppos, from, damage, kind.killer(), &mut bleed, (&mut shake, &mut stop));
     }
     for (from, vel) in deeds.spits {
         commands.spawn((
@@ -2214,7 +2266,7 @@ fn move_globs(
             bleed.write(Bleed { pos, dir: -g.vel.normalize_or(Vec2::Y), spread: 1.2, speed: 200.0, amount, fluid: Fluid::Venom, sticky: true });
         };
         if p.dead.is_none() && pos.distance(ppos) < player::HALF.y + 6.0 {
-            boss::hurt_player(&mut p, ppos, pos - g.vel * 0.05, 1, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos - g.vel * 0.05, 1, "Hit by a wasp soldier's venom spit", &mut bleed, (&mut shake, &mut stop));
             splash(&mut bleed, 12);
             commands.entity(e).despawn();
         } else if terrain.solid_at(pos) || g.life <= 0.0 {

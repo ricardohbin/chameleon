@@ -123,7 +123,7 @@ fn shock(
     let touching = feet.y - floor < RAIL_TOP;
     if touching {
         if assets.cooldown <= 0.0 {
-            match p.shock(1) {
+            match p.shock(1, "Electrocuted on the live rail") {
                 Hurt::Ignored => {}
                 outcome => {
                     let killed = matches!(outcome, Hurt::Killed);

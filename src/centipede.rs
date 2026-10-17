@@ -1531,7 +1531,7 @@ fn think(
                     .find(|&tip| touches(tip, TAIL_R));
             }
             if let Some(from) = hurt_from {
-                boss::hurt_player(&mut p, ppos, from, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                boss::hurt_player(&mut p, ppos, from, CONTACT_DAMAGE, "Torn apart by the Burrower", &mut bleed, (&mut shake, &mut stop));
             }
         }
 

@@ -521,7 +521,7 @@ fn think(
                 let mut hit = hit;
                 if !hit && alive && cutting && chameleon::in_fan(pos, d.dir, SPIN_REACH, chameleon::SPIN_FAN, ppos, player::HALF.x) {
                     hit = true;
-                    boss::hurt_player(&mut p, ppos, pos, SPIN_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, SPIN_DAMAGE, "Sliced up by Razorwing's spin", &mut bleed, (&mut shake, &mut stop));
                 }
                 if s >= SPIN_TIME {
                     // Reels back out of its own spin.

@@ -860,7 +860,7 @@ pub(super) fn balls(
         b.slow = if !b.airborne && speed < BALL_SLOW { b.slow + dt } else { 0.0 };
         let mut burst = b.life <= 0.0 || b.slow > STALL || b.bounces > MAX_BOUNCES || next.y < terrain.bounds.min.y - 600.0;
         if !b.returned && p.dead.is_none() && speed > 60.0 && next.distance(ppos) < r + BALL_HIT_R {
-            boss::hurt_player(&mut p, ppos, next, SEXTON.damage, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, next, SEXTON.damage, "Flattened by a sexton's rolling ball", &mut bleed, (&mut shake, &mut stop));
             burst = true;
         }
         if b.returned && !burst {

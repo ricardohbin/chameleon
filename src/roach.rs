@@ -630,7 +630,7 @@ fn think(
                     let slam = alive && (ppos.x - plan.x).abs() < SLAM_HALF && feet < plan_floor + SLAM_HEIGHT;
                     let damage = if bite { BITE_DAMAGE } else { 0 } + if slam { SLAM_DAMAGE } else { 0 };
                     if damage > 0 {
-                        boss::hurt_player(&mut p, ppos, pos, damage, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, damage, "Chewed up by the Gutter King", &mut bleed, (&mut shake, &mut stop));
                     }
                     shake.add(0.35);
                     // Lunges onto the spot and is left open.
@@ -655,7 +655,7 @@ fn think(
             State::Dash(s) => {
                 r.vel.x = r.dash_dir.x * DASH_SPEED;
                 if touching {
-                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, "Rammed by the Gutter King", &mut bleed, (&mut shake, &mut stop));
                 }
                 let at_edge = (r.dash_dir.x > 0.0 && pos.x >= r.arena.right - 50.0)
                     || (r.dash_dir.x < 0.0 && pos.x <= r.arena.left + 50.0);
@@ -723,7 +723,7 @@ fn think(
             State::AirDash(s) => {
                 r.vel = r.dash_dir * AIR_DASH_SPEED;
                 if touching {
-                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, "Rammed by the Gutter King", &mut bleed, (&mut shake, &mut stop));
                     // Bounces off and climbs back up.
                     r.vel = Vec2::new(-r.dash_dir.x * 200.0, 250.0);
                     r.cooldown = 1.2;

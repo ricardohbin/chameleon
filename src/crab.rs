@@ -654,7 +654,7 @@ fn think(
                     shake.add(0.08);
                     let tip = pos + Vec2::new(c.facing * 38.0 * SCALE, -2.0 * SCALE);
                     if alive && ppos.distance(tip) < 18.0 * SCALE + player::HALF.y {
-                        boss::hurt_player(&mut p, ppos, pos, PINCH_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, PINCH_DAMAGE, "Pinched in half by the Dambreaker", &mut bleed, (&mut shake, &mut stop));
                     }
                 }
                 if s1 >= PINCH_TELL + PINCH_TIME { State::Stand } else { State::Pinch { t: s1, hit } }
@@ -675,7 +675,7 @@ fn think(
                 let mut hit = hit;
                 if !hit && alive && ppos.distance(pos) < RADIUS * 0.85 + player::HALF.y {
                     hit = true;
-                    boss::hurt_player(&mut p, ppos, pos, SCUTTLE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, SCUTTLE_DAMAGE, "Run over by the Dambreaker's scuttle", &mut bleed, (&mut shake, &mut stop));
                 }
                 let blocked = (inside(&arena, pos.x + dir * 6.0) - (pos.x + dir * 6.0)).abs() > 0.5;
                 if s1 < SCUTTLE_TIME && !blocked {
@@ -719,7 +719,7 @@ fn think(
                     if alive && under && p.guard <= 0.0 {
                         p.invuln = 0.0;
                         let all = p.hp.max(1) + 99;
-                        boss::hurt_player(&mut p, ppos, at, all, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, at, all, "Crushed by the Dambreaker's claws", &mut bleed, (&mut shake, &mut stop));
                     }
                     bleed.write(Bleed { pos: at + Vec2::Y * 6.0, dir: Vec2::Y, spread: 1.4, speed: 300.0, amount: 0, fluid: Fluid::Indigo, sticky: false });
                     State::Stuck(0.0)
@@ -765,7 +765,7 @@ fn think(
                             shake.add(0.45);
                             let feet = to - Vec2::Y * FOOT;
                             if alive && ppos.distance(feet + Vec2::Y * 20.0) < SLAM_REACH + player::HALF.x {
-                                boss::hurt_player(&mut p, ppos, feet, SLAM_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                                boss::hurt_player(&mut p, ppos, feet, SLAM_DAMAGE, "Slammed flat by the Dambreaker", &mut bleed, (&mut shake, &mut stop));
                             }
                             c.cooldown = 0.6;
                             State::Stand
@@ -789,7 +789,7 @@ fn think(
                             c.facing = step.x.signum();
                         }
                         if swimming && alive && ppos.distance(pos) < RADIUS * 0.8 + player::HALF.y {
-                            boss::hurt_player(&mut p, ppos, pos, WATER_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                            boss::hurt_player(&mut p, ppos, pos, WATER_DAMAGE, "Mauled by the Dambreaker in the water", &mut bleed, (&mut shake, &mut stop));
                         }
                         let ready = !swimming && s1 > UNDER_MIN && (goal - pos).length() < 40.0;
                         if alive && (ready || (s1 > UNDER_MAX && !swimming)) {

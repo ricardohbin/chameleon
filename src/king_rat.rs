@@ -33,7 +33,7 @@
 //! catches the chameleon.
 //!
 //! It bleeds dull red `#ac3232` and gives the chameleon the sewer's air
-//! (`foul_air`: until it falls, breathing in the sewer costs health). On death
+//! (`foul_air`: until it falls, breathing in the toxic fumes areas costs health). On death
 //! it rolls onto its back, the tail tears off and the legs twitch. Health,
 //! getting hit and the death spectacle live in `boss.rs`.
 
@@ -49,7 +49,7 @@ use crate::{
     gore::{Bleed, Fluid},
     player::{self, Hurt, Player, Respawned},
     shapes::*,
-    terrain::{Style, Terrain, STEP_UP},
+    terrain::{Terrain, STEP_UP},
 };
 
 /// Its color: what the chameleon earns, its blood, the health bar.
@@ -936,7 +936,7 @@ fn think(
                 r.vel.x = dir * LUNGE_SPEED * if enraged { 1.1 } else { 1.0 };
                 if touching {
                     let before = p.wounds;
-                    boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, "Bitten by the King Rat", &mut bleed, (&mut shake, &mut stop));
                     if p.wounds != before {
                         // Thrown, then the rat runs off with the taste of it.
                         p.vel = Vec2::new(dir * BITE_LAUNCH.x, BITE_LAUNCH.y);
@@ -978,7 +978,7 @@ fn think(
                     slashes.push((pos + Vec2::new(r.facing * HALF_W * 0.8, -FOOT * 0.4), r.facing, enraged));
                     if hit {
                         let before = p.wounds;
-                        boss::hurt_player(&mut p, ppos, pos, MAUL_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, MAUL_DAMAGE, "Mauled by the King Rat", &mut bleed, (&mut shake, &mut stop));
                         if p.wounds != before {
                             p.vel = Vec2::new(r.facing * MAUL_LAUNCH.x, MAUL_LAUNCH.y);
                             stop.add(0.06);
@@ -1036,7 +1036,7 @@ fn think(
                 if kind.bites() && !bit && touching {
                     bit = true;
                     let before = p.wounds;
-                    boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, "Bitten by the King Rat", &mut bleed, (&mut shake, &mut stop));
                     if p.wounds != before {
                         p.vel = Vec2::new(r.facing * BITE_LAUNCH.x, BITE_LAUNCH.y);
                         stop.add(0.06);
@@ -1185,7 +1185,7 @@ fn swipes(
         tf.scale = Vec3::new(s.vel.x.signum() * s.size * grow, s.size * grow, 1.0);
         if !s.hit && p.dead.is_none() && pos.distance(ppos) < (SWIPE_RADIUS * s.size + player::HALF.y) {
             s.hit = true;
-            boss::hurt_player(&mut p, ppos, pos, SWIPE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos, SWIPE_DAMAGE, "Clawed by the King Rat", &mut bleed, (&mut shake, &mut stop));
         }
         if let Some(mut m) = materials.get_mut(&s.material) {
             m.color = SWIPE_COLOR.with_alpha(0.85 * (1.0 - k * k));
@@ -1364,8 +1364,8 @@ fn animate(time: Res<Time>, rats: Query<&KingRat>, mut bones: Query<(&Bone, &mut
     }
 }
 
-/// The sewer's foul air: until the King Rat falls, every breath in the sewer
-/// (`Style::Sewer`) is poison. After `AIR_GRACE` seconds the chameleon starts
+/// The sewer's foul air: until the King Rat falls, every breath inside a
+/// "toxic fumes" slice of the sewer is poison. After `AIR_GRACE` seconds the chameleon starts
 /// coughing up health, one tick every `AIR_EVERY`; dark wisps of the stench
 /// rise around it while it is in there.
 #[derive(Component)]
@@ -1395,12 +1395,12 @@ fn foul_air(
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
     let rng = rng.get_or_insert(Rng(0xF0_0A1A));
-    let foul = !defeated.sewer() && p.dead.is_none() && terrain.style_at(ppos) == Style::Sewer;
+    let foul = !defeated.sewer() && p.dead.is_none() && terrain.toxic_zones().any(|z| z.contains(ppos));
     if foul {
         *exposed += dt;
         if *exposed >= AIR_GRACE {
             *exposed -= AIR_EVERY;
-            if !matches!(p.choke(AIR_DAMAGE), Hurt::Ignored) {
+            if !matches!(p.choke(AIR_DAMAGE, "Choked on the sewer's toxic fumes"), Hurt::Ignored) {
                 shake.add(0.15);
             }
         }

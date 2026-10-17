@@ -524,7 +524,7 @@ fn think(
             let shoulder = shoulders(pos, facing);
             let ahead = (ppos.x - pos.x) * facing;
             if alive && ahead > -RADIUS * 0.3 && ppos.distance(shoulder) < STRIKE_REACH + player::HALF.x + 12.0 && ppos.y < shoulder.y + 50.0 {
-                boss::hurt_player(p, ppos, pos, STRIKE_DAMAGE, bleed, (shake, stop));
+                boss::hurt_player(p, ppos, pos, STRIKE_DAMAGE, "Cut down by the Reaper's scythes", bleed, (shake, stop));
             }
         };
 
@@ -685,7 +685,7 @@ fn think(
                 if !hit && alive && ppos.distance(tip) < 18.0 * SCALE + player::HALF.y {
                     hit = true;
                     stop.add(0.05);
-                    boss::hurt_player(&mut p, ppos, pos, LUNGE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, LUNGE_DAMAGE, "Impaled by the Reaper's lunge", &mut bleed, (&mut shake, &mut stop));
                 }
                 let blocked = (inside(&arena, pos.x + dir * 4.0) - (pos.x + dir * 4.0)).abs() > 0.5;
                 if k < 1.0 && !blocked {
@@ -717,7 +717,7 @@ fn think(
                     shake.add(0.3);
                     let landed_at = Vec2::new(to.x, to.y + FOOT);
                     if alive && ppos.distance(landed_at) < SLAM_REACH + player::HALF.x {
-                        boss::hurt_player(&mut p, ppos, landed_at, SLAM_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, landed_at, SLAM_DAMAGE, "Crushed by the Reaper's landing", &mut bleed, (&mut shake, &mut stop));
                     }
                     if enraged {
                         throws.push((Vec2::new(to.x + 20.0 * SCALE, to.y + 14.0), 1.0));
@@ -817,7 +817,7 @@ fn waves(
         tf.scale = Vec3::new(w.vel.x.signum() * grow, grow, 1.0);
         if !w.hit && p.dead.is_none() && pos.distance(ppos) < WAVE_RADIUS + player::HALF.y {
             w.hit = true;
-            boss::hurt_player(&mut p, ppos, pos, WAVE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos, WAVE_DAMAGE, "Sliced by the Reaper's blade wave", &mut bleed, (&mut shake, &mut stop));
         }
         if let Some(mut m) = materials.get_mut(&w.material) {
             m.color = WAVE_COLOR.with_alpha(0.9 * (1.0 - k * k));

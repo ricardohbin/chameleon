@@ -847,7 +847,7 @@ fn think(
                         ppos,
                         pos,
                         damage,
-                        &mut bleed,
+                        "Stung by the Venom Mother", &mut bleed,
                         (&mut shake, &mut stop),
                     );
                     // Bounce back up the lane it came down.
@@ -1113,7 +1113,7 @@ fn move_venom(
                 ppos,
                 from,
                 VENOM_DAMAGE,
-                &mut bleed,
+                "Hit by the Venom Mother's venom", &mut bleed,
                 (&mut shake, &mut stop),
             );
             bleed.write(splash(-v.vel, 14));

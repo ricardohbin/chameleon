@@ -650,7 +650,7 @@ fn think(
                     let ahead = (ppos.x - pos.x) * c.facing;
                     if alive && ahead > 0.0 && ahead < TOSS_RANGE + player::HALF.x && lift < TOSS_HIGH {
                         let before = p.wounds;
-                        boss::hurt_player(&mut p, ppos, pos, TOSS_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, TOSS_DAMAGE, "Flung skyward by the Battletank Beetle", &mut bleed, (&mut shake, &mut stop));
                         if p.wounds > before {
                             // Thrown high over its head.
                             p.vel = Vec2::new(-c.facing * 260.0, 780.0);
@@ -680,7 +680,7 @@ fn think(
                 if !hit && alive && ahead > HORN_FROM - player::HALF.x && ahead < HORN_TIP + player::HALF.x && lift < HORN_HIGH {
                     hit = true;
                     let before = p.wounds;
-                    boss::hurt_player(&mut p, ppos, pos, CHARGE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, CHARGE_DAMAGE, "Run down by the Battletank Beetle's charge", &mut bleed, (&mut shake, &mut stop));
                     if p.wounds > before {
                         p.vel = Vec2::new(dir * 700.0, 520.0);
                     }
@@ -758,7 +758,7 @@ fn think(
                     if alive && grounded_near && dx < QUAKE_REACH {
                         let stun = p.stun;
                         let before = p.wounds;
-                        boss::hurt_player(&mut p, ppos, pos, QUAKE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, QUAKE_DAMAGE, "Shaken apart by the Battletank Beetle's quake", &mut bleed, (&mut shake, &mut stop));
                         if p.wounds > before {
                             p.stun = stun.max(QUAKE_STUN);
                             p.vel = Vec2::new(side * 420.0, 260.0);
@@ -835,7 +835,7 @@ fn shells(
         commands.entity(e).despawn();
         shake.add(0.3);
         if p.dead.is_none() && pos.distance(ppos) < BLAST + player::HALF.y {
-            boss::hurt_player(&mut p, ppos, pos, SHELL_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos, SHELL_DAMAGE, "Blown up by a Battletank Beetle shell", &mut bleed, (&mut shake, &mut stop));
         }
         let material = materials.add(ColorMaterial { color: ORANGE.with_alpha(0.9), alpha_mode: AlphaMode2d::Blend, ..default() });
         commands.spawn((Mesh2d(ring.clone()), MeshMaterial2d(material.clone()), Transform::from_translation(pos.extend(14.5)), camera::color_layer(), Blast { age: 0.0, material }, BossStuff));

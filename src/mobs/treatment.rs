@@ -318,7 +318,7 @@ fn naiad(m: &mut Mob, pos: Vec2, sees: bool, w: &mut World) -> Vec2 {
             let tip = mouth + Vec2::X * m.facing * mind.jaw;
             if !mind.caught && w.p.dead.is_none() && dist_to_segment(w.ppos, mouth, tip) < JAW_GRIP {
                 mind.caught = true;
-                w.deeds.bites.push((tip, spec.damage));
+                w.deeds.bites.push((tip, spec.damage, m.kind));
             }
             if s < spec.attack_time { State::Attack(s + dt) } else { State::Recover(0.0) }
         }
@@ -376,7 +376,7 @@ fn siphon(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &mut World) -> 
         m.stride += dt * 30.0;
         let at = w.ppos + Vec2::new(off.x * w.p.facing, off.y);
         if m.treatment.drink >= FEED {
-            let full = match w.p.hurt(1, Vec2::new(w.p.vel.x * 0.5, 140.0)) {
+            let full = match w.p.hurt(1, Vec2::new(w.p.vel.x * 0.5, 140.0), "Drained dry by a plant mosquito") {
                 player::Hurt::Ignored => m.treatment.drink > FEED + FEED_GIVE_UP,
                 _ => {
                     w.bleed.write(Bleed { pos: at, dir: Vec2::Y, spread: 0.7, speed: 260.0, amount: 14, fluid: Fluid::Red, sticky: true });
@@ -678,7 +678,7 @@ fn acid(
             bleed.write(Bleed { pos, dir: Vec2::Y, spread: 1.3, speed: 180.0, amount, fluid: Fluid::Pink, sticky: true });
         };
         if alive && (pos - ppos).abs().cmplt(player::HALF + Vec2::splat(3.0)).all() {
-            boss::hurt_player(&mut p, ppos, pos + Vec2::Y * 10.0, 1, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos + Vec2::Y * 10.0, 1, "Dissolved by sump leech acid", &mut bleed, (&mut shake, &mut stop));
             splash(&mut bleed, 10);
             commands.entity(e).despawn();
         } else if terrain.solid_at(pos) {
@@ -727,7 +727,7 @@ fn acid(
         let c = tf.translation.truncate();
         let burning = left > PUDDLE_FADE;
         if burning && alive && p.grounded && (feet.x - c.x).abs() < PUDDLE_HALF + player::HALF.x * 0.4 && (feet.y - c.y).abs() < 10.0 {
-            boss::hurt_player(&mut p, ppos, c - Vec2::Y * 30.0, 1, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, c - Vec2::Y * 30.0, 1, "Dissolved by sump leech acid", &mut bleed, (&mut shake, &mut stop));
         }
     }
 }

@@ -333,7 +333,7 @@ pub(super) fn think(
     touching: bool,
     w: &World,
     platforms: &Query<(&Platform, &Transform), (Without<Mob>, Without<Player>)>,
-    bites: &mut Vec<(Vec2, i32)>,
+    bites: &mut Vec<(Vec2, i32, MobKind)>,
 ) {
     let pos = tf.translation.truncate();
     if !m.catacombs.ready {
@@ -433,7 +433,7 @@ fn jumper(
     touching: bool,
     w: &World,
     platforms: &Query<(&Platform, &Transform), (Without<Mob>, Without<Player>)>,
-    bites: &mut Vec<(Vec2, i32)>,
+    bites: &mut Vec<(Vec2, i32, MobKind)>,
 ) -> Vec2 {
     let spec = m.spec;
     let dt = w.dt;
@@ -451,7 +451,7 @@ fn jumper(
             State::Attack(0.0)
         }
         State::Attack(_) if touching && m.airborne => {
-            bites.push((pos, spec.damage));
+            bites.push((pos, spec.damage, m.kind));
             m.vel = Vec2::new(-m.vel.x * 0.3, 160.0);
             State::Recover(0.0)
         }
@@ -521,7 +521,7 @@ fn pounce(m: &mut Mob, pos: Vec2, ppos: Vec2) {
 
 // --- Grave trapdoor ---
 
-fn trapdoor(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32)>) -> Vec2 {
+fn trapdoor(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32, MobKind)>) -> Vec2 {
     let spec = m.spec;
     let dt = w.dt;
     let to = w.ppos - pos;
@@ -553,7 +553,7 @@ fn trapdoor(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites
         State::Windup(s) if s < spec.windup => State::Windup(s + dt),
         State::Windup(_) => State::Attack(0.0),
         State::Attack(_) if touching => {
-            bites.push((pos, spec.damage));
+            bites.push((pos, spec.damage, m.kind));
             State::Recover(0.0)
         }
         State::Attack(s) if s > spec.attack_time || (m.plan.x + m.facing * OVERSHOOT - pos.x) * m.facing <= 0.0 => State::Recover(0.0),
@@ -595,7 +595,7 @@ fn trapdoor(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites
 
 // --- Ossuary wolf ---
 
-fn wolf(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32)>) -> Vec2 {
+fn wolf(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32, MobKind)>) -> Vec2 {
     let spec = m.spec;
     let dt = w.dt;
     let to = w.ppos - pos;
@@ -612,7 +612,7 @@ fn wolf(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &m
             State::Attack(0.0)
         }
         State::Attack(_) if touching => {
-            bites.push((pos, spec.damage));
+            bites.push((pos, spec.damage, m.kind));
             m.vel.x *= -0.3;
             State::Recover(0.0)
         }
@@ -697,7 +697,7 @@ pub(super) fn hatch(
 
 // --- Bonestrider ---
 
-fn strider(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32)>) -> Vec2 {
+fn strider(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites: &mut Vec<(Vec2, i32, MobKind)>) -> Vec2 {
     let spec = m.spec;
     let dt = w.dt;
     let to = w.ppos - pos;
@@ -719,7 +719,7 @@ fn strider(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &World, bites:
         }
         State::Windup(_) => State::Attack(0.0),
         State::Attack(_) if touching => {
-            bites.push((pos, spec.damage));
+            bites.push((pos, spec.damage, m.kind));
             State::Recover(0.0)
         }
         State::Attack(s) if m.catacombs.drop >= lowest || s > spec.attack_time => {

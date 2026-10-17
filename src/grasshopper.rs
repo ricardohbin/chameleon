@@ -612,7 +612,7 @@ fn think(
                 tf.translation.x = next.x;
                 tf.translation.y = next.y;
                 if kind == Leap::Pounce && touching {
-                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                    boss::hurt_player(&mut p, ppos, pos, CONTACT_DAMAGE, "Mowed down by the Sawleg", &mut bleed, (&mut shake, &mut stop));
                 }
                 if k < 1.0 {
                     State::Air { from, to, height, time, t: s, kind }
@@ -656,7 +656,7 @@ fn think(
                     shake.add(0.2);
                     if hit {
                         let before = p.wounds;
-                        boss::hurt_player(&mut p, ppos, pos, KICK_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, KICK_DAMAGE, "Kicked to death by the Sawleg", &mut bleed, (&mut shake, &mut stop));
                         if p.wounds != before {
                             // Sent flying.
                             p.vel = Vec2::new(back * KICK_LAUNCH.x, KICK_LAUNCH.y);
@@ -726,7 +726,7 @@ fn globs(
             bleed.write(Bleed { pos: at, dir, spread: 1.1, speed: 260.0, amount: 22, fluid: Fluid::Brown, sticky: true });
         };
         if p.dead.is_none() && next.distance(ppos) < GLOB_RADIUS + player::HALF.y {
-            boss::hurt_player(&mut p, ppos, pos, GLOB_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+            boss::hurt_player(&mut p, ppos, pos, GLOB_DAMAGE, "Splattered by the Sawleg's glob", &mut bleed, (&mut shake, &mut stop));
             splat(&mut bleed, next, Vec2::Y);
             commands.entity(e).despawn();
         } else if terrain.solid_at(next) || next.y < terrain.bounds.min.y {

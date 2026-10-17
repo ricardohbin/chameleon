@@ -6,6 +6,7 @@ mod boss;
 mod camera;
 mod chameleon;
 mod controls;
+mod death_screen;
 mod debug_overlay;
 #[cfg(not(target_arch = "wasm32"))]
 mod dev;
@@ -115,6 +116,7 @@ fn main() {
             hud::HudPlugin,
         ))
         .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin, centipede::CentipedePlugin, burrow::BurrowPlugin, frog::FrogPlugin, grasshopper::GrasshopperPlugin))
+        .add_plugins(death_screen::DeathScreenPlugin)
         .add_plugins((king_rat::KingRatPlugin, mantis::MantisPlugin, crab::CrabPlugin, beetle::BeetlePlugin, ending::EndingPlugin, pill::PillPlugin))
         .add_systems(
             PreUpdate,

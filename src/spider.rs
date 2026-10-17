@@ -665,7 +665,7 @@ fn think(
                     stop.add(0.06);
                     let d = ppos - Vec2::new(pos.x, g);
                     if alive && d.x.abs() < CRASH_REACH && d.y < LEGS + 30.0 {
-                        boss::hurt_player(&mut p, ppos, pos, DROP_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, DROP_DAMAGE, "Dropped on by the Weaver", &mut bleed, (&mut shake, &mut stop));
                     }
                     s.drop_cd = DROP_EVERY;
                     State::Ground(0.0)
@@ -699,7 +699,7 @@ fn think(
                     // Lunges and snaps where the chameleon was.
                     tf.translation.x += s.facing * 25.0;
                     if alive && mouth(tf.translation.truncate(), s.facing).distance(ppos) < BITE_REACH {
-                        boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, &mut bleed, (&mut shake, &mut stop));
+                        boss::hurt_player(&mut p, ppos, pos, BITE_DAMAGE, "Bitten by the Weaver", &mut bleed, (&mut shake, &mut stop));
                     }
                 }
                 if s0 >= BITE_WINDUP + 0.35 {
