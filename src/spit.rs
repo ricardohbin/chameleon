@@ -1,6 +1,6 @@
 //! The Venom Mother's gift: once she's beaten, the chameleon spits venom
-//! (right mouse button / G) toward the mouse. A glob flies fast with a slight
-//! drop, hurts the first boss or mob it touches (one hit, applied with the
+//! (right mouse button / G) toward the mouse. A glob is lobbed like a
+//! grenade (it drops off quickly) and costs half the strength bar; it hurts the first boss or mob it touches (one hit, applied with the
 //! slash's in `boss.rs` / `mobs.rs` through `SpitHit`) and splashes on walls.
 
 use bevy::prelude::*;
@@ -17,8 +17,11 @@ use crate::{
     terrain::Terrain,
 };
 
-const SPEED: f32 = 1050.0;
-const GRAVITY: f32 = 450.0;
+/// Lobbed like a grenade: slow and heavy, it drops off quickly.
+const SPEED: f32 = 560.0;
+const GRAVITY: f32 = 1400.0;
+/// Each spit spends this share of the (swimming) strength bar, and needs it.
+const COST: f32 = 0.5;
 const COOLDOWN: f32 = 0.4;
 const LIFE: f32 = 1.4;
 /// Spat from this far out along the aim, from the neck (about the snout).
@@ -68,14 +71,15 @@ fn spit(
     defeated: Res<Defeated>,
     assets: Res<SpitAssets>,
     mut cooldown: Local<f32>,
-    player: Single<(&Player, &Transform, &mut ChameleonAnim)>,
+    player: Single<(&mut Player, &Transform, &mut ChameleonAnim)>,
 ) {
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let pressed = keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Right);
-    let (p, tf, mut anim) = player.into_inner();
-    if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 {
+    let (mut p, tf, mut anim) = player.into_inner();
+    if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 || p.swim < COST {
         return;
     }
+    p.swim -= COST;
     *cooldown = COOLDOWN;
     anim.spit();
     let from = chameleon::neck(tf.translation.truncate(), p.facing) + p.aim * MOUTH;

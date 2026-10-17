@@ -49,12 +49,12 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Jump (hold for higher) | `Space` / `W` / `Up` |
 | Slash (hold to keep slashing) | `F` / `J` / left mouse button, toward the mouse |
 | Eat remains | `E` |
-| Dash (on firm ground only; drains the whole strength meter, like swimming) | `Shift` / `K` |
-| Venom spit | `Q` / right mouse button |
+| Dash (on firm ground only; needs the full strength meter and drains all of it, like swimming) | `Shift` / `K` |
+| Venom spit (lobbed like a grenade; each spit costs half the strength meter) | `Q` / right mouse button |
 | Shield | `G` |
 | Air spin | attack while in the air |
 | Big jump | hold `S` / `Down` on the ground, then let go |
-| Wall walk | push into a tall wall. `W` / `S` climb, `Space` leaps off |
+| Wall walk | push into a steep surface (or stand on one that would slide you) to grip it, then `A` `D` `W` `S` walk along it, `Space` leaps off. Works on any surface short of a ceiling, with no sliding; costs the strength bar (a full bar is ~5 floors of vertical wall, less on gentler slopes, overhangs wear it out much faster). At zero the grip lets go and only a full bar grips again |
 | Pause | `P` / `Pause` |
 | Menu | `Esc` |
 | Quick save / quick load | `F5` / `F9` |

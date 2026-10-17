@@ -696,7 +696,7 @@ pub fn update_anim_state(
     let (mut p, mut a) = player.into_inner();
     let on_wall = p.climbing.is_some();
     // On a wall it walks up and down it.
-    let speed = if on_wall { p.vel.y.abs() } else { p.vel.x.abs() };
+    let speed = if on_wall { p.vel.length() } else { p.vel.x.abs() };
     a.climb = smooth(a.climb, if on_wall { 1.0 } else { 0.0 }, 14.0, dt);
 
     // Swimming: the legs paddle (the walk cycle at its own pace), more when tired.
@@ -707,7 +707,7 @@ pub fn update_anim_state(
     a.phase += if paddle > 0.0 {
         dt * 9.0 * (0.6 + 0.4 * paddle)
     } else if on_wall {
-        dt * p.vel.y * 0.075
+        dt * if p.vel.y.abs() > 1.0 { p.vel.y } else { p.vel.x * p.facing } * 0.075
     } else {
         dt * p.vel.x * p.facing * 0.075
     };
@@ -854,8 +854,8 @@ fn pose_parts(
                     let k = t / SPIN_TIME;
                     -2.0 * PI * k * k * (3.0 - 2.0 * k)
                 });
-                // On a wall: turned a quarter, head up, belly against it.
-                let wall = 0.5 * PI * a.climb;
+                // Gripping a surface: turned to lie along it (a quarter on a wall), belly against it.
+                let wall = p.grip_angle * a.climb;
                 tf.rotation = Quat::from_rotation_z((lerp(tilt, PI, a.death) + spin + wall) * p.facing);
                 tf.translation.y = a.death * 6.0 + p.step.clamp(-12.0, 12.0) + player::RIG_DROP;
                 // Blink while invulnerable.

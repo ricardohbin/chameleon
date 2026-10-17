@@ -8,7 +8,7 @@ use crate::{
     camera::Shake,
     chameleon,
     level::{self, Platform, Restart},
-    terrain::{FLOOR_HEIGHT, STEP_UP, Terrain},
+    terrain::{FLOOR_HEIGHT, PX, STEP_UP, Terrain},
     terrain_art,
     water::{Splash, Waters, Wet},
 };
@@ -44,16 +44,26 @@ const SLIPPERY_DRIFT: f32 = 90.0;
 const DASH_SPEED: f32 = 1100.0;
 const DASH_TIME: f32 = 0.25;
 const DASH_COOLDOWN: f32 = 0.45;
-/// A dash spends the whole (swimming) strength, and needs at least `DASH_MIN_STRENGTH` left.
-const DASH_MIN_STRENGTH: f32 = 0.3;
+/// A dash spends the whole (swimming) strength, and needs it full.
+const DASH_MIN_STRENGTH: f32 = 1.0;
 const DASH_KEYS: [KeyCode; 3] = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::KeyK];
-/// Wall walking (earned by beating the spider): pushing into a tall wall
-/// gets the chameleon on it; W/S walk up and down at `CLIMB_SPEED`, Space
-/// leaps off (`WALL_LEAP`), pushing away lets go. After letting go it can't
-/// grab a wall again for `CLIMB_LOCK`.
+/// Wall walking (earned by beating the spider): the chameleon grips any surface
+/// steeper than `GRIP_MIN` short of a ceiling (`GRIP_MAX`) and walks along it
+/// (A D W S) at `CLIMB_SPEED`, with no sliding down slopes. Space leaps off
+/// (`WALL_LEAP`), pushing away from a wall lets go. After letting go it can't grab
+/// again for `CLIMB_LOCK`. It costs strength (the swimming meter): a full meter
+/// is `CLIMB_FLOORS` storeys straight up a wall, less on gentler slopes, and
+/// overhangs wear it out `OVERHANG_COST` times faster. When it runs out the grip
+/// lets go, and only a full meter grips again.
 const CLIMB_SPEED: f32 = 170.0;
+const CLIMB_FLOORS: f32 = 5.0;
+const GRIP_MIN: f32 = 0.55;
+const GRIP_MAX: f32 = 2.6;
+const OVERHANG_COST: f32 = 5.0;
 const WALL_LEAP: Vec2 = Vec2::new(380.0, 640.0);
 const CLIMB_LOCK: f32 = 0.25;
+/// How hard a gripping chameleon presses into its surface (keeps it in contact).
+const GRIP_PRESS: f32 = 50.0;
 /// Anywhere else, slopes (rise per run) up to `WALK_SLOPE` (45°) are walked
 /// normally; above it, walking uphill gets harder and the slope pulls you
 /// down, until `STEEP_SLOPE` (60°), where sliding is unavoidable. Jumps tilt
@@ -158,6 +168,12 @@ pub struct Player {
     pub slipping: f32,
     /// On a wall (wall walking): which side it is on (-1 left, 1 right).
     pub climbing: Option<f32>,
+    /// While gripping: the surface's angle from the floor (0 flat, π/2 a wall, beyond it an overhang).
+    pub grip_angle: f32,
+    /// Outward normal of the surface being gripped.
+    grip_normal: Vec2,
+    /// The grip gave out (strength spent): no gripping again until the strength is full.
+    grip_spent: bool,
     /// The grasshopper's power: seconds spent charging the big jump (down held on
     /// the ground, feet planted); see `charging`.
     charge: Option<f32>,
@@ -570,29 +586,65 @@ pub fn move_player(
     });
     let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1);
 
-    // --- Wall walking: push into a wall to get on it ---
+    // --- Wall walking: grip any surface between `GRIP_MIN` and `GRIP_MAX` ---
     p.climb_lock = (p.climb_lock - dt).max(0.0);
+    if p.swim >= 1.0 {
+        p.grip_spent = false;
+    }
     let here = tf.translation.truncate();
     let wall = |side: f32| terrain.box_hits(here + Vec2::X * side * 3.0, HALF);
     // A real wall, not a step to walk up.
     let tall = |side: f32| terrain.box_hits(here + Vec2::new(side * 3.0, STEP_UP + 4.0), HALF);
-    let can_climb = defeated.climb() && !flying && !swimming && !dead && p.stun <= 0.0;
-    if let Some(side) = p.climbing {
-        if !can_climb || dir == -side || p.dash > 0.0 {
-            p.climbing = None;
-            p.climb_lock = CLIMB_LOCK;
-        } else if !wall(side) {
-            // Over the top: a hop onto the ledge (off the bottom: just let go).
-            p.climbing = None;
-            if p.vel.y > 0.0 {
-                p.vel = Vec2::new(side * 180.0, 330.0);
+    let can_climb = defeated.climb() && !flying && !swimming && !dead && p.stun <= 0.0 && p.dash <= 0.0 && !p.grip_spent;
+    let up_key = keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]);
+    let down_key = keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
+    let steer = Vec2::new(dir, up_key as i32 as f32 - down_key as i32 as f32);
+    let grippable = |n: Vec2, slack: f32| (GRIP_MIN - slack..=GRIP_MAX).contains(&n.y.clamp(-1.0, 1.0).acos());
+    if p.climbing.is_some() {
+        let old = p.grip_normal;
+        let attached = terrain.box_hits(here - old * 4.0, HALF);
+        let contact = here - old * (old.x.abs() * HALF.x + old.y.abs() * HALF.y + 1.0);
+        let n = surface_normal(&terrain, contact)
+            .filter(|_| attached)
+            .and_then(|n| old.lerp(n, 0.4).try_normalize());
+        // Pushing away from a wall lets go; so does walking down onto level ground.
+        let letting_go = n.is_some_and(|n| (dir * n.x > 0.0 && n.x.abs() > 0.7) || (p.grounded && p.ground.is_none() && steer.dot(tangent(n)) < 0.0 && slope.is_none_or(|s| s.atan().abs() < GRIP_MIN)));
+        match n.filter(|&n| can_climb && grippable(n, 0.1) && !letting_go) {
+            Some(n) => p.grip_normal = n,
+            None => {
+                // Over the top: a hop onto the ledge (off the bottom: just let go).
+                if n.is_none() && can_climb && p.vel.y > 0.0 {
+                    p.vel = Vec2::new(p.facing * 180.0, 330.0);
+                }
+                p.climbing = None;
+                p.climb_lock = CLIMB_LOCK;
             }
         }
-    } else if can_climb && p.climb_lock <= 0.0 && dir != 0.0 && wall(dir) && tall(dir) {
-        p.climbing = Some(dir);
-        p.vel = Vec2::ZERO;
+    } else if can_climb && p.climb_lock <= 0.0 && p.swim > 0.05 {
+        let on_wall = (dir != 0.0 && wall(dir) && tall(dir))
+            .then(|| surface_normal(&terrain, here + Vec2::new(dir * (HALF.x + 1.0), 0.0)))
+            .flatten()
+            .filter(|&n| grippable(n, 0.0));
+        // Steep ground that would slide you: grip it instead.
+        let on_slope = ((steer != Vec2::ZERO && hardness > 0.0) || slide.is_some())
+            .then(|| slope.map(|s| Vec2::new(-s, 1.0).normalize()))
+            .flatten()
+            .filter(|&n| grippable(n, 0.0));
+        if let Some(n) = on_wall.or(on_slope) {
+            p.grip_normal = n;
+            p.climbing = Some(0.0);
+            p.vel = Vec2::ZERO;
+        }
+    }
+    if p.climbing.is_some() {
+        let n = p.grip_normal;
+        let side = if n.x.abs() > 0.05 { -n.x.signum() } else { p.facing };
+        p.climbing = Some(side);
+        p.grip_angle = n.y.clamp(-1.0, 1.0).acos();
     }
     let climbing = p.climbing;
+    // Gripping, nothing slides.
+    let slide = if climbing.is_some() { None } else { slide };
     if !flying {
         let vx0 = p.vel.x;
         p.vel.x = match slide {
@@ -741,13 +793,21 @@ pub fn move_player(
             }
             p.vel.y = swim_dy(&p, w, y, (swim_up, swim_down), dead, dt);
         } else if let Some(side) = climbing {
-            // On the wall: W/S (arrows) walk up and down it, Space leaps off.
-            let up = keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) as i32 - keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) as i32;
-            p.vel = Vec2::new(side * 60.0, up as f32 * CLIMB_SPEED * (1.0 - 0.55 * p.webbed).max(0.1));
+            // Gripping: A D W S walk along the surface (no gravity), Space leaps off.
+            let n = p.grip_normal;
+            let along = steer.dot(tangent(n)).clamp(-1.0, 1.0);
+            p.vel = tangent(n) * along * CLIMB_SPEED * (1.0 - 0.55 * p.webbed).max(0.1) - n * GRIP_PRESS;
             p.facing = side;
+            // The steeper, the dearer; an overhang wears the strength out much faster.
+            p.swim = (p.swim - grip_cost(p.grip_angle) * dt).max(0.0);
+            if p.swim <= 0.0 {
+                p.grip_spent = true;
+                p.climbing = None;
+                p.climb_lock = CLIMB_LOCK;
+            }
             if keys.just_pressed(KeyCode::Space) {
-                p.vel = Vec2::new(-side * WALL_LEAP.x, WALL_LEAP.y);
-                p.facing = -side;
+                p.vel = Vec2::new(n.x * WALL_LEAP.x, WALL_LEAP.y);
+                p.facing = if n.x != 0.0 { n.x.signum() } else { side };
                 p.climbing = None;
                 p.climb_lock = CLIMB_LOCK;
                 p.jump_buffer = 0.0;
@@ -786,7 +846,7 @@ pub fn move_player(
         } else {
             p.harm = (p.harm - dt * 0.8).max(0.0);
             // Only dry ground rests you: hopping out of the water and back doesn't.
-            if wet_f <= 0.0 && p.grounded {
+            if wet_f <= 0.0 && p.grounded && p.climbing.is_none() {
                 p.swim = (p.swim + dt / SWIM_RECOVER).min(1.0);
             }
         }
@@ -1055,6 +1115,53 @@ pub fn move_player(
 
     tf.translation.x = pos.x;
     tf.translation.y = pos.y;
+}
+
+/// Outward normal of the terrain around `p`: from the solid cells toward the open
+/// ones within a few pixels (`None` when it is all one or the other).
+fn surface_normal(terrain: &Terrain, p: Vec2) -> Option<Vec2> {
+    let (mut solid, mut open) = (Vec2::ZERO, Vec2::ZERO);
+    let (mut ns, mut no) = (0.0, 0.0);
+    for ix in -3..=3 {
+        for iy in -3..=3 {
+            let q = p + Vec2::new(ix as f32, iy as f32) * PX;
+            if terrain.solid_at(q) {
+                solid += q;
+                ns += 1.0;
+            } else {
+                open += q;
+                no += 1.0;
+            }
+        }
+    }
+    if ns == 0.0 || no == 0.0 {
+        return None;
+    }
+    (open / no - solid / ns).try_normalize()
+}
+
+/// The way along a surface with normal `n` that goes up (right, on level ground).
+fn tangent(n: Vec2) -> Vec2 {
+    let t = Vec2::new(-n.y, n.x);
+    if t.y < -1e-3 || (t.y.abs() <= 1e-3 && t.x < 0.0) {
+        -t
+    } else {
+        t
+    }
+}
+
+/// Strength a second of gripping a surface `angle` from level costs (1 = all of it):
+/// nothing much on a gentle slope, `CLIMB_FLOORS` storeys of wall for the whole meter,
+/// and `OVERHANG_COST` times that at the steepest overhang.
+fn grip_cost(angle: f32) -> f32 {
+    let wall_rate = CLIMB_SPEED / (CLIMB_FLOORS * FLOOR_HEIGHT);
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let k = if angle <= quarter {
+        0.15 + 0.85 * ((angle - GRIP_MIN) / (quarter - GRIP_MIN)).clamp(0.0, 1.0)
+    } else {
+        1.0 + (OVERHANG_COST - 1.0) * ((angle - quarter) / (GRIP_MAX - quarter)).clamp(0.0, 1.0)
+    };
+    wall_rate * k
 }
 
 /// Ground within reach beside (or just under) the swimmer: something to climb out onto.

@@ -353,7 +353,7 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
     v.push(("Slash", if mouse { "F / LMB" } else { "F" }));
     v.push(("Feed", "E"));
     if defeated.dash() {
-        v.push(("Dash (ground, drains strength)", "Shift / K"));
+        v.push(("Dash", "Shift / K"));
     }
     if defeated.spit() {
         v.push(("Spit", if mouse { "Q / RMB" } else { "Q" }));
@@ -365,7 +365,7 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
         v.push(("Spin", "Slash midair"));
     }
     if defeated.climb() {
-        v.push(("Climb", "W S"));
+        v.push(("Climb", "Push at surface, A D W S"));
     }
     if defeated.burrow() {
         v.push(("Burrow", "E at rubble"));

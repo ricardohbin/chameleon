@@ -688,14 +688,8 @@ fn lairs(
 /// The order F2 visits the bosses in (the frog, the crab, then the beetle, the last boss).
 const VISIT_ORDER: [BossKind; 11] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Frog, BossKind::Crab, BossKind::Beetle];
 
-/// F2: jump to the next boss's lair (it wakes) and heal up.
-fn visit_next_boss(
-    keys: Res<ButtonInput<KeyCode>>,
-    terrain: Res<Terrain>,
-    mut next: Local<usize>,
-    player: Single<(&mut Player, &mut Transform)>,
-    bosses: Query<(&Boss, &Lair)>,
-) {
+/// F2: jump to the next boss's lair (dead bosses included) and heal up.
+fn visit_next_boss(keys: Res<ButtonInput<KeyCode>>, terrain: Res<Terrain>, mut next: Local<usize>, player: Single<(&mut Player, &mut Transform)>) {
     if !keys.just_pressed(KeyCode::F2) {
         return;
     }
@@ -703,9 +697,11 @@ fn visit_next_boss(
     for _ in 0..VISIT_ORDER.len() {
         let kind = VISIT_ORDER[*next % VISIT_ORDER.len()];
         *next += 1;
-        let Some((boss, _)) = bosses.iter().find(|(_, l)| l.kind == kind) else { continue };
+        if kind.marker(&terrain).is_none() {
+            continue;
+        }
         // A little away from it, on the ground.
-        let at = terrain.rest(boss.home - Vec2::X * 300.0) + Vec2::Y * player::HALF.y;
+        let at = terrain.rest(Arena::find(kind, &terrain).home - Vec2::X * 300.0) + Vec2::Y * player::HALF.y;
         tf.translation.x = at.x;
         tf.translation.y = at.y;
         p.vel = Vec2::ZERO;
