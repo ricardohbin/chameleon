@@ -393,14 +393,19 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
 fn update_hint(
     defeated: Res<Defeated>,
     settings: Res<Settings>,
+    party: Res<crate::boss::Celebration>,
     mut rows: Query<(&HintRow, &mut Node)>,
     mut labels: Query<(&HintLabel, &mut Text), Without<HintKey>>,
     mut keys: Query<(&HintKey, &mut Text), Without<HintLabel>>,
 ) {
-    if !defeated.is_changed() && !settings.is_changed() {
+    if !defeated.is_changed() && !settings.is_changed() && !party.is_changed() {
         return;
     }
-    let list = hints(&defeated, settings.scheme);
+    let mut list = hints(&defeated, settings.scheme);
+    if party.0 {
+        // The celebration is peaceful: no attacks (`ending::peace`).
+        list.retain(|(action, _)| !matches!(*action, "Slash" | "Spit" | "Spin" | "Power blow" | "Scythe claws"));
+    }
     for (row, mut node) in &mut rows {
         node.display = if row.0 < list.len() { Display::Flex } else { Display::None };
     }

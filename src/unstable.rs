@@ -99,6 +99,7 @@ impl Default for Tremor {
 fn move_platforms(
     time: Res<Time>,
     mut tremor: ResMut<Tremor>,
+    party: Res<crate::boss::Celebration>,
     mut shake: ResMut<Shake>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -110,6 +111,11 @@ fn move_platforms(
     let t = time.elapsed_secs();
     let (p, ptf) = *player;
 
+    // After the ending the ground is at peace: no more earthquakes.
+    if party.0 {
+        tremor.left = 0.0;
+        tremor.next = tremor.next.max(5.0);
+    }
     tremor.next -= dt;
     if tremor.next <= 0.0 {
         tremor.left = tremor.rng.range(1.2, 2.2);

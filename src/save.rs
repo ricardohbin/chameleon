@@ -17,7 +17,7 @@ use std::{fs, path::PathBuf};
 use bevy::prelude::*;
 
 use crate::{
-    boss::{Boss, BossKind, Defeated, Lair},
+    boss::{Boss, BossKind, Celebration, Defeated, Lair},
     camera::{Follow, MainCamera},
     chameleon::ColorEarned,
     hud::ScreenFlash,
@@ -86,6 +86,8 @@ struct Snapshot {
     digest: f32,
     /// Bosses killed, in the order their colors were earned.
     dead: Vec<BossKind>,
+    /// After the ending: everyone is back and cheering (`boss::Celebration`), not dead.
+    celebration: bool,
 }
 
 /// A loaded snapshot waiting for the rebuilt world (bosses and the new chameleon
@@ -135,6 +137,9 @@ impl Snapshot {
         for kind in &self.dead {
             line("dead", kind_name(*kind));
         }
+        if self.celebration {
+            line("celebration", "1".into());
+        }
         out
     }
 
@@ -152,6 +157,7 @@ impl Snapshot {
             shadow: 0.0,
             digest: 0.0,
             dead: Vec::new(),
+            celebration: false,
         };
         let mut has_pos = false;
         for line in lines {
@@ -172,6 +178,7 @@ impl Snapshot {
                 "max_hp" => s.max_hp = num(value)? as i32,
                 "shadow" => s.shadow = num(value)?,
                 "digest" => s.digest = num(value)?,
+                "celebration" => s.celebration = value.trim() == "1",
                 "dead" => s.dead.extend(BossKind::ALL.into_iter().find(|k| kind_name(*k) == value.trim())),
                 _ => {}
             }
@@ -185,7 +192,7 @@ impl Snapshot {
 }
 
 impl Snapshot {
-    fn capture(p: &Player, tf: &Transform, defeated: &Defeated) -> Snapshot {
+    fn capture(p: &Player, tf: &Transform, defeated: &Defeated, party: &Celebration) -> Snapshot {
         // In kill order: colors are earned in it, and the last one is the skin.
         Snapshot {
             pos: tf.translation.truncate(),
@@ -196,12 +203,13 @@ impl Snapshot {
             shadow: p.shadow,
             digest: p.digest,
             dead: defeated.0.clone(),
+            celebration: party.0,
         }
     }
 }
 
 /// Writes the current game down in the slot with this extension.
-fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &Defeated) -> bool {
+fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &Defeated, party: &Celebration) -> bool {
     let (p, tf) = player;
     if p.dead.is_some() {
         warn!("{what}: not while dead");
@@ -211,7 +219,7 @@ fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &D
         warn!("{what}: can't tell where the executable is");
         return false;
     };
-    let snapshot = Snapshot::capture(p, tf, defeated);
+    let snapshot = Snapshot::capture(p, tf, defeated, party);
     // Write beside it and rename, so a crash can't leave half a save.
     let tmp = path.with_extension(format!("{ext}.tmp"));
     match fs::write(&tmp, snapshot.to_text()).and_then(|_| fs::rename(&tmp, &path)) {
@@ -227,19 +235,19 @@ fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &D
 }
 
 /// F5: write the current game down.
-fn quick_save(keys: Res<ButtonInput<KeyCode>>, mut flash: ResMut<ScreenFlash>, pending: Res<Pending>, defeated: Res<Defeated>, player: Single<(&Player, &Transform)>) {
-    if keys.just_pressed(KeyCode::F5) && pending.snapshot.is_none() && write_save("save", "quick save", *player, &defeated) {
+fn quick_save(keys: Res<ButtonInput<KeyCode>>, mut flash: ResMut<ScreenFlash>, pending: Res<Pending>, defeated: Res<Defeated>, party: Res<Celebration>, player: Single<(&Player, &Transform)>) {
+    if keys.just_pressed(KeyCode::F5) && pending.snapshot.is_none() && write_save("save", "quick save", *player, &defeated, &party) {
         flash.flash(Color::WHITE, 0.18);
     }
 }
 
 /// A boss fight began, or a boss died or was eaten: the one auto save.
-fn auto_save(mut events: MessageReader<AutoSave>, pending: Res<Pending>, defeated: Res<Defeated>, player: Single<(&Player, &Transform)>) {
+fn auto_save(mut events: MessageReader<AutoSave>, pending: Res<Pending>, defeated: Res<Defeated>, party: Res<Celebration>, player: Single<(&Player, &Transform)>) {
     // A load is rebuilding the world: `Defeated` and the player are blank until `apply_load`
     // puts the save back, and a boss waking meanwhile (the save is at its lair) would overwrite
     // the save with that blank state.
     if events.read().count() > 0 && pending.snapshot.is_none() {
-        write_save("autosave", "auto save", *player, &defeated);
+        write_save("autosave", "auto save", *player, &defeated, &party);
     }
 }
 
@@ -314,6 +322,7 @@ fn apply_load(
     mut flash: ResMut<ScreenFlash>,
     mut earned: MessageWriter<ColorEarned>,
     mut defeated: ResMut<Defeated>,
+    mut party: ResMut<Celebration>,
     player: Single<(&mut Player, &mut Transform)>,
     mut follow: Single<&mut Follow, With<MainCamera>>,
     bosses: Query<(Entity, &Boss, &Lair)>,
@@ -326,11 +335,15 @@ fn apply_load(
         return;
     }
     let Some(s) = pending.snapshot.take() else { return };
+    // The celebration: every boss is back (and cheering), none stays dead.
+    party.0 = s.celebration;
     for kind in &s.dead {
         defeated.add(*kind);
-        for (e, boss, _) in bosses.iter().filter(|(_, _, l)| l.kind == *kind) {
-            earned.write(ColorEarned(boss.spec.color));
-            commands.entity(e).despawn();
+        earned.write(ColorEarned(kind.spec().color));
+        if !s.celebration {
+            for (e, _, _) in bosses.iter().filter(|(_, _, l)| l.kind == *kind) {
+                commands.entity(e).despawn();
+            }
         }
     }
     let (mut p, mut tf) = player.into_inner();

@@ -41,6 +41,7 @@ impl Plugin for BossPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BossStatus>()
             .init_resource::<Defeated>()
+            .init_resource::<Celebration>()
             .add_message::<BossHit>()
             .add_message::<Glanced>()
             .add_message::<Beaten>()
@@ -161,11 +162,18 @@ impl BossKind {
     }
 }
 
-pub(crate) fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<Defeated>) {
+pub(crate) fn forget_defeated(mut restarted: MessageReader<Restart>, mut defeated: ResMut<Defeated>, mut party: ResMut<Celebration>) {
     if restarted.read().count() > 0 {
         defeated.0.clear();
+        party.0 = false;
     }
 }
+
+/// After the ending (`ending.rs`): every boss and mob is back, in color, and they cheer for the
+/// chameleon: bosses never wake, mobs never notice it, and its blows pass through them. The
+/// powers and the world's colors stay. Saved; F8 ends it.
+#[derive(Resource, Default)]
+pub struct Celebration(pub bool);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BossKind {
@@ -184,6 +192,51 @@ pub enum BossKind {
 
 impl BossKind {
     pub const ALL: [BossKind; 11] = [BossKind::Wasp, BossKind::Roach, BossKind::Dragonfly, BossKind::Spider, BossKind::Centipede, BossKind::Frog, BossKind::Grasshopper, BossKind::Rat, BossKind::Mantis, BossKind::Crab, BossKind::Beetle];
+
+    /// The color of the animal itself (nothing to do with its blood or the color it gives).
+    pub fn natural(self) -> Color {
+        match self {
+            // Yellow jacket.
+            BossKind::Wasp => Color::srgb(0.92, 0.72, 0.10),
+            // Chestnut cockroach.
+            BossKind::Roach => Color::srgb(0.46, 0.26, 0.12),
+            // Emerald darner.
+            BossKind::Dragonfly => Color::srgb(0.10, 0.56, 0.52),
+            // Russet tarantula.
+            BossKind::Spider => Color::srgb(0.52, 0.30, 0.20),
+            // Red-orange giant centipede.
+            BossKind::Centipede => Color::srgb(0.78, 0.32, 0.10),
+            // Green tree frog.
+            BossKind::Frog => Color::srgb(0.22, 0.62, 0.22),
+            // Olive grasshopper.
+            BossKind::Grasshopper => Color::srgb(0.52, 0.56, 0.18),
+            // Gray-brown fur.
+            BossKind::Rat => Color::srgb(0.46, 0.38, 0.32),
+            // Leaf-green mantis.
+            BossKind::Mantis => Color::srgb(0.50, 0.74, 0.28),
+            // Red crab.
+            BossKind::Crab => Color::srgb(0.80, 0.30, 0.20),
+            // Bronze-green rhinoceros beetle.
+            BossKind::Beetle => Color::srgb(0.24, 0.44, 0.30),
+        }
+    }
+
+    /// Its fixed stats.
+    pub fn spec(self) -> &'static BossSpec {
+        match self {
+            BossKind::Wasp => &wasp::SPEC,
+            BossKind::Roach => &roach::SPEC,
+            BossKind::Dragonfly => &dragonfly::SPEC,
+            BossKind::Spider => &spider::SPEC,
+            BossKind::Centipede => &centipede::SPEC,
+            BossKind::Frog => &frog::SPEC,
+            BossKind::Grasshopper => &grasshopper::SPEC,
+            BossKind::Rat => &king_rat::SPEC,
+            BossKind::Mantis => &mantis::SPEC,
+            BossKind::Crab => &crab::SPEC,
+            BossKind::Beetle => &beetle::SPEC,
+        }
+    }
 
     /// Where its marker is in the sketch (no marker = no boss).
     fn marker(self, terrain: &Terrain) -> Option<Vec2> {
@@ -444,6 +497,19 @@ impl Boss {
         self.armor = 0.0;
     }
 
+    /// Paints its body in a natural color (the celebration, `BossKind::natural`): every material it
+    /// flashes keeps its lightness and takes that hue.
+    pub fn tint(&mut self, color: Color, materials: &mut Assets<ColorMaterial>) {
+        let hue = Oklaba::from(color);
+        for (handle, base) in &mut self.mats {
+            let gray = Oklaba::from(*base);
+            *base = Color::from(Oklaba { lightness: gray.lightness, a: hue.a, b: hue.b, alpha: gray.alpha });
+            if let Some(mut m) = materials.get_mut(&*handle) {
+                m.color = *base;
+            }
+        }
+    }
+
     /// Second phase: below half health.
     pub fn enraged(&self) -> bool {
         self.hp * 2 <= self.max_hp
@@ -593,6 +659,7 @@ fn spawn_all(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
 /// Bosses wake when the chameleon enters their lair, and reset when it leaves
 /// the lair or runs too far.
 fn lairs(
+    party: Res<Celebration>,
     player: Single<(&Player, &Transform)>,
     mut bosses: Query<(&mut Boss, &Lair, &Transform)>,
     mut autosave: MessageWriter<AutoSave>,
@@ -606,7 +673,8 @@ fn lairs(
         let centipede = lair.kind == BossKind::Centipede;
         let inside = if centipede { lair.near(ppos) } else { lair.region.contains(ppos) };
         let entered = if centipede { inside } else { lair.arena.contains(ppos) };
-        if !boss.awake && entered {
+        // In the celebration they never wake.
+        if !boss.awake && entered && !party.0 {
             boss.awake = true;
             info!("{} wakes", boss.spec.name);
             autosave.write(AutoSave);
@@ -660,6 +728,7 @@ pub(crate) fn slash_bosses(
     mut hits: MessageWriter<BossHit>,
     mut glanced: MessageWriter<Glanced>,
     mut spat: MessageReader<SpitHit>,
+    party: Res<Celebration>,
     mut defeated: ResMut<Defeated>,
     mut beaten: MessageWriter<Beaten>,
     mut autosave: MessageWriter<AutoSave>,
@@ -668,6 +737,11 @@ pub(crate) fn slash_bosses(
 ) {
     let (p, ptf, anim) = *player;
     let ppos = ptf.translation.truncate();
+    if party.0 {
+        // Celebrating: blows pass through them.
+        spat.clear();
+        return;
+    }
     // (boss, direction of the blow, slashed rather than spat on)
     let mut struck: Vec<(Entity, Vec2, bool)> = spat.read().map(|h| (h.target, h.dir, false)).collect();
     if anim.striking() {

@@ -719,7 +719,65 @@ pub struct Mob {
     pub(crate) buried: Option<f32>,
 }
 
+/// The color of the animal itself (nothing to do with its blood).
+pub fn natural(kind: MobKind) -> Color {
+    use MobKind::*;
+    let rgb = |r: f32, g: f32, b: f32| Color::srgb(r, g, b);
+    match kind {
+        Roachling | SewerRoach => rgb(0.46, 0.26, 0.12),
+        Fly => rgb(0.16, 0.36, 0.40),
+        Flea => rgb(0.55, 0.28, 0.15),
+        Drone => rgb(0.90, 0.70, 0.12),
+        Soldier => rgb(0.88, 0.55, 0.10),
+        Nest => rgb(0.72, 0.64, 0.46),
+        Grub => rgb(0.88, 0.82, 0.58),
+        Rat | RatKnot => rgb(0.46, 0.38, 0.32),
+        Spider | Spiderling | CryptJumper | GraveTrapdoor | OssuaryWolf => rgb(0.50, 0.30, 0.20),
+        Bonestrider => rgb(0.68, 0.55, 0.36),
+        MantisNymph | MantisHatchling => rgb(0.50, 0.74, 0.28),
+        GhostMantis => rgb(0.70, 0.62, 0.40),
+        NeonMoth => rgb(0.86, 0.84, 0.68),
+        Ootheca => rgb(0.70, 0.60, 0.42),
+        Naiad => rgb(0.38, 0.50, 0.22),
+        Siphon => rgb(0.50, 0.44, 0.38),
+        SumpLeech | BileLeech | SeepLeech => rgb(0.28, 0.32, 0.16),
+        PlagueTick => rgb(0.50, 0.20, 0.14),
+        BallastMole => rgb(0.32, 0.28, 0.26),
+        Wireworm => rgb(0.76, 0.56, 0.20),
+        Bombardier => rgb(0.82, 0.40, 0.10),
+        Ramhorn => rgb(0.32, 0.20, 0.14),
+        Sexton => rgb(0.28, 0.22, 0.18),
+        GulletToad => rgb(0.42, 0.46, 0.20),
+        PlagueBloat => rgb(0.66, 0.70, 0.30),
+        DrainNewt => rgb(0.86, 0.46, 0.14),
+        Locust => rgb(0.52, 0.60, 0.20),
+        RubbleCricket => rgb(0.36, 0.24, 0.14),
+        MoleCricket => rgb(0.58, 0.42, 0.24),
+        WreckKatydid => rgb(0.36, 0.62, 0.22),
+        GalleryLouse => rgb(0.50, 0.50, 0.54),
+        SpillwayCrab => rgb(0.76, 0.34, 0.24),
+        RubbleHermit => rgb(0.62, 0.52, 0.40),
+        Hundredfoot => rgb(0.72, 0.30, 0.14),
+        Curlback => rgb(0.52, 0.46, 0.40),
+        Burrowling => rgb(0.70, 0.54, 0.48),
+        Broodcoil => rgb(0.60, 0.28, 0.14),
+    }
+}
+
 impl Mob {
+    /// Paints its body in its natural color (the celebration, `natural`): every material it
+    /// flashes keeps its lightness and takes that hue.
+    pub fn tint(&mut self, materials: &mut Assets<ColorMaterial>) {
+        let hue = Oklaba::from(natural(self.kind));
+        for (handle, base) in &mut self.mats {
+            let gray = Oklaba::from(*base);
+            *base = Color::from(Oklaba { lightness: gray.lightness, a: hue.a, b: hue.b, alpha: gray.alpha });
+            if let Some(mut m) = materials.get_mut(&*handle) {
+                m.color = *base;
+            }
+        }
+    }
+
     pub fn new(kind: MobKind, home: Vec2, mats: Vec<(Handle<ColorMaterial>, Color)>, parent: Option<Entity>) -> Self {
         let mut rng = Rng(((home.x as i32).wrapping_mul(73_856_093) ^ (home.y as i32).wrapping_mul(19_349_663)) as u32 | 1);
         let facing = if rng.chance(0.5) { 1.0 } else { -1.0 };
@@ -1267,11 +1325,17 @@ fn slash_mobs(
     mut paint: MessageWriter<Paint>,
     mut sfx: MessageWriter<Sfx>,
     mut spat: MessageReader<SpitHit>,
+    party: Res<boss::Celebration>,
     player: Single<(&Player, &Transform, &ChameleonAnim)>,
     mut mobs: Query<(Entity, &mut Mob, &Transform)>,
 ) {
     let (p, ptf, anim) = *player;
     let ppos = ptf.translation.truncate();
+    if party.0 {
+        // Celebrating: blows pass through them.
+        spat.clear();
+        return;
+    }
     // (mob, direction of the blow, slashed rather than spat on)
     let mut struck: Vec<(Entity, Vec2, bool)> = spat.read().map(|h| (h.target, h.dir, false)).collect();
     if anim.striking() {
@@ -1416,6 +1480,7 @@ fn think(
     mut mobs: Query<(&mut Mob, &mut Transform)>,
     platforms: Query<(&Platform, &Transform), (Without<Mob>, Without<Player>)>,
     terrain: Res<Terrain>,
+    party: Res<boss::Celebration>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let t = time.elapsed_secs();
@@ -1492,7 +1557,10 @@ fn think(
                 Moves::Leech | Moves::TongueLash | Moves::Belch | Moves::CeilingCreep => sewer::seen(m, pos, ppos) && in_view(),
                 _ => in_view(),
             };
-        let touching = alive && dist < spec.radius + 16.0;
+        // The celebration: it pays the chameleon no mind (it can't be hit either, `slash_mobs`).
+        let calm = party.0;
+        let touching = alive && dist < spec.radius + 16.0 && !calm;
+        let seen = seen && !calm;
         let sees = notice(m, seen, seen && dist < spec.sense * if spec.veteran { 1.0 } else { UNAWARE_RANGE }, touching, p.vel.length(), dt);
         let ease = |rate: f32| 1.0 - (-rate * dt).exp();
 

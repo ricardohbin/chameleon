@@ -644,13 +644,17 @@ fn spawn_particles(
 
 fn drift_particles(
     time: Res<Time>,
+    party: Res<crate::boss::Celebration>,
     camera: Single<&Transform, (With<MainCamera>, Without<Particle>)>,
-    mut particles: Query<(&Particle, &mut Transform)>,
+    mut particles: Query<(&Particle, &mut Transform, &mut Visibility)>,
 ) {
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
     let cam = camera.translation.truncate();
-    for (p, mut tf) in &mut particles {
+    // After the ending the air is clear: no more ash or embers.
+    let shown = if party.0 { Visibility::Hidden } else { Visibility::Inherited };
+    for (p, mut tf, mut vis) in &mut particles {
+        vis.set_if_neq(shown);
         let sway = Vec2::new((t * 1.3 + p.wobble).sin() * 15.0, (t * 2.1 + p.wobble).cos() * 8.0);
         let mut pos = tf.translation.truncate() + (p.vel + sway) * dt;
         // Wrap around the camera so there's always ash on screen.
@@ -667,11 +671,15 @@ fn wrap(v: f32, half: f32) -> f32 {
 
 fn animate_smoke(
     time: Res<Time>,
-    mut puffs: Query<(&mut Puff, &mut Parallax, &mut Transform, &MeshMaterial2d<ColorMaterial>)>,
+    party: Res<crate::boss::Celebration>,
+    mut puffs: Query<(&mut Puff, &mut Parallax, &mut Transform, &MeshMaterial2d<ColorMaterial>, &mut Visibility)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let dt = time.delta_secs();
-    for (mut puff, mut layer, mut tf, mat) in &mut puffs {
+    // After the ending the fires are out: no more smoke.
+    let shown = if party.0 { Visibility::Hidden } else { Visibility::Inherited };
+    for (mut puff, mut layer, mut tf, mat, mut vis) in &mut puffs {
+        vis.set_if_neq(shown);
         puff.age = (puff.age + dt) % puff.life;
         let k = puff.age / puff.life;
         let rise = Vec2::new(k * 160.0 + (k * 6.0 + puff.seed).sin() * 25.0, k * 380.0);
@@ -686,11 +694,15 @@ fn animate_smoke(
 
 fn animate_fire(
     time: Res<Time>,
-    fires: Query<(&Fire, &MeshMaterial2d<ColorMaterial>, &mut Transform)>,
+    party: Res<crate::boss::Celebration>,
+    fires: Query<(&Fire, &MeshMaterial2d<ColorMaterial>, &mut Transform, &mut Visibility)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let t = time.elapsed_secs();
-    for (fire, mat, mut tf) in fires {
+    // After the ending the fires are out.
+    let shown = if party.0 { Visibility::Hidden } else { Visibility::Inherited };
+    for (fire, mat, mut tf, mut vis) in fires {
+        vis.set_if_neq(shown);
         let flicker = 0.75 + 0.25 * ((t * 9.0 + fire.seed).sin() * (t * 13.7 + fire.seed * 2.0).sin()).abs();
         tf.scale = Vec3::new(1.0, flicker, 1.0);
         if let Some(mut m) = materials.get_mut(&mat.0) {
@@ -701,6 +713,7 @@ fn animate_fire(
 
 fn lightning(
     time: Res<Time>,
+    party: Res<crate::boss::Celebration>,
     mut state: ResMut<Lightning>,
     mut shake: ResMut<Shake>,
     mut glare: ResMut<Glare>,
@@ -714,6 +727,10 @@ fn lightning(
 ) {
     let dt = time.delta_secs();
     let (bolt_mesh, mut bolt_pos, mut bolt_vis) = bolt.into_inner();
+    // After the ending the storm is over: no more strikes (the last one just fades).
+    if party.0 {
+        state.next = state.next.max(1.0);
+    }
     state.next -= dt;
     state.since += dt;
     if state.next <= 0.0 {

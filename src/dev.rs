@@ -74,7 +74,8 @@ impl Plugin for DevPlugin {
         }
         // GREEN=1, INDIGO=1...: start with those bosses beaten (their powers and colors), kept
         // through restarts (the menu's new game / load, F8, a death's reload), which forget them.
-        let beaten: Vec<BossKind> = BEATEN.iter().filter(|(var, _)| std::env::var(var).is_ok()).map(|&(_, kind)| kind).collect();
+        // ENDING=1 (`ending.rs`): all of them, and the ending plays.
+        let beaten: Vec<BossKind> = BEATEN.iter().filter(|(var, _)| std::env::var(var).is_ok() || std::env::var("ENDING").is_ok()).map(|&(_, kind)| kind).collect();
         if !beaten.is_empty() {
             app.insert_resource(DevBeaten(beaten))
                 .add_systems(Startup, beat)
@@ -115,6 +116,7 @@ fn fake_input(time: Res<Time<Real>>, mut keys: ResMut<ButtonInput<KeyCode>>, mut
         "j" => Some(KeyCode::KeyJ),
         "g" => Some(KeyCode::KeyG),
         "q" => Some(KeyCode::KeyQ),
+        "enter" => Some(KeyCode::Enter),
         "f1" => Some(KeyCode::F1),
         "f2" => Some(KeyCode::F2),
         "f3" => Some(KeyCode::F3),

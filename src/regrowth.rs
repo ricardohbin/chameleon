@@ -396,7 +396,7 @@ fn skylight(
 
 /// The Razorwing's pink stays in the far background of its own region (the treatment plant):
 /// the backdrop camera's grading lets a pink cast through while the camera is there.
-fn tint_backdrop(
+pub(crate) fn tint_backdrop(
     regrowth: Res<Regrowth>,
     terrain: Res<Terrain>,
     camera: Single<&Transform, (With<MainCamera>, Without<camera::BackdropCamera>)>,

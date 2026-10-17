@@ -70,7 +70,7 @@ pub enum Fluid {
 impl Fluid {
     const ALL: [Fluid; 13] = [Fluid::Green, Fluid::Red, Fluid::Venom, Fluid::Yellow, Fluid::Pink, Fluid::Blue, Fluid::Purple, Fluid::Violet, Fluid::Brown, Fluid::Orange, Fluid::Indigo, Fluid::Crimson, Fluid::Cyan];
 
-    fn fresh(self) -> Color {
+    pub(crate) fn fresh(self) -> Color {
         match self {
             Fluid::Green => Color::srgb(0.42, 0.95, 0.10),
             Fluid::Red => Color::srgb(0.72, 0.02, 0.03),

@@ -47,6 +47,16 @@ pub fn underlay_layer() -> RenderLayers {
     RenderLayers::layer(UNDERLAY_LAYER)
 }
 
+/// The grading of the main (world) camera: gray.
+pub fn world_grading() -> ColorGrading {
+    ColorGrading { global: ColorGradingGlobal { post_saturation: WORLD_SATURATION, ..default() }, ..default() }
+}
+
+/// The cameras that keep their colors: the underlay (under the world) and the overlay (over it).
+/// They have no grading of their own, except at the very end (`ending.rs`).
+#[derive(Component)]
+pub struct ColorCamera;
+
 /// The backdrop camera (a child of the main one).
 #[derive(Component)]
 pub struct BackdropCamera;
@@ -199,10 +209,7 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
             Follow(spawn),
             projection(),
             Transform::from_translation(spawn.extend(0.0)),
-            ColorGrading {
-                global: ColorGradingGlobal { post_saturation: WORLD_SATURATION, ..default() },
-                ..default()
-            },
+            world_grading(),
         ))
         .id();
     // Backdrop: same view, drawn before the world (which doesn't clear), its own grading.
@@ -222,16 +229,26 @@ fn spawn_camera(mut commands: Commands, terrain: Res<Terrain>) {
         Camera { order: -1, clear_color: ClearColorConfig::None, ..default() },
         projection(),
         underlay_layer(),
+        ColorCamera,
         Transform::default(),
         ChildOf(main),
     ));
-    // Overlay: same view, drawn after the world, keeps its colors (the HUD too).
+    // Overlay: same view, drawn after the world, keeps its colors.
     commands.spawn((
         Camera2d,
-        IsDefaultUiCamera,
         Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
         projection(),
         color_layer(),
+        ColorCamera,
+        Transform::default(),
+        ChildOf(main),
+    ));
+    // The HUD: its own camera, last, drawing no world layer, so no grading ever touches it.
+    commands.spawn((
+        Camera2d,
+        IsDefaultUiCamera,
+        Camera { order: 2, clear_color: ClearColorConfig::None, ..default() },
+        RenderLayers::none(),
         Transform::default(),
         ChildOf(main),
     ));
