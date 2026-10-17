@@ -111,7 +111,7 @@ const VOID_DEPTH: f32 = 600.0;
 /// From this share of the body under the surface you swim instead of walking.
 const SWIM_FRACTION: f32 = 0.3;
 /// Seconds out of the water to get the whole swimming strength back.
-const SWIM_RECOVER: f32 = 2.5;
+pub const SWIM_RECOVER: f32 = 2.5;
 /// Landing in water this deep (one storey) absorbs the whole fall; shallower, only part.
 const WATER_SOFT_DEPTH: f32 = FLOOR_HEIGHT;
 /// Splashes below this speed are just wading.

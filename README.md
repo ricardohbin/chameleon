@@ -51,7 +51,7 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Eat remains | `E` |
 | Burrow through rubble (aim at it) | `C` |
 | Dash (on firm ground only; needs the full strength meter and drains all of it, like swimming) | `Shift` / `K` |
-| Venom spit (lobbed like a grenade; each spit costs half the strength meter) | `Q` / right mouse button |
+| Venom spit (lobbed like a grenade; hold to charge it for 1.2 s, released it flies faster and farther; the charge burns the strength meter as fuel, half the bar for a full charge, and slows down when it runs low) | `Q` / right mouse button |
 | Shield | `G` |
 | Air spin | attack while in the air |
 | Big jump | hold `S` / `Down` on the ground, then let go |
@@ -156,7 +156,7 @@ the layout only. The game reads the **colors** of the pixels, not the layer name
 | Magenta cross | world origin (0, 0) |
 | Red | player spawn |
 | Pure blue `#0000ff` | a power pill: an iridescent vermin crawling slowly around the spot (the tile under it is a normal wall) |
-| Pale green `#bdffc2` | a health pill bug: a pulsating red vermin (red even in a colorless world) that is eaten on touch for one health tick, only when health is below max (the tile under it is a normal wall) |
+| Pale green `#bdffc2` | a health pill bug: a pulsating red vermin (red even in a colorless world) that is eaten on touch to refill the whole health, only when health is below max (the tile under it is a normal wall) |
 | Yellow, green, dusty blue `#7f9fd6`, dusty pink `#d1b0c6`, brown `#8f563b`, violet `#b800ff` | boss markers: Gutter King, Venom Mother, Weaver, Razorwing, Sawleg, Plague Frog (the last four are matched exactly) |
 
 **Slices** name the areas. `region: …` is an area, which gets an art style from keywords in its name and is

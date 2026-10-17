@@ -114,7 +114,7 @@ struct PipShadow(i32);
 #[derive(Component)]
 struct PipFill(i32);
 
-/// Swimming strength: a thin bar under the pips, shown in the water and while it refills.
+/// Swimming strength: a half-transparent bar centered on the screen above the pips, shown in the water and while it refills.
 #[derive(Component)]
 struct SwimBar;
 
@@ -309,15 +309,15 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let swim = commands
         .spawn((
             SwimBar,
-            Node { position_type: PositionType::Absolute, bottom: px(76), left: px(28), width: px(150), height: px(8), ..default() },
-            BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.7)),
+            Node { position_type: PositionType::Absolute, bottom: px(70), left: percent(50), margin: UiRect::left(px(-75)), width: px(150), height: px(18), ..default() },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.35)),
             Visibility::Hidden,
         ))
         .id();
     commands.spawn((
         SwimFill,
         Node { width: percent(100), height: percent(100), ..default() },
-        BackgroundColor(Color::srgb(0.55, 0.82, 0.95)),
+        BackgroundColor(Color::srgba(0.55, 0.82, 0.95, 0.5)),
         ChildOf(swim),
     ));
 
@@ -370,7 +370,7 @@ fn update_swim_bar(
     node.width = percent(player.swim.clamp(0.0, 1.0) * 100.0);
     // Pale blue while fresh; red once the head will go under.
     let tired = Color::srgb(0.85, 0.15, 0.1);
-    color.0 = Color::srgb(0.55, 0.82, 0.95).mix(&tired, ((1.0 - player.swim - 0.35) / 0.65).clamp(0.0, 1.0));
+    color.0 = Color::srgb(0.55, 0.82, 0.95).mix(&tired, ((1.0 - player.swim - 0.35) / 0.65).clamp(0.0, 1.0)).with_alpha(0.5);
 }
 
 /// The controls, as (action, key): powers only once earned.
@@ -388,7 +388,7 @@ fn hints(defeated: &Defeated, scheme: Scheme, pills: bool) -> Vec<(&'static str,
         v.push(("Dash", "Shift / K"));
     }
     if defeated.spit() {
-        v.push(("Spit", if mouse { "Q / RMB" } else { "Q" }));
+        v.push(("Spit", if mouse { "hold Q / RMB" } else { "hold Q" }));
     }
     if defeated.shield() {
         v.push(("Shield", "G"));

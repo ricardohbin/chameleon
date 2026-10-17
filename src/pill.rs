@@ -287,7 +287,7 @@ fn load(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 struct Bug {
     spot: IVec2,
     home: Vec2,
-    /// A health bug (pulsating red, heals one tick) instead of a power pill.
+    /// A health bug (pulsating red, refills the whole health) instead of a power pill.
     health: bool,
     phase: f32,
     mats: [Handle<ColorMaterial>; 4],
@@ -477,8 +477,8 @@ fn collect(
             if p.hp >= p.max_hp {
                 continue;
             }
-            p.hp += 1;
-            p.shadow = p.shadow.min((p.max_hp - p.hp) as f32);
+            p.hp = p.max_hp;
+            p.shadow = 0.0;
             p.pill.taken.push(b.spot);
             autosave.write(AutoSave);
             commands.entity(e).despawn();

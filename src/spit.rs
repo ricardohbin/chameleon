@@ -18,11 +18,14 @@ use crate::{
 };
 
 /// Lobbed like a grenade: slow and heavy, it drops off quickly.
-const SPEED: f32 = 560.0;
+/// Hold to charge: the speed goes from `SPEED` (tapped) to `SPEED_MAX` (fully charged), and the
+/// strength burnt while charging reaches `FULL_DRAIN` of the bar, in `CHARGE_TIME` seconds.
+const SPEED: f32 = 100.0;
+const SPEED_MAX: f32 = 1000.0;
+const CHARGE_TIME: f32 = 1.2;
+/// Share of the bar a full charge empties (net of the refill) from a full bar.
+const FULL_DRAIN: f32 = 0.5;
 const GRAVITY: f32 = 1400.0;
-/// Each spit spends this share of the (swimming) strength bar, and needs it.
-const COST: f32 = 0.5;
-const COOLDOWN: f32 = 0.4;
 const LIFE: f32 = 1.4;
 /// Spat from this far out along the aim, from the neck (about the snout).
 const MOUTH: f32 = 22.0;
@@ -33,9 +36,10 @@ pub struct SpitPlugin;
 impl Plugin for SpitPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SpitHit>()
+            .init_resource::<SpitCharge>()
             .add_systems(Startup, load)
             .add_systems(PreUpdate, clear_on_restart.after(level::restart))
-            .add_systems(Update, (spit, move_spit).chain().after(player::move_player).after(chameleon::update_anim_state));
+            .add_systems(Update, (spit, charge_fx, move_spit).chain().after(player::move_player).after(chameleon::update_anim_state));
     }
 }
 
@@ -52,15 +56,35 @@ pub struct Glob {
     life: f32,
 }
 
+/// How charged the spit being held is (0..1), `None` when not charging.
+#[derive(Resource, Default)]
+struct SpitCharge(Option<f32>);
+
+/// A streak around the mouth while charging (`r` = distance from it): sucked in, or thrown out.
+#[derive(Component)]
+struct Streak {
+    ang: f32,
+    r: f32,
+    /// Flying out from the mouth (the charge building up) instead of in.
+    out: bool,
+}
+
 #[derive(Resource)]
 struct SpitAssets {
     mesh: Handle<Mesh>,
     mat: Handle<ColorMaterial>,
+    fx_mesh: Handle<Mesh>,
+    fx_mat: Handle<ColorMaterial>,
 }
 
 fn load(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>) {
     let glob = fill(&ellipse_pts(6.0, 4.5, 18), |p| 1.0 - 0.35 * (p - Vec2::new(2.0, 1.5)).length() / 7.0);
-    commands.insert_resource(SpitAssets { mesh: meshes.add(glob), mat: materials.add(COLOR) });
+    commands.insert_resource(SpitAssets {
+        mesh: meshes.add(glob),
+        mat: materials.add(COLOR),
+        fx_mesh: meshes.add(Rectangle::new(1.0, 1.0)),
+        fx_mat: materials.add(ColorMaterial { color: Color::srgba(0.85, 1.0, 0.8, 0.3), alpha_mode: bevy::sprite_render::AlphaMode2d::Blend, ..default() }),
+    });
 }
 
 fn spit(
@@ -70,26 +94,106 @@ fn spit(
     mouse: Res<ButtonInput<MouseButton>>,
     defeated: Res<Defeated>,
     assets: Res<SpitAssets>,
-    mut cooldown: Local<f32>,
+    mut charge: ResMut<SpitCharge>,
     player: Single<(&mut Player, &Transform, &mut ChameleonAnim)>,
 ) {
-    *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let pressed = keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Right);
+    let held = keys.pressed(KeyCode::KeyQ) || mouse.pressed(MouseButton::Right);
     let (mut p, tf, mut anim) = player.into_inner();
-    if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 || p.swim < COST * p.pill.cost() {
+    if p.dead.is_some() || p.stun > 0.0 || !defeated.spit() {
+        charge.0 = None;
         return;
     }
-    p.swim -= COST * p.pill.cost();
-    *cooldown = COOLDOWN;
+    let pill = p.pill.cost();
+    if pressed {
+        charge.0 = Some(0.0);
+        return;
+    }
+    let Some(c) = charge.0 else { return };
+    if held {
+        // The strength is the fuel. Burning goes at the bar's refill rate plus the net drain that empties
+        // `FULL_DRAIN` of the bar in `CHARGE_TIME` seconds (about 0.82 per second at the usual 0.4 + 0.42). A full bar
+        // therefore charges fully in `CHARGE_TIME`; with the bar at zero it burns only what refills,
+        // which is slower.
+        let rate = p.pill.recover() / player::SWIM_RECOVER + pill * FULL_DRAIN / CHARGE_TIME;
+        let burn = (rate * time.delta_secs()).min(p.swim).min((1.0 - c) * rate * CHARGE_TIME);
+        p.swim -= burn;
+        charge.0 = Some(c + burn / (rate * CHARGE_TIME));
+        return;
+    }
+    // Released: the strength has been burnt already.
+    charge.0 = None;
     anim.spit();
     let from = chameleon::neck(tf.translation.truncate(), p.facing) + p.aim * MOUTH;
     commands.spawn((
-        Glob { vel: p.aim * SPEED, life: LIFE },
+        Glob { vel: p.aim * (SPEED + (SPEED_MAX - SPEED) * c), life: LIFE },
         Mesh2d(assets.mesh.clone()),
         MeshMaterial2d(assets.mat.clone()),
         Transform::from_translation(from.extend(15.0)).with_rotation(Quat::from_rotation_z(p.aim.to_angle())),
         camera::color_layer(),
     ));
+}
+
+/// Feedback while charging: faint pale streaks, only from in front of the head, get sucked into the
+/// mouth, fading as the charge fills while chaotic streaks burst outward in all directions, more of
+/// them the fuller it is.
+fn charge_fx(
+    mut commands: Commands,
+    time: Res<Time>,
+    charge: Res<SpitCharge>,
+    assets: Res<SpitAssets>,
+    mut seed: Local<u32>,
+    mut clocks: Local<[f32; 2]>,
+    player: Single<(&Player, &Transform), Without<Streak>>,
+    mut streaks: Query<(Entity, &mut Streak, &mut Transform)>,
+) {
+    let (p, tf) = *player;
+    let dt = time.delta_secs();
+    let mouth = chameleon::neck(tf.translation.truncate(), p.facing) + p.aim * MOUTH;
+    let mut rand = || {
+        *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (*seed >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let place = |tf: &mut Transform, ang: f32, r: f32, len: f32, thick: f32| {
+        tf.translation = (mouth + Vec2::from_angle(ang) * r).extend(16.0);
+        tf.rotation = Quat::from_rotation_z(ang);
+        tf.scale = Vec3::new(len, thick, 1.0);
+    };
+    let c = charge.0;
+    let amount = c.unwrap_or(0.0);
+    let pull = 1.0 - amount;
+    if c.is_some() {
+        clocks[0] += dt * 70.0 * pull;
+        clocks[1] += dt * 70.0 * amount;
+    }
+    while clocks[0] >= 1.0 {
+        clocks[0] -= 1.0;
+        // Only from the front: a cone around the aim.
+        let (ang, r) = (p.aim.to_angle() + (rand() - 0.5) * 1.1, 30.0 + rand() * 16.0);
+        let mut t = Transform::default();
+        place(&mut t, ang, r, 8.0, 1.3);
+        commands.spawn((Streak { ang, r, out: false }, Mesh2d(assets.fx_mesh.clone()), MeshMaterial2d(assets.fx_mat.clone()), t, camera::color_layer()));
+    }
+    while clocks[1] >= 1.0 {
+        clocks[1] -= 1.0;
+        let (ang, r) = (rand() * std::f32::consts::TAU, 6.0 + rand() * 8.0);
+        let mut t = Transform::default();
+        place(&mut t, ang, r, 8.0, 1.3);
+        commands.spawn((Streak { ang, r, out: true }, Mesh2d(assets.fx_mesh.clone()), MeshMaterial2d(assets.fx_mat.clone()), t, camera::color_layer()));
+    }
+    for (e, mut s, mut stf) in &mut streaks {
+        let dir = if s.out { 1.0 } else { -1.0 };
+        s.r += dir * 150.0 * dt;
+        let gone = if s.out { s.r > 40.0 } else { s.r < 5.0 };
+        if gone || c.is_none() {
+            commands.entity(e).despawn();
+            continue;
+        }
+        // Inward ones shrink as they near the mouth and as the charge fills; outward ones grow with it.
+        let k = if s.out { amount } else { pull };
+        let len = if s.out { 9.0 } else { (s.r * 0.35).clamp(2.0, 9.0) };
+        place(&mut stf, s.ang, s.r, len * k.max(0.2), 1.3 * k);
+    }
 }
 
 pub fn move_spit(

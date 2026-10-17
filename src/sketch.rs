@@ -41,7 +41,7 @@ const CRAB_MARK: [u8; 3] = [0x5b, 0x6e, 0xe1];
 const BEETLE_MARK: [u8; 3] = [0xff, 0x81, 0x00];
 /// Pure blue `#0000ff`: a power pill (the tile under it is a plain wall).
 const PILL_MARK: [u8; 3] = [0x00, 0x00, 0xff];
-/// Pale green `#bdffc2`: a pill bug that heals one health tick (the tile under it is a plain wall).
+/// Pale green `#bdffc2`: a pill bug that refills the whole health (the tile under it is a plain wall).
 const HEALTH_MARK: [u8; 3] = [0xbd, 0xff, 0xc2];
 
 /// Light purple `#bc75be`: asks `level::loose` for a falling platform, over a back wall (`#976099` over open air).
@@ -98,7 +98,7 @@ pub enum MarkerKind {
     Beetle,
     /// Pure blue `#0000ff`: a power pill creature crawls here; the tile under it is a normal wall.
     PowerPill,
-    /// Pale green `#bdffc2`: a pill bug that gives one health tick; the tile under it is a normal wall.
+    /// Pale green `#bdffc2`: a pill bug that refills the whole health; the tile under it is a normal wall.
     HealthPill,
 }
 
