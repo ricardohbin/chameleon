@@ -277,6 +277,10 @@ fn restart(
     follow.0 = pending.at().unwrap_or_else(|| player::spawn_point(&terrain)) + Vec2::new(LOOK_AHEAD, HEIGHT_OFFSET);
 }
 
+/// The offscreen camera of the full-world export (native dev tool): not the player's view.
+#[derive(Component)]
+pub(crate) struct ExportCamera;
+
 pub fn follow_player(
     time: Res<Time>,
     mut shake: ResMut<Shake>,
@@ -285,7 +289,7 @@ pub fn follow_player(
     dev_zoom: Res<DevZoom>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     camera: Single<(&mut Transform, &mut Follow), (With<MainCamera>, Without<Player>)>,
-    mut projections: Query<&mut Projection, Without<crate::map_export::ExportCamera>>,
+    mut projections: Query<&mut Projection, Without<ExportCamera>>,
     player: Single<(&Transform, &Player)>,
 ) {
     let (mut tf, mut follow) = camera.into_inner();

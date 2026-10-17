@@ -148,7 +148,7 @@ fn scan(
 ) {
     let (mut p, ptf) = player.into_inner();
     let ppos = ptf.translation.truncate();
-    let able = defeated.burrow() && p.dead.is_none() && p.burrow.is_none() && !p.flying && !p.swimming && p.stun <= 0.0;
+    let able = defeated.burrow() && p.dead.is_none() && p.burrow.is_none() && !p.swimming && p.stun <= 0.0;
     // Near rubble: say what to do.
     let near = able && terrain.features.iter().any(|f| f.rubble && f.rect.inflate(120.0).contains(ppos));
 

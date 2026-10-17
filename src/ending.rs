@@ -97,6 +97,11 @@ pub struct Ending {
 }
 
 impl Ending {
+    /// The show is on (from the kill to the return of control).
+    pub fn playing(&self) -> bool {
+        self.t.is_some()
+    }
+
     /// Seconds into the show (the hops), if it has started.
     fn show(&self, wait: f32) -> Option<f32> {
         self.t.map(|t| t - wait).filter(|s| *s >= 0.0)
@@ -574,6 +579,16 @@ fn blackout(
             commands.entity(e).despawn();
         }
         ending.t = None;
+        // Control is back: untouchable, with small wings.
+        if p.god == player::God::Off {
+            p.god = player::God::Invulnerable;
+        }
+        p.flying = true;
+        p.vel = Vec2::ZERO;
+        p.grounded = false;
+        p.ground = None;
+        p.dash = 0.0;
+        p.forget_fall(tf.translation.truncate());
     }
 }
 

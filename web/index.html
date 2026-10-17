@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Ghore, The Chameleon</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    canvas#bevy { width: 100%; height: 100%; display: block; outline: none; }
+    #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #9c9; font: 18px/1.4 serif; text-align: center; pointer-events: none; }
+    #loading.done { display: none; }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="bevy" tabindex="0"></canvas></div>
+  <div id="loading">Ghore, The Chameleon<br>loading…</div>
+  <script type="module">
+    // Browsers keep audio suspended until a user gesture: track every AudioContext the game makes
+    // and resume them on the first click / key press / touch.
+    const contexts = [];
+    for (const name of ["AudioContext", "webkitAudioContext"]) {
+      const Native = window[name];
+      if (!Native) continue;
+      window[name] = class extends Native {
+        constructor(...args) { super(...args); contexts.push(this); }
+      };
+    }
+    const resume = () => contexts.forEach((c) => c.state !== "running" && c.resume());
+    for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, resume);
+
+    import init from "./ghore.js";
+    try {
+      await init();
+    } catch (e) {
+      // Bevy ends its main loop by throwing a control-flow "exception" on the web: not an error.
+      if (!String(e).includes("Using exceptions for control flow")) {
+        document.getElementById("loading").textContent = "Could not start: " + e;
+        throw e;
+      }
+    }
+    document.getElementById("loading").classList.add("done");
+    document.getElementById("bevy").focus();
+  </script>
+</body>
+</html>

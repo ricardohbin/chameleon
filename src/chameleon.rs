@@ -6,7 +6,7 @@
 //!
 //! Local coordinates: the chameleon faces +X, origin = `player::RIG_DROP` below the player collider center.
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
@@ -118,7 +118,7 @@ impl Plugin for ChameleonPlugin {
             .add_systems(PreUpdate, forget_colors.after(level::restart))
             .add_systems(
             Update,
-            (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave, spin_wave)
+            (update_anim_state, earn_color, pose_parts, animate_tail, camouflage, slash_wave, spin_wave, flap_wings)
                 .chain()
                 .after(player::move_player),
         );
@@ -210,6 +210,13 @@ pub struct ChameleonAnim {
     air: f32,
     /// Tail curl amount (1 = tight spiral).
     curl: f32,
+    /// Sideways tail swing while playing with it (0 = none).
+    sway: f32,
+    /// Seconds before the next idle tail game.
+    idle_wait: f32,
+    /// Which `TAIL_PLAYS` game is on, and how long it's been going (`None` when not playing).
+    play_kind: usize,
+    play: Option<f32>,
     look: Vec2,
     look_target: Vec2,
     look_timer: f32,
@@ -294,6 +301,25 @@ struct SlashWave(Handle<ColorMaterial>);
 /// The fan swept by the air spin.
 #[derive(Component)]
 struct SpinWave(Handle<ColorMaterial>);
+
+/// A small wing, shown and flapping while flying.
+#[derive(Component)]
+struct Wing {
+    near: bool,
+}
+
+fn flap_wings(time: Res<Time>, player: Single<&Player>, mut wings: Query<(&Wing, &mut Transform, &mut Visibility)>) {
+    let on = player.flying && player.dead.is_none();
+    let t = time.elapsed_secs();
+    for (wing, mut tf, mut vis) in &mut wings {
+        *vis = if on { Visibility::Inherited } else { Visibility::Hidden };
+        if on {
+            let flap = (t * 38.0 + if wing.near { 0.0 } else { 0.8 }).sin();
+            let lean = if wing.near { 0.5 } else { 0.9 };
+            tf.rotation = Quat::from_rotation_z(lean + 0.7 * flap);
+        }
+    }
+}
 
 pub fn spawn_chameleon(
     commands: &mut Commands,
@@ -404,9 +430,9 @@ pub fn spawn_chameleon(
     c.scar(&[Vec2::new(-20.0, 12.0), Vec2::new(-15.0, 5.0), Vec2::new(-18.0, 0.0)], &scar_dark, &scar_pale, body);
 
     // --- Tail (mesh regenerated every frame by `animate_tail`) ---
-    let tail_handle = c.meshes.add(tail_mesh(1.0));
+    let tail_handle = c.meshes.add(tail_mesh(1.0, 0.0));
     let tail = c.part_handle(tail_handle.clone(), &tail_mat, Vec3::new(-34.0, 3.0, -0.3), body);
-    let rings_handle = c.meshes.add(tail_rings(1.0));
+    let rings_handle = c.meshes.add(tail_rings(1.0, 0.0));
     let ring_e = c.part_handle(rings_handle.clone(), &rings, Vec3::new(0.0, 0.0, 0.01), tail);
     c.commands.entity(ring_e).insert((TailRings, Visibility::Hidden));
     c.commands.entity(tail).insert(Tail { mesh: tail_handle, rings: rings_handle });
@@ -532,12 +558,29 @@ pub fn spawn_chameleon(
         c.part(stroke(&arc, |t| 0.5 + w * (PI * t).sin().powf(0.6), 1.0, 0.5, |_| 1.0), &spin_mat, Vec3::ZERO, spin);
     }
 
+    // Small translucent wings on the back, flapping while it flies.
+    let wing_mat = materials.add(ColorMaterial {
+        color: Color::srgba(0.92, 0.96, 1.0, 0.6),
+        alpha_mode: AlphaMode2d::Blend,
+        ..default()
+    });
+    let wing_pts: Vec<Vec2> = ellipse_pts(5.0, 13.0, 20).into_iter().map(|p| p + Vec2::Y * 12.0).collect();
+    for (near, z) in [(false, -0.3), (true, 0.3)] {
+        let root = c.empty(Vec3::new(-4.0 + if near { 3.0 } else { 0.0 }, 18.0, z), rig);
+        c.commands.entity(root).insert((Wing { near }, Visibility::Hidden));
+        c.part(fill(&wing_pts, |p| 0.75 + 0.25 * (p.y / 25.0).clamp(0.0, 1.0)), &wing_mat, Vec3::ZERO, root);
+    }
+
     c.commands.insert_resource(skin);
     c.commands.entity(player).insert(ChameleonAnim {
         phase: 0.0,
         stride: 0.0,
         air: 0.0,
         curl: 1.0,
+        sway: 0.0,
+        idle_wait: 3.0,
+        play_kind: 0,
+        play: None,
         look: Vec2::X,
         look_target: Vec2::X,
         look_timer: 1.0,
@@ -634,8 +677,35 @@ impl Builder<'_, '_, '_> {
     }
 }
 
-/// The spiral tail's centerline, base to tip. `curl` = 1 → tight coil, 0 → nearly straight.
-fn tail_path(curl: f32) -> Vec<Vec2> {
+/// Idle tail games: (duration in seconds, name for reference).
+const TAIL_PLAYS: [(f32, &str); 5] = [
+    (2.6, "unroll and roll back"),
+    (1.5, "double flick"),
+    (2.8, "wag"),
+    (2.2, "tighten pulses"),
+    (3.2, "slow lasso"),
+];
+
+/// The (curl, sway) of tail game `kind` at progress `u` in 0..1.
+fn tail_play(kind: usize, u: f32) -> (f32, f32) {
+    let env = (u * PI).sin();
+    match kind {
+        // Slowly unrolls, holds it stretched, rolls back up.
+        0 => (1.0 - 1.05 * env.powf(0.5).min(1.0), 0.0),
+        // Two quick snaps open.
+        1 => (1.0 - 1.15 * (u * PI * 4.0).sin().max(0.0), 0.0),
+        // Half unrolled, swinging side to side.
+        2 => (1.0 - 0.7 * env.powf(0.4), env.powf(0.4) * (u * TAU * 3.0).sin()),
+        // Winds tighter and looser a few times.
+        3 => (1.0 + 0.5 * env * (0.5 - 0.5 * (u * TAU * 3.0).cos()), 0.0),
+        // Stretches out and swirls it around, then reels it back.
+        _ => (1.0 - 0.8 * env.powf(0.4), env.powf(0.4) * 1.3 * (u * TAU * 2.0).sin()),
+    }
+}
+
+/// The spiral tail's centerline, base to tip. `curl` = 1 → tight coil, 0 → nearly straight;
+/// `sway` bends it into a wave.
+fn tail_path(curl: f32, sway: f32) -> Vec<Vec2> {
     const N: usize = 56;
     const LEN: f32 = 100.0;
     let ds = LEN / N as f32;
@@ -645,7 +715,7 @@ fn tail_path(curl: f32) -> Vec<Vec2> {
         pts.push(p);
         let s = i as f32 / N as f32;
         // Curvature grows towards the tip → logarithmic-looking spiral.
-        angle += curl * (0.008 + 0.26 * s.powf(2.5)) * ds;
+        angle += curl * (0.008 + 0.26 * s.powf(2.5)) * ds + sway * 0.09 * (s * TAU * 0.75).cos() * ds;
         p += Vec2::from_angle(angle) * ds;
     }
     pts
@@ -657,14 +727,14 @@ fn tail_width(t: f32) -> f32 {
 }
 
 /// The spiral tail. `curl` = 1 → tight coil, 0 → nearly straight.
-fn tail_mesh(curl: f32) -> Mesh {
+fn tail_mesh(curl: f32, sway: f32) -> Mesh {
     // Left edge (perp) is the inner/belly side; add soft bands along the tail.
-    stroke(&tail_path(curl), tail_width, 0.55, 1.0, |t| 1.0 - 0.55 * (0.5 + 0.5 * (t * 30.0).sin()).powi(8))
+    stroke(&tail_path(curl, sway), tail_width, 0.55, 1.0, |t| 1.0 - 0.55 * (0.5 + 0.5 * (t * 30.0).sin()).powi(8))
 }
 
 /// Rings around the tail, thinning toward the tip, following its curl.
-fn tail_rings(curl: f32) -> Mesh {
-    let pts = tail_path(curl);
+fn tail_rings(curl: f32, sway: f32) -> Mesh {
+    let pts = tail_path(curl, sway);
     let last = pts.len() - 1;
     let edge = |i: usize| {
         let t = i as f32 / last as f32;
@@ -715,7 +785,43 @@ pub fn update_anim_state(
     let dead = p.dead.is_some();
     a.death = if dead { smooth(a.death, 1.0, 6.0, dt) } else { 0.0 };
     let curl_target = if dead { 1.0 } else if !p.grounded { 0.25 } else { 1.0 - 0.55 * a.stride };
-    a.curl = smooth(a.curl, curl_target, 4.0, dt);
+
+    // Idle: after a while standing around, it plays with its tail.
+    let resting = p.grounded
+        && !dead
+        && !on_wall
+        && !p.swimming
+        && a.stride < 0.05
+        && a.slash.is_none()
+        && a.spin.is_none()
+        && a.bite.is_none()
+        && p.stun <= 0.0;
+    if resting {
+        a.idle_wait -= dt;
+        if a.play.is_none() && a.idle_wait <= 0.0 {
+            a.play_kind = (a.rand() * TAIL_PLAYS.len() as f32) as usize % TAIL_PLAYS.len();
+            a.play = Some(0.0);
+        }
+    } else {
+        a.play = None;
+        a.idle_wait = 2.5 + 3.0 * a.rand();
+    }
+    if let Some(t) = a.play {
+        let duration = TAIL_PLAYS[a.play_kind].0;
+        if t >= duration {
+            a.play = None;
+            a.idle_wait = 2.0 + 5.0 * a.rand();
+        } else {
+            a.play = Some(t + dt);
+        }
+    }
+    let (play_curl, play_sway) = match a.play {
+        Some(t) => tail_play(a.play_kind, t / TAIL_PLAYS[a.play_kind].0),
+        None => (curl_target, 0.0),
+    };
+    let rate = if a.play.is_some() { 12.0 } else { 4.0 };
+    a.curl = smooth(a.curl, play_curl, rate, dt);
+    a.sway = smooth(a.sway, play_sway, 12.0, dt);
 
     // Claw slash: holding the button keeps slashing, one right after another.
     // In the air, with the dragonfly's power and when it's ready: the spin.
@@ -949,12 +1055,12 @@ fn animate_tail(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     if let Some(mut mesh) = meshes.get_mut(&tail.mesh) {
-        *mesh = tail_mesh(player.curl);
+        *mesh = tail_mesh(player.curl, player.sway);
     }
     let shown = player.earned.len() > Slot::TailRings as usize;
     **rings = if shown { Visibility::Inherited } else { Visibility::Hidden };
     if shown && let Some(mut mesh) = meshes.get_mut(&tail.rings) {
-        *mesh = tail_rings(player.curl);
+        *mesh = tail_rings(player.curl, player.sway);
     }
 }
 

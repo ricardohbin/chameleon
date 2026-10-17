@@ -2855,6 +2855,7 @@ dependencies = [
  "bevy",
  "image",
  "miniz_oxide 0.8.9",
+ "web-sys",
  "webp",
  "winit",
 ]

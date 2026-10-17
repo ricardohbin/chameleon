@@ -110,6 +110,21 @@ so the first build is slow, but later builds only recompile the game and run fas
 Release builds embed `assets/world.baked` and the sound effects in the executable. Debug builds read the world
 from disk instead (see below).
 
+### Web (WebAssembly)
+
+```sh
+web/build.sh           # release-ish build → web/dist (index.html + ghore.js + ghore_bg.wasm)
+web/build.sh --dev     # faster to build, much bigger and slower to run
+python -m http.server -d web/dist    # then open http://localhost:8000
+```
+
+One-time setup: the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the same version as `wasm-bindgen` in
+`Cargo.lock` (`cargo install wasm-bindgen-cli --version <that>`); `wasm-opt` (binaryen) is used if found.
+The web build renders with WebGL2, keeps saves and settings in the browser's `localStorage` (`src/storage.rs`)
+instead of files next to the executable, and leaves out the native-only dev tools (F10/F12 exports, `cargo run -- bake`,
+hot reload, window icon, mouse confinement). The files must be served over HTTP (not opened from disk) and the game
+embeds all its assets, so `web/dist` can be hosted as is on any static host.
+
 ## The world is a sketch
 
 The whole map is one Aseprite file, [`assets/world.aseprite`](assets/world.aseprite) (4096×2048, RGBA). It holds
@@ -175,7 +190,7 @@ Baking without step 3 silences the warning but ships a world the code hasn't bee
 | `F12` with `F1` on | also writes `screenshots/shot-*.txt` with the panel text |
 | `F2` | teleport to the next boss's lair |
 | `F3` | invulnerability (any blow kills a boss) |
-| `F4` | flight (jump = impulse toward the mouse) |
+| `F4` | flight (jump = impulse toward the mouse); small wings flap while flying, and burrow (`E`) works in flight. After the ending's credits you get control back flying and invulnerable (the key hints are hidden during the ending show) |
 | `F10` | full-map WebP export (painted, or annotated with `F1`) |
 | `TOUR=1 cargo run` | visits the spawn, bosses, every slice and pin, then an overview → `screenshots/tour-*.webp`, then quits |
 | `START=x,y EXIT_AFTER=4 cargo run` | drops the chameleon at a world spot, logs where it ends up (+ `screenshots/exit.webp`), quits |

@@ -1,3 +1,4 @@
 /target
 /screenshots
 /trace-*.json
+/web/dist/

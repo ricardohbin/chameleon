@@ -2,7 +2,8 @@
 //!
 //! Two slots, small text files next to the executable with the same name and
 //! a `.save` (quick) or `.autosave` extension (`ghore.exe` → `ghore.save`; a
-//! `target/*/deps/` test build shares the files of the normal one). The auto
+//! `target/*/deps/` test build shares the files of the normal one; the web
+//! build keeps them in `localStorage`, see `storage.rs`). The auto
 //! save is written when a boss fight starts, when the boss dies and when its
 //! carcass is eaten (`AutoSave`). When the chameleon dies, the most recent of
 //! the two is loaded by itself. A save holds the progress that
@@ -12,8 +13,6 @@
 //! chameleon dies: living bosses asleep at home, mobs back, no blood. Loading
 //! is `Restart` (F8) + putting the saved state back a frame later.
 
-use std::{fs, path::PathBuf};
-
 use bevy::prelude::*;
 
 use crate::{
@@ -21,7 +20,7 @@ use crate::{
     camera::{Follow, MainCamera},
     chameleon::ColorEarned,
     hud::ScreenFlash,
-    level,
+    level, storage,
     player::Player,
 };
 
@@ -33,15 +32,15 @@ impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
         // Start from the newest save: the world is built around it, and `apply_load` finishes the job.
         // With the menu up the player chooses ("Load last checkpoint"); scripted runs still start from it.
-        let snapshot = newest_save().filter(|_| !crate::settings::menu_at_start()).and_then(|path| {
-            let loaded = fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| Snapshot::parse(&t));
+        let snapshot = newest_save().filter(|_| !crate::settings::menu_at_start()).and_then(|slot| {
+            let loaded = storage::read(slot).and_then(|t| Snapshot::parse(&t));
             match loaded {
                 Ok(s) => {
-                    info!("startup load: {}", path.display());
+                    info!("startup load: {}", storage::describe(slot));
                     Some(s)
                 }
                 Err(e) => {
-                    warn!("startup load: {}: {e}", path.display());
+                    warn!("startup load: {}: {e}", storage::describe(slot));
                     None
                 }
             }
@@ -104,19 +103,6 @@ impl Pending {
     pub fn at(&self) -> Option<Vec2> {
         self.snapshot.as_ref().map(|s| s.pos)
     }
-}
-
-/// Next to the executable, same name, `.save` or `.autosave`. Test builds in `deps/` (named
-/// `ghore-<hash>.exe`) use the file of the build in the folder above.
-pub(crate) fn save_path(ext: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    if dir.file_name().is_some_and(|n| n == "deps") {
-        let stem = exe.file_stem()?.to_str()?;
-        let name = stem.rsplit_once('-').map_or(stem, |(name, _hash)| name);
-        return Some(dir.parent()?.join(name).with_extension(ext));
-    }
-    Some(exe.with_extension(ext))
 }
 
 fn kind_name(kind: BossKind) -> String {
@@ -215,20 +201,14 @@ fn write_save(ext: &str, what: &str, player: (&Player, &Transform), defeated: &D
         warn!("{what}: not while dead");
         return false;
     }
-    let Some(path) = save_path(ext) else {
-        warn!("{what}: can't tell where the executable is");
-        return false;
-    };
     let snapshot = Snapshot::capture(p, tf, defeated, party);
-    // Write beside it and rename, so a crash can't leave half a save.
-    let tmp = path.with_extension(format!("{ext}.tmp"));
-    match fs::write(&tmp, snapshot.to_text()).and_then(|_| fs::rename(&tmp, &path)) {
+    match storage::write(ext, &snapshot.to_text()) {
         Ok(()) => {
-            info!("{what}: {}", path.display());
+            info!("{what}: {}", storage::describe(ext));
             true
         }
         Err(e) => {
-            warn!("{what}: {}: {e}", path.display());
+            warn!("{what}: {e}");
             false
         }
     }
@@ -252,14 +232,11 @@ fn auto_save(mut events: MessageReader<AutoSave>, pending: Res<Pending>, defeate
 }
 
 /// Reads a save and starts the rebuild (`apply_load` finishes it).
-fn start_load(path: &PathBuf, what: &str, pending: &mut Pending, load: &mut MessageWriter<LoadGame>) {
-    let snapshot = match fs::read_to_string(path) {
-        Ok(text) => Snapshot::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    };
+fn start_load(slot: &str, what: &str, pending: &mut Pending, load: &mut MessageWriter<LoadGame>) {
+    let snapshot = storage::read(slot).and_then(|text| Snapshot::parse(&text)).map_err(|e| format!("{}: {e}", storage::describe(slot)));
     match snapshot {
         Ok(snapshot) => {
-            info!("{what}: {}", path.display());
+            info!("{what}: {}", storage::describe(slot));
             load.write(LoadGame);
             *pending = Pending { snapshot: Some(snapshot), wait: 1 };
         }
@@ -272,11 +249,7 @@ fn request_load(keys: Res<ButtonInput<KeyCode>>, mut pending: ResMut<Pending>, m
     if !keys.just_pressed(KeyCode::F9) {
         return;
     }
-    let Some(path) = save_path("save") else {
-        warn!("quick load: can't tell where the executable is");
-        return;
-    };
-    start_load(&path, "quick load", &mut pending, &mut load);
+    start_load("save", "quick load", &mut pending, &mut load);
 }
 
 /// Menu: "Load last checkpoint".
@@ -285,19 +258,14 @@ fn request_load_last(mut asked: MessageReader<LoadLast>, mut pending: ResMut<Pen
         return;
     }
     match newest_save() {
-        Some(path) => start_load(&path, "load last checkpoint", &mut pending, &mut load),
+        Some(slot) => start_load(slot, "load last checkpoint", &mut pending, &mut load),
         None => warn!("load last checkpoint: no save"),
     }
 }
 
-/// The most recent save, quick or auto (by file time).
-fn newest_save() -> Option<PathBuf> {
-    ["save", "autosave"]
-        .into_iter()
-        .filter_map(save_path)
-        .filter_map(|path| Some((fs::metadata(&path).and_then(|m| m.modified()).ok()?, path)))
-        .max_by_key(|(time, _)| *time)
-        .map(|(_, path)| path)
+/// The most recent save, quick or auto.
+fn newest_save() -> Option<&'static str> {
+    storage::newest(&["save", "autosave"])
 }
 
 pub fn has_save() -> bool {
@@ -309,8 +277,8 @@ fn load_on_death(mut dying: MessageReader<LoadOnDeath>, mut pending: ResMut<Pend
     if dying.read().count() == 0 || pending.snapshot.is_some() {
         return;
     }
-    if let Some(path) = newest_save() {
-        start_load(&path, "load on death", &mut pending, &mut load);
+    if let Some(slot) = newest_save() {
+        start_load(slot, "load on death", &mut pending, &mut load);
     }
 }
 

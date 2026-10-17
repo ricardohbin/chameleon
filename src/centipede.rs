@@ -40,7 +40,7 @@ use std::{
 use bevy::{prelude::*, sprite_render::AlphaMode2d};
 
 use crate::{
-    boss::{self, Arena, Boss, BossHit, BossSpec, BossStuff},
+    boss::{self, Arena, Boss, BossHit, BossSpec, BossStuff, Celebration},
     camera::{ArenaView, ArenaWant, HitStop, Shake},
     chameleon::ChameleonAnim,
     feeding::Morsel,
@@ -293,6 +293,8 @@ enum State {
     Lurk(f32),
     /// Nobody to hunt: through the rock, home.
     Home,
+    /// The celebration: curled up at home, wiggling happily.
+    Party,
     Dead(f32),
 }
 
@@ -915,6 +917,7 @@ fn think(
     mut stop: ResMut<HitStop>,
     mut bleed: MessageWriter<Bleed>,
     assets: Res<Assets3>,
+    party: Res<Celebration>,
     player: Single<(&mut Player, &mut Transform, &ChameleonAnim), Without<Centipede>>,
     mut bosses: Query<(Entity, &mut Centipede, &mut Boss, &mut Transform, Option<&mut boss::Sense>)>,
     mut plates: Query<(Entity, &Plate, &mut Platform, &mut Transform), (Without<Centipede>, Without<Player>)>,
@@ -942,6 +945,13 @@ fn think(
             if let State::Rear { t: tr, .. } = s.state {
                 s.state = State::Rear { t: tr, w: WINDUP };
             }
+        }
+
+        // The celebration: it curls up at home and stays there.
+        if party.0 && !matches!(s.state, State::Party | State::Dead(_)) {
+            curl_up(s, &terrain, boss.home);
+        } else if !party.0 && matches!(s.state, State::Party) {
+            s.state = State::Home;
         }
 
         let mut depth_goal = 0.0;
@@ -1226,6 +1236,11 @@ fn think(
                 }
             }
 
+            State::Party => {
+                s.vel = Vec2::ZERO;
+                State::Party
+            }
+
             State::Dead(td) => State::Dead(td + dt),
         };
 
@@ -1357,7 +1372,7 @@ fn think(
             let anchored: Vec<bool> = (0..SEGS)
                 .map(|k| {
                     let q = base[k];
-                    terrain.solid_at(q) || (0..8).any(|i| terrain.solid_at(q + Vec2::from_angle(i as f32 * TAU / 8.0) * SEG_R * taper(k) * 1.5))
+                    !matches!(s.state, State::Party) && (terrain.solid_at(q) || (0..8).any(|i| terrain.solid_at(q + Vec2::from_angle(i as f32 * TAU / 8.0) * SEG_R * taper(k) * 1.5)))
                 })
                 .collect();
             // The tail going in: the plates still out behind the last one in the rock.
@@ -1504,7 +1519,7 @@ fn think(
         boss.staged = !(s.introduced || boss.awake);
 
         // Only the mouth and the tips of the tail hurt, each a tight little circle.
-        if alive && !matches!(s.state, State::Dead(_) | State::Dormant) {
+        if alive && !matches!(s.state, State::Dead(_) | State::Dormant | State::Party) {
             let touches = |c: Vec2, r: f32| c.distance(c.clamp(ppos - player::HALF, ppos + player::HALF)) < r;
             let mouth = s.pts[0] + s.heading * MOUTH_REACH;
             let mut hurt_from = (exposed(0) && touches(mouth, MOUTH_R)).then_some(mouth);
@@ -1536,6 +1551,58 @@ fn think(
             sense.path.clear();
         }
     }
+}
+
+/// The celebration: the whole body laid out in a flat spiral on the floor at `home`, the head on
+/// top of the coil facing right (the writhing in `think` does the wiggling).
+fn curl_up(s: &mut Centipede, terrain: &Terrain, home: Vec2) {
+    const R0: f32 = 90.0;
+    const B: f32 = 21.0;
+    const SQUASH: f32 = 0.6;
+    let at = |th: f32| Vec2::new((R0 + B * (th - FRAC_PI_2)) * th.cos(), (R0 + B * (th - FRAC_PI_2)) * th.sin() * SQUASH);
+    let mut dense = vec![at(FRAC_PI_2)];
+    let (mut th, mut len) = (FRAC_PI_2, 0.0);
+    while len < LENGTH + 6.0 * STEP && th < 40.0 {
+        th += 0.01;
+        let q = at(th);
+        len += q.distance(*dense.last().unwrap());
+        dense.push(q);
+    }
+    // Resampled every STEP along the spiral.
+    let mut pts = vec![dense[0]];
+    let mut since = 0.0;
+    for w in dense.windows(2) {
+        since += w[0].distance(w[1]);
+        if since >= STEP {
+            since = 0.0;
+            pts.push(w[1]);
+        }
+    }
+    while pts.len() < TRAIL {
+        pts.push(*pts.last().unwrap());
+    }
+    // On the floor under home.
+    let mut start = home;
+    for _ in 0..100 {
+        if !terrain.solid_at(start) {
+            break;
+        }
+        start.y += 8.0;
+    }
+    let floor = terrain.rest(start).y;
+    let low = pts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    let shift = Vec2::new(home.x, floor + SEG_R * 0.9 - low);
+    s.trail = pts.iter().map(|p| *p + shift).collect();
+    s.trail_depth = (0..TRAIL).map(|_| 0.0).collect();
+    s.head = s.trail[0];
+    s.heading = Vec2::X;
+    s.vel = Vec2::ZERO;
+    s.depth = 0.0;
+    s.in_rock = false;
+    s.hide_front = f32::NEG_INFINITY;
+    s.hide_rear = f32::INFINITY;
+    s.introduced = true;
+    s.state = State::Party;
 }
 
 /// Height of the top of plate `k` above its middle line.

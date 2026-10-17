@@ -2,14 +2,12 @@
 use bevy::{prelude::*, camera::{RenderTarget, visibility::RenderLayers},
     render::{render_resource::TextureFormat, view::{ColorGrading, screenshot::{Screenshot, ScreenshotCaptured}}},
     sprite::Anchor, tasks::{AsyncComputeTaskPool, Task, futures::check_ready}};
-use crate::{terrain::{Terrain, Area}, mobs::{self, Mob}, boss::BossKind,
+use crate::{camera::ExportCamera, terrain::{Terrain, Area}, mobs::{self, Mob}, boss::BossKind,
     terrain_art::{CanvasTask, TileTask}, debug_overlay::DebugInfo};
 
 const LABEL_LAYER: usize = 7;
 const EXPORT_WORLD: usize = 8;
 const EXPORT_COLOR: usize = 9;
-#[derive(Component)]
-pub(crate) struct ExportCamera;
 #[derive(Component)]
 struct ExportPart;
 #[derive(Component)]

@@ -8,8 +8,15 @@ description = "Ghore, The Chameleon"
 bevy = { version = "0.20", features = ["aac", "mp4"] } # m4a sound effects
 miniz_oxide = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 winit = "0.30"
 webp = { version = "0.3", default-features = false }
+
+# Web build (see `web/`): WebGL2 renderer, wasm-friendly Bevy internals, localStorage for saves.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20", features = ["web", "webgl2"] }
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
 
 # Small optimization for our own code in dev builds.
 [profile.dev]
@@ -31,3 +38,9 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# `cargo build --profile web-release --target wasm32-unknown-unknown`: smaller download, no LTO-at-all-costs.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"

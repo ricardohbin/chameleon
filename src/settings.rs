@@ -7,17 +7,14 @@
 //! Deep code (mob placement, bosses, damage) asks `difficulty()` instead of
 //! carrying the resource around.
 
-use std::{
-    fs,
-    sync::atomic::{AtomicU8, Ordering},
-};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use bevy::{
     audio::{GlobalVolume, Volume},
     prelude::*,
 };
 
-use crate::{save, terrain_art::Contrast};
+use crate::{storage, terrain_art::Contrast};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Difficulty {
@@ -186,14 +183,13 @@ fn parse(text: &str) -> (Settings, f32) {
 }
 
 fn load() -> (Settings, f32) {
-    save::save_path("settings")
-        .and_then(|path| fs::read_to_string(path).ok())
+    storage::read("settings")
+        .ok()
         .map_or((Settings::default(), Contrast::default().0), |t| parse(&t))
 }
 
 /// Writes the settings down (a failure is only a warning: they just won't stick).
 pub fn store(settings: &Settings, contrast: f32) {
-    let Some(path) = save::save_path("settings") else { return };
     let text = format!(
         "difficulty={}\nvolume={}\nscheme={}\nfullscreen={}\ncontrast={}\n",
         settings.difficulty.name(),
@@ -202,8 +198,8 @@ pub fn store(settings: &Settings, contrast: f32) {
         settings.fullscreen,
         contrast
     );
-    if let Err(e) = fs::write(&path, text) {
-        warn!("settings: {}: {e}", path.display());
+    if let Err(e) = storage::write("settings", &text) {
+        warn!("settings: {e}");
     }
 }
 

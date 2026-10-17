@@ -15,10 +15,11 @@
 
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use bevy::{
+    platform::time::Instant,
     prelude::*,
     sprite_render::AlphaMode2d,
     tasks::{futures::check_ready, AsyncComputeTaskPool, Task},

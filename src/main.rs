@@ -4,10 +4,12 @@ mod camera;
 mod chameleon;
 mod controls;
 mod debug_overlay;
+#[cfg(not(target_arch = "wasm32"))]
 mod dev;
 mod dragonfly;
 mod electric;
 mod webs;
+#[cfg(not(target_arch = "wasm32"))]
 mod map_export;
 mod features;
 mod fumes;
@@ -26,7 +28,7 @@ mod menu;
 mod mob_art;
 mod mobs;
 mod outline;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 mod perf;
 mod player;
 mod regrowth;
@@ -41,6 +43,7 @@ mod burrow;
 mod centipede;
 mod spider;
 mod spit;
+mod storage;
 mod terrain;
 mod terrain_art;
 mod terrain_props;
@@ -67,17 +70,23 @@ fn install_default_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>)
 
 fn main() {
     // `cargo run -- bake` / `cargo run -- diff`: world sketch tools, no game.
+    #[cfg(not(target_arch = "wasm32"))]
     if sketch_tool::run_cli() {
         return;
     }
     let mut app = App::new();
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
     app.add_plugins(perf::PerfPlugin);
     app
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Ghore, The Chameleon".into(),
                 resolution: (1280, 720).into(),
+                // Web: draw into the page's `<canvas id="bevy">`, sized by its parent, and keep the
+                // browser from scrolling/zooming on the game's keys.
+                canvas: Some("#bevy".into()),
+                fit_canvas_to_parent: true,
+                prevent_default_event_handling: true,
                 ..default()
             }),
             ..default()
@@ -96,7 +105,6 @@ fn main() {
             roach::RoachPlugin,
             mobs::MobPlugin,
             camera::CameraPlugin,
-            dev::DevPlugin,
             debug_overlay::DebugOverlayPlugin,
             hud::HudPlugin,
         ))
@@ -107,9 +115,10 @@ fn main() {
             capture_mouse.after(bevy::input::InputSystems).after(menu::input).before(level::restart),
         )
         .add_systems(PreStartup, install_default_font)
-        .add_systems(Update, toggle_fullscreen)
-        .add_systems(Update, set_window_icon)
-        .run();
+        .add_systems(Update, toggle_fullscreen);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(dev::DevPlugin).add_systems(Update, set_window_icon);
+    app.run();
 }
 
 /// Click inside the game to confine the cursor; Escape, Pause or losing focus releases it.
@@ -125,6 +134,10 @@ fn capture_mouse(
     mut was_idle: Local<bool>,
 ) {
     let (window, cursor) = &mut *window;
+    // The browser can't confine the pointer to the canvas (only lock it): leave it free.
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     // The menu and the pause screen both need the mouse free.
     let idle = menu.open || time.is_paused();
     let menu_was_open = std::mem::replace(&mut *was_idle, idle);
@@ -155,6 +168,7 @@ fn toggle_fullscreen(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The title-bar / taskbar icon: a close-up of the chameleon's eye (`assets/icon.png`, embedded).
 fn set_window_icon(world: &mut World, mut done: Local<bool>) {
     // Exclusive system: `WINIT_WINDOWS` is thread-local, so this must run on the main thread.
