@@ -19,6 +19,7 @@ use std::{
 };
 
 use bevy::{
+    camera::visibility::RenderLayers,
     platform::time::Instant,
     prelude::*,
     sprite_render::AlphaMode2d,
@@ -100,6 +101,10 @@ enum M {
     Silk,
 }
 
+/// `Props::mats` also holds, after the materials above, plain white: the opaque parts are baked into
+/// the vertices (their color, their depth) and drawn with it, one entity per prop.
+const WHITE: usize = COLORS.len();
+
 /// Opacity of the cobweb silk.
 const WEB_ALPHA: f32 = 0.15;
 /// Opacity of the silk of the corridor curtains.
@@ -178,6 +183,9 @@ struct Blue {
     /// The blue materials of the metal and plastic parts, one per kind and distance band
     /// (so the parts of a band fade in together and share one material).
     mats: std::collections::HashMap<(i32, u8), Handle<ColorMaterial>>,
+    /// The living copies of the vines and moss, one material per boss and distance band: their colors are in
+    /// the vertices, so the plants of a band share it (and fade in together).
+    vines: std::collections::HashMap<(u8, i32), Handle<ColorMaterial>>,
 }
 
 /// How far apart the bands of blue materials are (world units).
@@ -195,7 +203,7 @@ fn blue_of(m: M) -> Option<Color> {
 }
 
 pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, terrain: &Terrain) {
-    let mats = COLORS
+    let mut mats: Vec<Handle<ColorMaterial>> = COLORS
         .iter()
         .enumerate()
         .map(|(i, &[r, g, b])| {
@@ -210,6 +218,7 @@ pub fn spawn(commands: &mut Commands, materials: &mut Assets<ColorMaterial>, ter
             }
         })
         .collect();
+    mats.push(materials.add(Color::WHITE));
     let t = Arc::new(terrain.clone());
     let found = t.clone();
     let finding = AsyncComputeTaskPool::get().spawn(async move {
@@ -256,6 +265,7 @@ pub fn place_props(
             root_at: Vec2::ZERO,
             tilt: 0.0,
             depth: BACK,
+            pending: Vec::new(),
         };
         let total = job.sites.len() + job.facades.len();
         while job.next < total && start.elapsed() < BUDGET {
@@ -266,6 +276,7 @@ pub fn place_props(
                     p.facade(c, roof)
                 }
             }
+            p.flush();
             job.next += 1;
         }
         (job.mats, job.taken, job.statues, job.vined, job.hints, job.yellow, job.vents, job.curtains) = (p.mats, p.taken, p.statues, p.vined, p.hints, p.yellow, p.vents, p.curtains);
@@ -425,6 +436,161 @@ struct Props<'a, 'w, 's> {
     tilt: f32,
     /// Depth of the prop being drawn.
     depth: f32,
+    /// Parts waiting to be merged (`emit` / `flush`): one entity per prop, material, depth and
+    /// layer instead of one per part.
+    pending: Vec<Pending>,
+}
+
+/// Parts of one prop waiting to become a single mesh (`Props::emit`).
+struct Pending {
+    root: Entity,
+    mat: Handle<ColorMaterial>,
+    z: f32,
+    color_layer: bool,
+    vine: Option<crate::regrowth::Vine>,
+    meshes: Vec<Mesh>,
+}
+
+/// The root of a prop (its parts are its children): asleep, with no meshes, while far from the
+/// camera (`cull_props`).
+#[derive(Component)]
+pub struct PropRoot;
+
+/// On a root whose parts are asleep (it keeps its own visibility here: the engine checks the visibility
+/// of every entity that has one, every frame, so a sleeper has none).
+#[derive(Component)]
+pub struct Asleep(pub Visibility);
+
+/// A sleeping entity's mesh and material (if it had them) and visibility, taken off it so the engine
+/// skips it.
+#[derive(Component)]
+pub struct Dormant(Option<(Handle<Mesh>, Handle<ColorMaterial>)>, Visibility);
+
+/// What the engine looks at for visibility.
+type Seen = (Visibility, InheritedVisibility, ViewVisibility);
+
+/// Props and mobs farther than this (world units) from the edge of the view are put to sleep
+/// (no meshes for the engine to scan, no logic for the mobs), and woken `WAKE_MARGIN` closer:
+/// tens of thousands of mesh entities cost the engine every frame even when nothing of them is on
+/// screen. Dead mobs and gore that far away are simply gone.
+pub const SLEEP_MARGIN: f32 = 900.0;
+pub const WAKE_MARGIN: f32 = 500.0;
+/// How far ahead the camera's motion is looked at (seconds) so that what it is heading for
+/// is awake before it arrives (a fall, a dash).
+const LOOK_AHEAD: f32 = 1.0;
+/// Most roots that change state per pass (a teleport doesn't stall): sleeping is never urgent.
+const WAKES: usize = 600;
+const SLEEPS: usize = 250;
+
+/// Where the view is and where it is heading, for the culling (`track_view`).
+#[derive(Resource, Default)]
+pub struct ViewReach {
+    pub eye: Vec2,
+    /// Where the view will be in `LOOK_AHEAD` seconds if it keeps moving like this.
+    pub ahead: Vec2,
+    /// Half the diagonal of the view.
+    pub half: f32,
+    last: Option<Vec2>,
+    vel: Vec2,
+}
+
+impl ViewReach {
+    /// Squared distance from `p` to the path the view is taking.
+    pub fn dist2(&self, p: Vec2) -> f32 {
+        let d = self.ahead - self.eye;
+        let t = if d.length_squared() > 1.0 { ((p - self.eye).dot(d) / d.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        p.distance_squared(self.eye + d * t)
+    }
+
+    /// Is `p` within `margin` of the edge of the view (or of where it is heading)?
+    pub fn near(&self, p: Vec2, margin: f32) -> bool {
+        self.dist2(p) <= (self.half + margin).powi(2)
+    }
+}
+
+pub fn track_view(
+    time: Res<Time<Real>>,
+    camera: Single<(&Transform, &Projection), With<crate::camera::MainCamera>>,
+    mut view: ResMut<ViewReach>,
+) {
+    let (tf, projection) = *camera;
+    let Projection::Orthographic(o) = projection else { return };
+    let eye = tf.translation.truncate();
+    let dt = time.delta_secs().max(1e-3);
+    if let Some(last) = view.last {
+        // Smoothed, and a camera jump (respawn, teleport) doesn't count as speed.
+        let v = ((eye - last) / dt).clamp_length_max(3000.0);
+        view.vel = view.vel.lerp(if (eye - last).length() > 400.0 { Vec2::ZERO } else { v }, 0.15);
+    }
+    view.last = Some(eye);
+    view.eye = eye;
+    view.ahead = eye + (view.vel * LOOK_AHEAD).clamp_length_max(1500.0);
+    view.half = o.area.half_size().length();
+}
+
+/// Puts the roots `R` (props, mobs) far from the view to sleep, and wakes them when they near.
+pub fn cull<R: Component>(
+    mut commands: Commands,
+    view: Res<ViewReach>,
+    roots: Query<(Entity, &GlobalTransform, Option<&Asleep>, Option<&Visibility>), With<R>>,
+    fresh: Query<Entity, Added<R>>,
+    children: Query<&Children>,
+    sleeping: Query<&Dormant>,
+    awake: Query<(Option<(&Mesh2d, &MeshMaterial2d<ColorMaterial>)>, &Visibility)>,
+    mut frame: Local<u32>,
+) {
+    *frame += 1;
+    if *frame % 2 != 0 || view.half == 0.0 {
+        return;
+    }
+    let (mut woke, mut slept) = (0, 0);
+    for (root, rtf, asleep, vis) in &roots {
+        // Just spawned: its position and its own setup (mob outlines) aren't done yet.
+        if fresh.contains(root) {
+            continue;
+        }
+        let p = rtf.translation().truncate();
+        let wake = view.near(p, WAKE_MARGIN);
+        if asleep.is_some() == !wake {
+            continue;
+        }
+        if asleep.is_none() && view.near(p, SLEEP_MARGIN) {
+            continue;
+        }
+        if asleep.is_some() {
+            if woke >= WAKES {
+                continue;
+            }
+            woke += 1;
+        } else {
+            if slept >= SLEEPS {
+                continue;
+            }
+            slept += 1;
+        }
+        for part in children.iter_descendants(root) {
+            if asleep.is_some() {
+                if let Ok(Dormant(mesh, vis)) = sleeping.get(part) {
+                    let mut e = commands.entity(part);
+                    e.insert(vis.clone()).remove::<Dormant>();
+                    if let Some((mesh, mat)) = mesh {
+                        e.insert((Mesh2d(mesh.clone()), MeshMaterial2d(mat.clone())));
+                    }
+                }
+            } else if let Ok((mesh, vis)) = awake.get(part) {
+                let mut e = commands.entity(part);
+                e.insert(Dormant(mesh.map(|(m, c)| (m.0.clone(), c.0.clone())), vis.clone())).remove::<(Mesh2d, MeshMaterial2d<ColorMaterial>, Seen)>();
+            }
+        }
+        match asleep {
+            Some(Asleep(vis)) => {
+                commands.entity(root).insert(vis.clone()).remove::<Asleep>();
+            }
+            None => {
+                commands.entity(root).insert(Asleep(vis.cloned().unwrap_or_default())).remove::<Seen>();
+            }
+        }
+    }
 }
 
 /// Ground props: (what, half width, height) in world units.
@@ -823,7 +989,7 @@ impl Props<'_, '_, '_> {
         let tf = Transform::from_translation(at.extend(self.depth))
             .with_rotation(Quat::from_rotation_z(angle + self.tilt))
             .with_scale(Vec3::new(flip * S, S, 1.0));
-        self.commands.spawn((tf, Visibility::default(), TerrainPart, terrain_art::WorldArt)).id()
+        self.commands.spawn((tf, Visibility::default(), TerrainPart, terrain_art::WorldArt, PropRoot)).id()
     }
 
     fn part(&mut self, e: Entity, mesh: Mesh, m: M, z: f32) {
@@ -833,7 +999,6 @@ impl Props<'_, '_, '_> {
     /// A part that turns `blue` (if it does) when the Weaver's color is back: the gray part
     /// in the world, and its blue copy on the color layer, hidden until then.
     fn part_blue(&mut self, e: Entity, mesh: Mesh, m: M, z: f32, blue: Option<Color>) {
-        let mesh = self.meshes.add(mesh);
         if let Some(color) = blue {
             let dist = (self.root_at.distance(self.t.spider.unwrap_or(self.root_at)) / BLUE_BAND).round() * BLUE_BAND;
             let colors = &mut *self.colors;
@@ -843,17 +1008,65 @@ impl Props<'_, '_, '_> {
                 .entry(((dist / BLUE_BAND) as i32, m as u8))
                 .or_insert_with(|| colors.add(ColorMaterial { color: color.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() }))
                 .clone();
-            self.commands.spawn((
-                Mesh2d(mesh.clone()),
-                MeshMaterial2d(mat.clone()),
-                Transform::from_xyz(0.0, 0.0, z),
-                crate::camera::color_layer(),
-                Visibility::Hidden,
-                crate::regrowth::Vine { boss: crate::boss::BossKind::Spider, dist, stem: mat.clone(), leaf: mat, shown: 0.0, base: [color; 2], lit: 0.0 },
-                ChildOf(e),
-            ));
+            let vine = crate::regrowth::Vine { boss: crate::boss::BossKind::Spider, dist, stem: mat.clone(), leaf: mat.clone(), shown: 0.0, base: [color; 2], lit: 0.0 };
+            self.emit(e, mesh.clone(), mat, z, Some(vine));
         }
-        self.commands.spawn((Mesh2d(mesh), MeshMaterial2d(self.mats[m as usize].clone()), Transform::from_xyz(0.0, 0.0, z), ChildOf(e)));
+        let mat = self.mats[m as usize].clone();
+        self.emit(e, mesh, mat, z, None);
+    }
+
+    /// Draws `mesh` as a part of the prop `e`. The parts of a prop with the same material, depth and
+    /// layer become one mesh in `flush`. `vine`: a part of the color layer, hidden until its turn.
+    fn emit(&mut self, e: Entity, mesh: Mesh, mat: Handle<ColorMaterial>, z: f32, vine: Option<crate::regrowth::Vine>) {
+        // An opaque gray part: its color and depth go into the vertices, and it shares the white material.
+        let (mesh, mat, z) = match self.mats.iter().position(|h| h.id() == mat.id()) {
+            Some(i) if vine.is_none() && i != M::Web as usize && i != M::Silk as usize && i != WHITE => {
+                let [r, g, b] = COLORS[i];
+                (bake(&mesh, Color::srgb(r, g, b), z), self.mats[WHITE].clone(), 0.0)
+            }
+            _ => (mesh, mat, z),
+        };
+        let color_layer = vine.is_some();
+        match self.pending.iter_mut().find(|g| g.root == e && g.mat.id() == mat.id() && g.z == z && g.color_layer == color_layer) {
+            Some(g) => g.meshes.push(mesh),
+            None => self.pending.push(Pending { root: e, mat, z, color_layer, vine, meshes: vec![mesh] }),
+        }
+    }
+
+    /// The material of the living plants of `boss` about `dist` from its home, and that distance rounded to its
+    /// band: one shared white material per band (the colors are baked in the meshes).
+    fn vine_mat(&mut self, boss: crate::boss::BossKind, dist: f32) -> (Handle<ColorMaterial>, f32) {
+        let band = (dist / BLUE_BAND).round();
+        let colors = &mut *self.colors;
+        let mat = self
+            .blue
+            .vines
+            .entry((boss as u8, band as i32))
+            .or_insert_with(|| colors.add(ColorMaterial { color: Color::WHITE.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() }))
+            .clone();
+        (mat, band * BLUE_BAND)
+    }
+
+    /// Like `emit`, for the color-layer parts that aren't individually hidden (their root is).
+    fn emit_color(&mut self, e: Entity, mesh: Mesh, mat: Handle<ColorMaterial>, z: f32) {
+        match self.pending.iter_mut().find(|g| g.root == e && g.mat.id() == mat.id() && g.z == z && g.color_layer && g.vine.is_none()) {
+            Some(g) => g.meshes.push(mesh),
+            None => self.pending.push(Pending { root: e, mat, z, color_layer: true, vine: None, meshes: vec![mesh] }),
+        }
+    }
+
+    /// Spawns what `emit` collected.
+    fn flush(&mut self) {
+        for g in std::mem::take(&mut self.pending) {
+            let mesh = if g.meshes.len() == 1 { g.meshes.into_iter().next().unwrap() } else { concat(&g.meshes) };
+            let mut part = self.commands.spawn((Mesh2d(self.meshes.add(mesh)), MeshMaterial2d(g.mat), Transform::from_xyz(0.0, 0.0, g.z), ChildOf(g.root)));
+            if g.color_layer {
+                part.insert(crate::camera::color_layer());
+            }
+            if let Some(vine) = g.vine {
+                part.insert((Visibility::Hidden, vine));
+            }
+        }
     }
 
     /// A smooth bar through `pts`, lit on its left side.
@@ -1499,5 +1712,302 @@ impl Props<'_, '_, '_> {
         let barbs: Vec<[Vec2; 3]> = pts.iter().step_by(3).map(|p| [*p + Vec2::new(-1.5, -1.0), *p + Vec2::new(1.5, 1.0), *p + Vec2::new(0.4, -0.4)]).collect();
         self.part(e, stroke(&pts, |_| 0.9, 1.0, 1.0, |_| 1.0), M::Steel, 0.0);
         self.part(e, triangles(&barbs), M::Steel, 0.0);
+    }
+}
+
+#[cfg(feature = "diag")]
+/// Every few seconds, one line in the log (the browser console on the web) with how many things
+/// the engine has to look at each frame: what makes the web build slow is mostly this count.
+pub fn log_counts(
+    time: Res<Time<Real>>,
+    mut last: Local<f32>,
+    all: &bevy::ecs::entity::Entities,
+    meshes: Query<(), With<Mesh2d>>,
+    hidden_meshes: Query<&Visibility, With<Mesh2d>>,
+    sprites: Query<(), With<Sprite>>,
+    roots: Query<Has<Asleep>, With<PropRoot>>,
+    dormant: Query<(), With<Dormant>>,
+    mobs: Query<(), With<crate::mobs::Mob>>,
+) {
+    if time.elapsed_secs() - *last < 5.0 {
+        return;
+    }
+    *last = time.elapsed_secs();
+    let hidden = hidden_meshes.iter().filter(|v| matches!(**v, Visibility::Hidden)).count();
+    let asleep = roots.iter().filter(|a| *a).count();
+    info!(
+        "counts: entities {} | Mesh2d {} (hidden {}) | sprites {} | prop roots {} (asleep {}), sleeping parts {} | mobs {}",
+        all.len(),
+        meshes.iter().count(),
+        hidden,
+        sprites.iter().count(),
+        roots.iter().count(),
+        asleep,
+        dormant.iter().count(),
+        mobs.iter().count(),
+    );
+}
+
+#[cfg(feature = "diag")]
+/// Every few seconds: how many materials and meshes were modified per frame (each costs the renderer a new
+/// buffer and bind group), and what the busiest ones belong to.
+pub fn log_churn(world: &mut World, mut state: Local<Churn>) {
+    use bevy::ecs::message::MessageCursor;
+    let now = world.resource::<Time<Real>>().elapsed_secs();
+    let msgs = world.resource::<Messages<AssetEvent<ColorMaterial>>>();
+    let cursor = state.cursor.get_or_insert_with(MessageCursor::default);
+    let mut seen = Vec::new();
+    for e in cursor.read(msgs) {
+        if let AssetEvent::Modified { id } = e {
+            seen.push(*id);
+        }
+    }
+    let mesh_msgs = world.resource::<Messages<AssetEvent<Mesh>>>();
+    let mesh_cursor = state.mesh_cursor.get_or_insert_with(MessageCursor::default);
+    let meshes = mesh_cursor.read(mesh_msgs).filter(|e| matches!(e, AssetEvent::Modified { .. })).count();
+    state.frames += 1;
+    state.mesh_mods += meshes;
+    state.mat_mods += seen.len();
+    for id in seen {
+        *state.by_id.entry(id).or_default() += 1;
+    }
+    if now - state.last < 5.0 {
+        return;
+    }
+    state.last = now;
+    let frames = state.frames.max(1) as f32;
+    let mut top: Vec<_> = state.by_id.iter().map(|(id, n)| (*id, *n)).collect();
+    top.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let distinct = top.len();
+    let wanted: Vec<_> = top.iter().take(6).copied().collect();
+    let mut who = Vec::new();
+    let mut q = world.query::<(Entity, &MeshMaterial2d<ColorMaterial>)>();
+    let owners: Vec<(Entity, AssetId<ColorMaterial>)> = q.iter(world).map(|(e, m)| (e, m.0.id())).collect();
+    for (id, n) in wanted {
+        let Some((e, _)) = owners.iter().find(|(_, m)| *m == id) else {
+            who.push(format!("{n}x (no owner)"));
+            continue;
+        };
+        let names = |e: Entity, world: &World| world.inspect_entity(e).map(|it| it.map(|(_, c)| c.name().to_string().rsplit("::").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default();
+        let parent = world.get::<ChildOf>(*e).map(|p| names(p.parent(), world)).unwrap_or_default();
+        who.push(format!("{n}x [{}] <- [{}]", names(*e, world), parent));
+    }
+    info!(
+        "churn/frame: materials {:.1} ({} distinct) meshes {:.1} | busiest: {}",
+        state.mat_mods as f32 / frames,
+        distinct,
+        state.mesh_mods as f32 / frames,
+        who.join(" ; ")
+    );
+    state.frames = 0;
+    state.mat_mods = 0;
+    state.mesh_mods = 0;
+    state.by_id.clear();
+}
+
+#[cfg(feature = "diag")]
+#[derive(Default)]
+pub struct Churn {
+    cursor: Option<bevy::ecs::message::MessageCursor<AssetEvent<ColorMaterial>>>,
+    mesh_cursor: Option<bevy::ecs::message::MessageCursor<AssetEvent<Mesh>>>,
+    last: f32,
+    frames: u32,
+    mat_mods: usize,
+    mesh_mods: usize,
+    by_id: std::collections::HashMap<AssetId<ColorMaterial>, u32>,
+}
+
+/// Once the props are placed, the plain ones (no behavior of their own) are baked into one mesh per chunk of
+/// the world, material and depth layer: tens of thousands of little meshes (one buffer each on the GPU, one
+/// entity each) become a few hundred. The world position and depth go into the vertices; what the engine
+/// culls is then a whole chunk (frustum culling by its bounds), and `cull` only has the odd special prop left.
+const CHUNK: f32 = 1536.0;
+/// How long a frame may be spent baking.
+const BAKE_BUDGET: Duration = Duration::from_millis(4);
+
+#[derive(Default)]
+pub struct BakeState {
+    started: bool,
+    total: usize,
+    chunks: Vec<(IVec2, Vec<Entity>)>,
+}
+
+pub fn bake_chunks(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    materials: Res<Assets<ColorMaterial>>,
+    jobs: Query<(), With<PropJob>>,
+    roots: Query<(Entity, &Transform, Option<&crate::regrowth::Vine>, Option<&Children>), (With<PropRoot>, Without<crate::webs::Web>)>,
+    parts: Query<(Option<(&Mesh2d, &MeshMaterial2d<ColorMaterial>)>, Option<&Dormant>, &Transform, Option<&crate::regrowth::Vine>, Option<&RenderLayers>, Has<Children>), Without<PropRoot>>,
+    mut state: Local<BakeState>,
+) {
+    if !jobs.is_empty() {
+        *state = BakeState::default();
+        return;
+    }
+    if !state.started {
+        // Placement just finished: sort the plain roots into chunks.
+        state.started = true;
+        let mut by_chunk: std::collections::HashMap<IVec2, Vec<Entity>> = Default::default();
+        for (e, tf, _, children) in &roots {
+            let Some(children) = children else { continue };
+            let plain = children.iter().all(|c| {
+                parts.get(c).is_ok_and(|(live, dormant, _, _, _, nested)| !nested && (live.is_some() || dormant.is_some_and(|d| d.mesh_and_material().is_some())))
+            });
+            if plain {
+                let c = (tf.translation.truncate() / CHUNK).floor().as_ivec2();
+                by_chunk.entry(c).or_default().push(e);
+            }
+        }
+        state.chunks = by_chunk.into_iter().collect();
+        state.chunks.sort_by_key(|(c, _)| (c.x, c.y));
+        state.total = state.chunks.len();
+        info!("baking props: {} chunks", state.chunks.len());
+        return;
+    }
+    let start = Instant::now();
+    while let Some((_, members)) = state.chunks.pop() {
+        // (material, color layer, vine, depth) -> the pieces, in world coordinates.
+        type Key = (AssetId<ColorMaterial>, bool, Option<(u8, i32)>, i32);
+        let mut groups: std::collections::HashMap<Key, (Handle<ColorMaterial>, Option<crate::regrowth::Vine>, f32, Vec<Mesh>)> = Default::default();
+        for root in &members {
+            let Ok((_, rtf, root_vine, children)) = roots.get(*root) else { continue };
+            let rm = rtf.to_matrix();
+            for part in children.into_iter().flat_map(|c| c.iter()) {
+                let Ok((live, dormant, ptf, part_vine, layers, _)) = parts.get(part) else { continue };
+                let (mesh, mat) = match (live, dormant.and_then(|d| d.mesh_and_material())) {
+                    (Some((m, c)), _) => (m.0.clone(), c.0.clone()),
+                    (None, Some((m, c))) => (m.clone(), c.clone()),
+                    _ => continue,
+                };
+                let Some(src) = meshes.get(&mesh) else { continue };
+                let world = rm * ptf.to_matrix();
+                let blend = materials.get(&mat).is_none_or(|m| m.alpha_mode == AlphaMode2d::Blend);
+                // Opaque parts are sorted by the depth buffer: their depth goes into the vertices. Translucent ones
+                // are sorted by their entity's depth: they keep it (to a tenth: fewer entities).
+                let z_world = world.transform_point3(Vec3::ZERO).z;
+                let z_key = if blend { (z_world * 10.0).round() as i32 } else { 0 };
+                let vine = part_vine.or(root_vine);
+                let vine_key = vine.map(|v| (v.boss as u8, v.dist.round() as i32));
+                let key = (mat.id(), layers.is_some(), vine_key, z_key);
+                let moved = transformed(src, &world, if blend { z_world - z_key as f32 / 10.0 } else { 0.0 }, !blend);
+                let entry = groups.entry(key).or_insert_with(|| {
+                    let vine = vine.map(|v| crate::regrowth::Vine { boss: v.boss, dist: v.dist, stem: v.stem.clone(), leaf: v.leaf.clone(), shown: 0.0, base: v.base, lit: 0.0 });
+                    (mat.clone(), vine, z_key as f32 / 10.0, Vec::new())
+                });
+                entry.3.push(moved);
+            }
+        }
+        for ((_, color_layer, _, _), (mat, vine, z, pieces)) in groups {
+            let mesh = meshes.add(concat(&pieces));
+            let base = (Transform::from_xyz(0.0, 0.0, z), TerrainPart, terrain_art::WorldArt);
+            match vine {
+                // The living copy of a plant: nothing of it exists for the engine until its color's wave
+                // comes (`wake_vines`): thousands of hidden meshes cost every frame.
+                Some(vine) => {
+                    commands.spawn((base, vine, Dormant(Some((mesh, mat)), Visibility::Hidden)));
+                }
+                None => {
+                    let mut e = commands.spawn((base, Mesh2d(mesh), MeshMaterial2d(mat)));
+                    if color_layer {
+                        e.insert(crate::camera::color_layer());
+                    }
+                }
+            }
+        }
+        for root in members {
+            commands.entity(root).despawn();
+        }
+        if start.elapsed() > BAKE_BUDGET {
+            break;
+        }
+    }
+    // The world is built: the page can take its loading screen away.
+    if state.total > 0 && state.chunks.is_empty() {
+        signal_ready();
+    }
+}
+
+/// Tells the web page (`web/index.html`) that the game is ready: it hides its loading screen on this event.
+fn signal_ready() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SENT: AtomicBool = AtomicBool::new(false);
+        if SENT.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Some(window) = web_sys::window() {
+            if let Ok(event) = web_sys::Event::new("ghore-ready") {
+                let _ = window.dispatch_event(&event);
+            }
+        }
+    }
+}
+
+impl Dormant {
+    fn mesh_and_material(&self) -> Option<(&Handle<Mesh>, &Handle<ColorMaterial>)> {
+        self.0.as_ref().map(|(m, c)| (m, c))
+    }
+}
+
+/// `mesh` (a mesh of the shapes toolkit) moved by `m`, with the depth `z` added to every vertex if `keep_z`
+/// (the depth of the world) or dropped (the part's entity carries it).
+fn transformed(mesh: &Mesh, m: &Mat4, z: f32, keep_z: bool) -> Mesh {
+    let mut out = mesh.clone();
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = out.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+        for v in p.iter_mut() {
+            let w = m.transform_point3(Vec3::from(*v));
+            *v = [w.x, w.y, if keep_z { w.z } else { z }];
+        }
+    }
+    out
+}
+
+/// The baked living plants wake (get their mesh back) when the wave of their color reaches them.
+pub fn wake_vines(
+    mut commands: Commands,
+    grow: Res<crate::regrowth::Regrowth>,
+    sleeping: Query<(Entity, &crate::regrowth::Vine, &Dormant), Without<Mesh2d>>,
+) {
+    for (e, vine, Dormant(parts, vis)) in &sleeping {
+        if grow.reveal(vine.boss, vine.dist) > 0.0 {
+            let mut e = commands.entity(e);
+            e.insert((vis.clone(), crate::camera::color_layer())).remove::<Dormant>();
+            if let Some((mesh, mat)) = parts {
+                e.insert((Mesh2d(mesh.clone()), MeshMaterial2d(mat.clone())));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "diag")]
+/// Once, 30 s in: what the entities of the world are (the biggest archetypes, by size and a few well-known parts).
+pub fn log_archetypes(world: &mut World, mut done: Local<bool>) {
+    if *done || world.resource::<Time<Real>>().elapsed_secs() < 30.0 {
+        return;
+    }
+    *done = true;
+    let ids = [
+        ("Mesh2d", world.register_component::<Mesh2d>()),
+        ("Visibility", world.register_component::<Visibility>()),
+        ("ChildOf", world.register_component::<ChildOf>()),
+        ("Children", world.register_component::<Children>()),
+        ("Sprite", world.register_component::<Sprite>()),
+        ("Transform", world.register_component::<Transform>()),
+        ("Text", world.register_component::<Text2d>()),
+    ];
+    let mut rows = Vec::new();
+    for a in world.archetypes().iter() {
+        if a.len() < 300 {
+            continue;
+        }
+        let flags: Vec<&str> = ids.iter().filter(|(_, id)| a.contains(*id)).map(|(n, _)| *n).collect();
+        let sizes: Vec<usize> = a.components().iter().filter(|id| !ids.iter().any(|(_, k)| k == *id)).filter_map(|id| world.components().get_info(*id)).map(|i| i.layout().size()).filter(|s| *s > 0).collect();
+        rows.push((a.len(), flags.join("+"), sizes));
+    }
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+    for (n, flags, sizes) in rows.iter().take(14) {
+        info!("archetype: {n} entities [{flags}] other component sizes {sizes:?}");
     }
 }

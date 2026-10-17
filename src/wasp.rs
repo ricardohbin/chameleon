@@ -634,7 +634,9 @@ fn think(
 
         // Plan ahead where to be (a perch to spit from, the top of a dive
         // lane, or home) and the way there; never mid-dive.
-        if !matches!(w.state, State::Dead { .. } | State::Dive(_)) {
+        // Asleep (not woken yet) and at home it has nowhere to go: no planning (a search of the whole map).
+        let resting = !boss.awake && pos.distance(boss.home) < 80.0;
+        if !resting && !matches!(w.state, State::Dead { .. } | State::Dive(_)) {
             let want = match () {
                 _ if !aggro => Want::Home,
                 _ if w.spits >= spits_per_dive => Want::Dive,

@@ -472,7 +472,7 @@ fn ride(m: &mut Mob, at: Vec2, w: &mut World) -> Vec2 {
 }
 
 /// Leeches latched on slow the chameleon down (after the cobwebs had their say).
-fn leech_drag(mobs: Query<&Mob>, mut player: Single<&mut Player>) {
+fn leech_drag(mobs: Query<&Mob, Without<crate::terrain_props::Asleep>>, mut player: Single<&mut Player>) {
     let n = mobs.iter().filter(|m| m.sewer.latched.is_some() && !matches!(m.state, State::Dead { .. })).count();
     if n > 0 {
         player.webbed = player.webbed.max((n as f32 * LATCH_DRAG).min(LATCH_DRAG_MAX));
@@ -678,7 +678,7 @@ struct Puff {
 }
 
 /// Bloats belch their clouds; the ones that just died burst (poisonous only if they were swollen).
-fn belch(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>, cloud: Res<Cloud>, mut mobs: Query<(&mut Mob, &Transform)>) {
+fn belch(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>, cloud: Res<Cloud>, mut mobs: Query<(&mut Mob, &Transform), Without<crate::terrain_props::Asleep>>) {
     for (mut m, tf) in &mut mobs {
         if m.kind != MobKind::PlagueBloat {
             continue;

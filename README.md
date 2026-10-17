@@ -115,17 +115,20 @@ from disk instead (see below).
 ### Web (WebAssembly)
 
 ```sh
-web/build.sh           # release-ish build → web/dist (index.html + ghore.js + ghore_bg.wasm)
+web/build.sh           # optimized build → web/dist (index.html + ghore.js + ghore_bg.wasm.br, Brotli-compressed) and web/ghore-web.zip (for itch.io); 20–25 minutes
+web/build.sh --small   # smallest download (opt-level s), a bit slower to run
 web/build.sh --dev     # faster to build, much bigger and slower to run
-python -m http.server -d web/dist    # then open http://localhost:8000
+python web/serve.py                    # serves web/dist like itch.io does (.br with Content-Encoding), then open http://localhost:8000
 ```
 
 One-time setup: the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the same version as `wasm-bindgen` in
-`Cargo.lock` (`cargo install wasm-bindgen-cli --version <that>`); `wasm-opt` (binaryen) is used if found.
+`Cargo.lock` (`cargo install wasm-bindgen-cli --version <that>`); `wasm-opt` (binaryen) and `brotli` are used if found.
 The web build renders with WebGL2, keeps saves and settings in the browser's `localStorage` (`src/storage.rs`)
 instead of files next to the executable, and leaves out the native-only dev tools (F10/F12 exports, `cargo run -- bake`,
 hot reload, window icon, mouse confinement). The files must be served over HTTP (not opened from disk) and the game
-embeds all its assets, so `web/dist` can be hosted as is on any static host.
+embeds all its assets, so `web/dist` can be hosted as is on any static host that serves `.br` files with `Content-Encoding: br`
+(itch.io does: upload `web/ghore-web.zip`; `web/serve.py` does for local tests). The page shows a loading screen with the download
+progress and tells compiling and building the world apart; the game sends a `ghore-ready` event to the page when the world is built.
 
 ## Power pills
 

@@ -2,3 +2,4 @@
 /screenshots
 /trace-*.json
 /web/dist/
+/web/*.zip

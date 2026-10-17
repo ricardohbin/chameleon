@@ -413,16 +413,24 @@ fn spawn_backdrop(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials:
     // Smoke plumes rising from fires on the near ground.
     let factor = Vec2::new(0.5, 0.8);
     let (mut x, extent) = span(factor.x);
+    // Every material is rewritten every frame it changes, and each rewrite costs the GPU a new uniform buffer
+    // and bind group: the plumes share them. Their fires flicker in 4 ways, their puffs live 3 lives and are
+    // spread evenly over each (same life and number = same fade), so a few dozen materials animate them all.
+    let mut fire_mats: std::collections::HashMap<(usize, usize), Handle<ColorMaterial>> = Default::default();
+    let mut smoke_mats: std::collections::HashMap<(usize, usize), Handle<ColorMaterial>> = Default::default();
     while x < extent {
         let source = horizon.anchor(x, factor, -215.0 + rng.range(-30.0, 40.0));
-        for (r, a) in [(26.0, 0.25), (12.0, 0.7)] {
-            let mat = blend(materials, FIRE.with_alpha(a));
+        for (k, (r, a)) in [(26.0, 0.25), (12.0, 0.7)].into_iter().enumerate() {
+            let seed = rng.range(0.0, 100.0);
+            let flicker = ((seed / 25.0) as usize).min(3);
+            let mat = fire_mats.entry((k, flicker)).or_insert_with(|| blend(materials, FIRE.with_alpha(a))).clone();
             let id = layer(commands, meshes, fill(&ellipse_pts(r * 1.6, r, 20), |_| 1.0), &mat, source, -55.0, factor);
-            commands.entity(id).insert(Fire { seed: rng.range(0.0, 100.0), base_alpha: a });
+            commands.entity(id).insert(Fire { seed: flicker as f32 * 25.0 + 12.0, base_alpha: a });
         }
-        let life = rng.range(6.0, 9.0);
+        let life_class = (((rng.range(6.0, 9.0) - 6.0) / 1.0) as usize).min(2);
+        let life = 6.5 + life_class as f32;
         for i in 0..14 {
-            let mat = blend(materials, SMOKE.with_alpha(0.0));
+            let mat = smoke_mats.entry((life_class, i)).or_insert_with(|| blend(materials, SMOKE.with_alpha(0.0))).clone();
             let puff = fill(&smooth_closed(&rock_pts(&mut rng, 1.0, 7), 5), |p| 0.8 + 0.4 * p.y);
             let id = layer(commands, meshes, puff, &mat, source, -54.0 + i as f32 * 0.01, factor);
             commands.entity(id).insert(Puff { source, age: life * i as f32 / 14.0, life, seed: rng.range(0.0, 100.0) });
@@ -686,9 +694,7 @@ fn animate_smoke(
         layer.origin = puff.source + rise;
         tf.scale = Vec3::splat(18.0 + k * 110.0);
         tf.rotation = Quat::from_rotation_z(puff.seed + k * 1.5);
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.color = SMOKE.with_alpha((PI * k).sin().powf(0.7) * 0.55);
-        }
+        crate::shapes::set_color(&mut materials, &mat.0, SMOKE.with_alpha((PI * k).sin().powf(0.7) * 0.55));
     }
 }
 
@@ -705,9 +711,7 @@ fn animate_fire(
         vis.set_if_neq(shown);
         let flicker = 0.75 + 0.25 * ((t * 9.0 + fire.seed).sin() * (t * 13.7 + fire.seed * 2.0).sin()).abs();
         tf.scale = Vec3::new(1.0, flicker, 1.0);
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.color = FIRE.with_alpha(fire.base_alpha * flicker);
-        }
+        crate::shapes::set_color(&mut materials, &mat.0, FIRE.with_alpha(fire.base_alpha * flicker));
     }
 }
 
@@ -758,9 +762,7 @@ fn lightning(
     let intensity = (-s * 14.0).exp().max(if s > 0.12 { 0.7 * (-(s - 0.12) * 12.0).exp() } else { 0.0 });
     let intensity = intensity * *open;
     glare.0 = intensity;
-    if let Some(mut m) = materials.get_mut(&flash.0) {
-        m.color = Color::srgba(0.9, 0.9, 1.0, intensity * 0.35);
-    }
+    crate::shapes::set_color(&mut materials, &flash.0, Color::srgba(0.9, 0.9, 1.0, intensity * 0.35));
     *bolt_vis = if intensity > 0.3 { Visibility::Inherited } else { Visibility::Hidden };
 }
 
@@ -835,9 +837,7 @@ fn tint_sky(
     let target = sky_tint(terrain.style_at(camera.translation.truncate()));
     let now = current.get_or_insert(target);
     *now += (target - *now) * (1.0 - (-1.5 * time.delta_secs()).exp());
-    if let Some(mut m) = materials.get_mut(&sky.0) {
-        m.color = Color::linear_rgb(now.x, now.y, now.z);
-    }
+    crate::shapes::set_color(&mut materials, &sky.0, Color::linear_rgb(now.x, now.y, now.z));
 }
 
 /// Distant silhouettes in the style of each region, far and hazy, with gaps

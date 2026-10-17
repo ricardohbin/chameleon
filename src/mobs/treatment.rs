@@ -484,7 +484,7 @@ fn siphon(m: &mut Mob, pos: Vec2, sees: bool, touching: bool, w: &mut World) -> 
 }
 
 /// Latched siphons weigh the chameleon's walk down (after the webs set it, before it moves).
-fn drag(mobs: Query<&Mob>, mut player: Single<&mut Player>) {
+fn drag(mobs: Query<&Mob, Without<crate::terrain_props::Asleep>>, mut player: Single<&mut Player>) {
     let n = mobs.iter().filter(|m| m.treatment.latch.is_some() && !matches!(m.state, State::Dead { .. })).count();
     if n > 0 {
         player.webbed = player.webbed.max((DRAG * n as f32).min(DRAG_MAX));
@@ -637,7 +637,7 @@ fn acid(
     mut stop: ResMut<HitStop>,
     mut bleed: MessageWriter<Bleed>,
     player: Single<(&mut Player, &Transform), (Without<Drop>, Without<Puddle>, Without<Mob>)>,
-    mut mobs: Query<(&mut Mob, &Transform), (Without<Drop>, Without<Puddle>)>,
+    mut mobs: Query<(&mut Mob, &Transform), (Without<Drop>, Without<Puddle>, Without<crate::terrain_props::Asleep>)>,
     mut drops: Query<(Entity, &mut Drop, &mut Transform), (Without<Puddle>, Without<Mob>)>,
     mut puddles: Query<(Entity, &mut Puddle, &mut Transform), (Without<Drop>, Without<Mob>)>,
     terrain: Res<Terrain>,

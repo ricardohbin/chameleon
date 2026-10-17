@@ -6,7 +6,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use crate::{camera, regrowth::Vine};
+use crate::regrowth::Vine;
 
 use super::*;
 
@@ -117,8 +117,6 @@ pub(super) fn plant(p: &mut Props, at: Vec2, flip: f32, kind: Kind, back: Option
     }
     let stems: Vec<Mesh> = g.stems.iter().map(|(path, w)| stroke(path, |t| w * (1.0 - 0.75 * t) + 0.35, 1.0, 0.6, |_| 1.0)).collect();
     let leaves = blobs(&g.leaves, |q| 0.62 + 0.38 * ((q.x * 0.9 + q.y * 1.7).sin() * 0.5 + 0.5));
-    let stems: Vec<Handle<Mesh>> = stems.into_iter().map(|m| p.meshes.add(m)).collect();
-    let leaves = p.meshes.add(leaves);
 
     // Dead and gray in the world...
     if back.is_some() {
@@ -129,27 +127,27 @@ pub(super) fn plant(p: &mut Props, at: Vec2, flip: f32, kind: Kind, back: Option
     p.depth += jitter * 0.1;
     let dead = p.root(at, flip, 0.0);
     for s in &stems {
-        p.commands.spawn((Mesh2d(s.clone()), MeshMaterial2d(p.mats[M::Soot as usize].clone()), Transform::default(), ChildOf(dead)));
+        let soot = p.mats[M::Soot as usize].clone();
+        p.emit(dead, s.clone(), soot, 0.0, None);
     }
     let gray_leaf = if dark { M::Soot } else { M::Concrete };
-    p.commands.spawn((Mesh2d(leaves.clone()), MeshMaterial2d(p.mats[gray_leaf as usize].clone()), Transform::from_xyz(0.0, 0.0, 0.01), ChildOf(dead)));
+    let gray_mat = p.mats[gray_leaf as usize].clone();
+    p.emit(dead, leaves.clone(), gray_mat, 0.01, None);
 
     // ...alive on the color layer, fading in when its turn comes.
     let (stem, leaf) = if dark { (STEM_DARK, LEAF_DARK) } else { (STEM, LEAF) };
-    let blend = |color| ColorMaterial { color, alpha_mode: bevy::sprite_render::AlphaMode2d::Blend, ..default() };
-    let (stem_mat, leaf_mat) = (p.colors.add(blend(stem.with_alpha(0.0))), p.colors.add(blend(leaf.with_alpha(0.0))));
-    let dist = at.distance(p.t.wasp.unwrap_or(at));
+    let (mat, dist) = p.vine_mat(crate::boss::BossKind::Wasp, at.distance(p.t.wasp.unwrap_or(at)));
     // The color layer draws over everything gray: the vines of the foreground always over those of the walls.
     p.depth = if dark { -0.6 } else { -0.4 } + jitter;
     let alive = p.root(at, flip, 0.0);
     p.commands.entity(alive).insert((
         Visibility::Hidden,
-        Vine { boss: crate::boss::BossKind::Wasp, dist, stem: stem_mat.clone(), leaf: leaf_mat.clone(), shown: 0.0, base: [stem, leaf], lit: 0.0 },
+        Vine { boss: crate::boss::BossKind::Wasp, dist, stem: mat.clone(), leaf: mat.clone(), shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
     ));
     for s in stems {
-        p.commands.spawn((Mesh2d(s), MeshMaterial2d(stem_mat.clone()), Transform::default(), camera::color_layer(), ChildOf(alive)));
+        p.emit_color(alive, bake(&s, stem, 0.0), mat.clone(), 0.0);
     }
-    p.commands.spawn((Mesh2d(leaves), MeshMaterial2d(leaf_mat), Transform::from_xyz(0.0, 0.0, 0.01), camera::color_layer(), ChildOf(alive)));
+    p.emit_color(alive, bake(&leaves, leaf, 0.0), mat, 0.01);
     p.depth = BACK;
 }
 

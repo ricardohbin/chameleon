@@ -86,7 +86,9 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Ghore, The Chameleon".into(),
-                resolution: (1280, 720).into(),
+                // Web: one canvas pixel per CSS pixel (the browser's devicePixelRatio would
+                // make a hi-DPI screen several times as many pixels to fill: slow on WebGL2).
+                resolution: if cfg!(target_arch = "wasm32") { bevy::window::WindowResolution::new(1280, 720).with_scale_factor_override(1.0) } else { (1280, 720).into() },
                 // Native: hidden until `set_window_icon` has installed the icon (the web canvas is always shown).
                 visible: cfg!(target_arch = "wasm32"),
                 // Web: draw into the page's `<canvas id="bevy">`, sized by its parent, and keep the

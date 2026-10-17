@@ -1057,12 +1057,19 @@ fn animate_tail(
     tail: Single<&Tail>,
     mut rings: Single<&mut Visibility, With<TailRings>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut last: Local<Option<(f32, f32, bool)>>,
 ) {
+    let shown = player.earned.len() > Slot::TailRings as usize;
+    **rings = if shown { Visibility::Inherited } else { Visibility::Hidden };
+    // Rebuilding a mesh costs the engine a re-upload and a rescan of every mesh entity: only when the pose changed.
+    let pose = (player.curl, player.sway, shown);
+    if *last == Some(pose) {
+        return;
+    }
+    *last = Some(pose);
     if let Some(mut mesh) = meshes.get_mut(&tail.mesh) {
         *mesh = tail_mesh(player.curl, player.sway);
     }
-    let shown = player.earned.len() > Slot::TailRings as usize;
-    **rings = if shown { Visibility::Inherited } else { Visibility::Hidden };
     if shown && let Some(mut mesh) = meshes.get_mut(&tail.rings) {
         *mesh = tail_rings(player.curl, player.sway);
     }
@@ -1131,9 +1138,7 @@ fn camouflage(
     for m in &mut skin.0 {
         // Blend in Oklab: hue interpolation from white (no hue) looks odd in Oklch.
         m.current = m.current.mix(&skin_color(&a.earned, m.slot, m.tone, ground).into(), k);
-        if let Some(mut mat) = materials.get_mut(&m.handle) {
-            mat.color = m.current.into();
-        }
+        crate::shapes::set_color(&mut materials, &m.handle, m.current.into());
     }
 }
 

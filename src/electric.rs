@@ -208,7 +208,7 @@ fn shock_mobs(
     mut assets: ResMut<SparkAssets>,
     mut bleed: MessageWriter<Bleed>,
     mut zapped: Local<HashMap<Entity, f32>>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<crate::terrain_props::Asleep>>,
 ) {
     let dt = time.delta_secs();
     zapped.retain(|e, t| {

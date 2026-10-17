@@ -123,10 +123,12 @@ fn update(
             if let Some(t) = dead {
                 s.cause = player.cause;
                 s.alpha = ((t - FADE_FROM) / FADE_TIME).clamp(0.0, 1.0);
-            } else if s.alpha < 1.0 {
+            } else if s.alpha < 0.5 {
                 // Back on its feet some other way (a restart): nothing to wait for.
                 s.phase = Phase::Leaving;
             } else {
+                // The respawn lands in the last frames of the fade: finish it as black.
+                s.alpha = 1.0;
                 // Respawned (or reloaded) behind the black: hold the game still for the key.
                 if !s.paused && !game.is_paused() {
                     game.pause();

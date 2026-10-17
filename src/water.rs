@@ -614,6 +614,10 @@ fn animate_surface(
     let (lo, hi) = (tf.translation.x - reach, tf.translation.x + reach);
     for s in &surfaces {
         let Some(pool) = waters.pools.get(s.pool) else { continue };
+        // Pools out of view keep their last surface (rebuilt the frame they come back).
+        if pool.bounds.max.x < lo || pool.bounds.min.x > hi || pool.bounds.max.y < tf.translation.y - reach || pool.bounds.min.y > tf.translation.y + reach {
+            continue;
+        }
         if let Some(mut mesh) = meshes.get_mut(&s.mesh) {
             *mesh = surface_mesh(pool, time.elapsed_secs(), lo, hi, s.blue);
         }

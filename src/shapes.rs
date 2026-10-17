@@ -140,6 +140,47 @@ pub fn band(top: &[Vec2], bottom: &[Vec2], shade: impl Fn(Vec2) -> f32) -> Mesh 
     build(&pos, colors, indices)
 }
 
+/// Several meshes made by this toolkit (position, shade, indices) as one: one entity instead of many.
+pub fn concat(meshes: &[Mesh]) -> Mesh {
+    let (mut pos, mut colors, mut indices) = (Vec::<[f32; 3]>::new(), Vec::new(), Vec::new());
+    for m in meshes {
+        let base = pos.len() as u32;
+        let Some(p) = m.attribute(Mesh::ATTRIBUTE_POSITION).and_then(|a| a.as_float3()) else { continue };
+        pos.extend_from_slice(p);
+        match m.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x4(c)) => colors.extend_from_slice(c),
+            _ => colors.extend(std::iter::repeat_n(gray(1.0), p.len())),
+        }
+        indices.extend(m.indices().into_iter().flat_map(|i| i.iter()).map(|i| base + i as u32));
+    }
+    let n = pos.len();
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; n])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
+/// A copy of a mesh of this toolkit with its shade multiplied by `tint` and moved to depth `z`: what a material's
+/// color and an entity's depth would do, in the vertices, so that parts of different colors can share a material
+/// and an entity (opaque ones are sorted by the depth buffer).
+pub fn bake(mesh: &Mesh, tint: Color, z: f32) -> Mesh {
+    let k = tint.to_linear().to_f32_array();
+    let mut out = mesh.clone();
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = out.attribute_mut(Mesh::ATTRIBUTE_POSITION) {
+        for v in p.iter_mut() {
+            v[2] += z;
+        }
+    }
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x4(c)) = out.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for v in c.iter_mut() {
+            *v = [v[0] * k[0], v[1] * k[1], v[2] * k[2], v[3] * k[3]];
+        }
+    }
+    out
+}
+
 fn gray(v: f32) -> [f32; 4] {
     [v, v, v, 1.0]
 }
@@ -191,5 +232,24 @@ impl Rng {
 
     pub fn chance(&mut self, p: f32) -> bool {
         self.next() < p
+    }
+}
+
+/// Sets a material's color only if it changes: writing an asset marks it modified, which makes the
+/// engine re-prepare it (bind group, upload) and rescan every mesh entity.
+pub fn set_color(materials: &mut Assets<ColorMaterial>, handle: &Handle<ColorMaterial>, color: Color) {
+    if materials.get(handle).is_some_and(|m| m.color != color) {
+        if let Some(mut m) = materials.get_mut(handle) {
+            m.color = color;
+        }
+    }
+}
+
+/// `set_color` for a change of alpha only.
+pub fn set_alpha(materials: &mut Assets<ColorMaterial>, handle: &Handle<ColorMaterial>, alpha: f32) {
+    if materials.get(handle).is_some_and(|m| m.color.alpha() != alpha) {
+        if let Some(mut m) = materials.get_mut(handle) {
+            m.color.set_alpha(alpha);
+        }
     }
 }

@@ -367,11 +367,16 @@ fn rebuild(
 fn crawl(
     time: Res<Time>,
     mut bugs: Query<(&Bug, &mut Transform), Without<Player>>,
+    view: Res<crate::terrain_props::ViewReach>,
     mut parts: Query<&mut Transform, (Without<Bug>, Without<Player>)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let t = time.elapsed_secs();
     for (bug, mut tf) in &mut bugs {
+        // Far from the view (and from where it is heading) it just stays as it was.
+        if !view.near(bug.home, 600.0) {
+            continue;
+        }
         let at = |t: f32| bug.home + Vec2::new(38.0 * (0.42 * t + bug.phase).cos(), 22.0 * (0.29 * t + bug.phase * 1.7).sin());
         let (p, ahead) = (at(t), at(t + 0.1));
         let dir = ahead - p;
@@ -388,26 +393,18 @@ fn crawl(
             // A heartbeat in red: the whole body swells and dims together.
             let beat = (0.5 + 0.5 * (t * 4.0 + bug.phase).sin()).powi(2);
             for (m, light) in bug.mats.iter().zip([0.0, 0.08, 0.04, -0.1]) {
-                if let Some(mut mat) = materials.get_mut(m) {
-                    mat.color = Color::hsl(0.0, 1.0, (0.3 + 0.25 * beat + light).clamp(0.1, 0.9));
-                }
+                crate::shapes::set_color(&mut materials, m, Color::hsl(0.0, 1.0, (0.3 + 0.25 * beat + light).clamp(0.1, 0.9)));
             }
-            if let Some(mut mat) = materials.get_mut(&bug.halo) {
-                mat.color = Color::hsl(0.0, 1.0, 0.5).with_alpha(0.1 + 0.25 * beat);
-            }
+            crate::shapes::set_color(&mut materials, &bug.halo, Color::hsl(0.0, 1.0, 0.5).with_alpha(0.1 + 0.25 * beat));
             tf.scale = Vec3::splat(1.0 + 0.12 * beat);
             continue;
         }
         let hue = t * 140.0 + bug.phase * 60.0;
         for (m, (off, light)) in bug.mats.iter().zip([(0.0, 0.5), (110.0, 0.62), (210.0, 0.55), (300.0, 0.4)]) {
-            if let Some(mut mat) = materials.get_mut(m) {
-                let shimmer = 0.07 * (t * 11.0 + off).sin();
-                mat.color = prism(hue + off, light + shimmer);
-            }
+            let shimmer = 0.07 * (t * 11.0 + off).sin();
+            crate::shapes::set_color(&mut materials, m, prism(hue + off, light + shimmer));
         }
-        if let Some(mut mat) = materials.get_mut(&bug.halo) {
-            mat.color = prism(hue + 180.0, 0.6).with_alpha(0.16 + 0.1 * (t * 5.0 + bug.phase).sin());
-        }
+        crate::shapes::set_color(&mut materials, &bug.halo, prism(hue + 180.0, 0.6).with_alpha(0.16 + 0.1 * (t * 5.0 + bug.phase).sin()));
     }
 }
 

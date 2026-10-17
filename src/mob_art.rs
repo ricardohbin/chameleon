@@ -122,7 +122,11 @@ const OUTLINE: f32 = 2.2;
 /// The outline sits this far behind its part (local z), so it is under every part of the mob.
 const OUTLINE_Z: f32 = -1.0;
 
-/// Gives every newly spawned mob a thick black outline: each opaque part gets a
+/// A mob whose art was just built and still has to get its outline (`outline`).
+#[derive(Component)]
+pub struct NeedsOutline;
+
+/// Gives every newly built mob a thick black outline: each opaque part gets a
 /// black copy behind it, stamped in 8 directions (`OUTLINE` world units out).
 /// Translucent parts (wings, silk) are left alone.
 pub fn outline(
@@ -130,23 +134,68 @@ pub fn outline(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut black: Local<Option<Handle<ColorMaterial>>>,
-    mobs: Query<Entity, Added<Mob>>,
+    mut done: Local<std::collections::HashSet<AssetId<Mesh>>>,
+    mobs: Query<Entity, With<NeedsOutline>>,
     children: Query<&Children>,
     parts: Query<(&Mesh2d, &MeshMaterial2d<ColorMaterial>, &GlobalTransform)>,
 ) {
     let black = black.get_or_insert_with(|| materials.add(Color::BLACK)).clone();
     for mob in &mobs {
+        commands.entity(mob).remove::<NeedsOutline>();
         for part in children.iter_descendants(mob) {
             let Ok((mesh, mat, gt)) = parts.get(part) else { continue };
             if materials.get(&mat.0).is_none_or(|m| m.alpha_mode == AlphaMode2d::Blend || m.color.alpha() < 1.0) {
                 continue;
             }
-            let Some(mesh) = meshes.get(&mesh.0).and_then(|m| stamped(m, OUTLINE / gt.scale().truncate().abs().max_element().max(1e-3))) else {
+            let r = OUTLINE / gt.scale().truncate().abs().max_element().max(1e-3);
+            // The outline goes into the part's own mesh (black vertices, behind it): one entity
+            // less per part. A mesh shared by several mobs is only done once.
+            if done.contains(&mesh.0.id()) {
+                continue;
+            }
+            if let Some(merged) = meshes.get(&mesh.0).and_then(|m| with_outline(m, r)) {
+                if let Some(mut m) = meshes.get_mut(&mesh.0) {
+                    *m = merged;
+                    done.insert(mesh.0.id());
+                    continue;
+                }
+            }
+            let Some(mesh) = meshes.get(&mesh.0).and_then(|m| stamped(m, r)) else {
                 continue;
             };
             commands.spawn((Mesh2d(meshes.add(mesh)), MeshMaterial2d(black.clone()), Transform::from_xyz(0.0, 0.0, OUTLINE_Z), ChildOf(part)));
         }
     }
+}
+
+/// `mesh` with its black outline (`stamped`, in black vertices, `OUTLINE_Z` behind it) in the same
+/// mesh. `None` if the mesh doesn't have the position, shade and index data of the shapes toolkit.
+fn with_outline(mesh: &Mesh, r: f32) -> Option<Mesh> {
+    let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION)?.as_float3()?;
+    let Some(bevy::mesh::VertexAttributeValues::Float32x4(shade)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else { return None };
+    let indices: Vec<u32> = mesh.indices()?.iter().map(|i| i as u32).collect();
+    let n = pos.len();
+    let (mut out_pos, mut out_col, mut out_idx) = (Vec::with_capacity(n * 9), Vec::with_capacity(n * 9), Vec::with_capacity(indices.len() * 9));
+    for k in 0..8 {
+        let d = Vec2::from_angle(k as f32 * PI / 4.0) * r;
+        let base = out_pos.len() as u32;
+        out_pos.extend(pos.iter().map(|p| [p[0] + d.x, p[1] + d.y, OUTLINE_Z]));
+        out_col.extend(std::iter::repeat_n([0.0, 0.0, 0.0, 1.0], n));
+        out_idx.extend(indices.iter().map(|i| base + i));
+    }
+    let base = out_pos.len() as u32;
+    out_pos.extend_from_slice(pos);
+    out_col.extend_from_slice(shade);
+    out_idx.extend(indices.iter().map(|i| base + i));
+    let total = out_pos.len();
+    Some(
+        Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, out_pos)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; total])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; total])
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, out_col)
+            .with_inserted_indices(bevy::mesh::Indices::U32(out_idx)),
+    )
 }
 
 /// `mesh` copied 8 times around, `r` out (its own units): its silhouette, grown by `r`.
@@ -179,7 +228,27 @@ pub fn spawn(
     at: Vec2,
     parent: Option<Entity>,
 ) -> Entity {
-    let root = commands.spawn((Transform::from_translation(at.extend(Z)), Visibility::default())).id();
+    let root = commands.spawn((Transform::from_translation(at.extend(Z)), Visibility::default(), NeedsOutline)).id();
+    let mats = art(commands, meshes, materials, kind, root);
+    commands.entity(root).insert(Mob::new(kind, at, mats, parent));
+    root
+}
+
+/// A mob without its art, asleep where it was placed: the art (meshes, materials, entities) is built when it
+/// is first near the view (`wake_art`) and thrown away when it is far again (`sleep_art`), so the world
+/// only pays for the mobs around the player.
+pub fn spawn_asleep(commands: &mut Commands, kind: MobKind, at: Vec2, parent: Option<Entity>) -> Entity {
+    commands.spawn((Transform::from_translation(at.extend(Z)), Mob::new(kind, at, Vec::new(), parent), crate::terrain_props::Asleep(Visibility::Inherited))).id()
+}
+
+/// Builds the body of a mob of `kind` under `root` (bones and parts), and returns the materials it flashes.
+pub fn art(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    kind: MobKind,
+    root: Entity,
+) -> Vec<(Handle<ColorMaterial>, Color)> {
     let mut b = Builder { commands, meshes, owner: root };
     let rig = b.bone(Vec3::ZERO, root, BoneKind::Rig);
     let s = kind.spec().scale;
@@ -229,8 +298,7 @@ pub fn spawn(
         MobKind::Burrowling => cave::burrowling(&mut b, materials, rig),
         MobKind::Broodcoil => cave::broodcoil(&mut b, materials, rig),
     };
-    commands.entity(root).insert(Mob::new(kind, at, mats, parent));
-    root
+    mats
 }
 
 /// A cockroach, facing +X, feet at y ≈ -6.8. The sewer kind is darker, with a banded back.
@@ -746,7 +814,7 @@ pub fn dismember(mut commands: Commands, mut mobs: Query<&mut Mob>, bones: Query
     }
 }
 
-pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform)>, mut bones: Query<(&MobBone, &mut Transform), Without<Mob>>) {
+pub fn animate(time: Res<Time>, mobs: Query<(&Mob, &Transform), Without<crate::terrain_props::Asleep>>, mut bones: Query<(&MobBone, &mut Transform), Without<Mob>>) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     for (bone, mut tf) in &mut bones {

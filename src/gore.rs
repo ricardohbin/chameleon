@@ -34,7 +34,7 @@ impl Plugin for GorePlugin {
             .add_message::<Paint>()
             .add_systems(Startup, setup)
             .add_systems(PreUpdate, mop_up.after(level::restart))
-            .add_systems(Update, (spray, paint_claws, move_drops, age_splats, cap_stains).chain());
+            .add_systems(Update, (spray, paint_claws, move_drops, age_splats, cap_stains, clear_far).chain());
     }
 }
 
@@ -556,10 +556,9 @@ fn age_splats(
             gore.spawn_drop(&mut commands, gt.translation().truncate(), vel, 1.0, s.fluid, false);
         }
         if s.age < DRY_TIME + 1.0 {
-            let k = (s.age / DRY_TIME).min(1.0);
-            if let Some(mut mat) = materials.get_mut(&s.mat) {
-                mat.color = Oklaba::from(s.fluid.fresh()).mix(&s.fluid.dry().into(), k).into();
-            }
+            // In 32 steps: every write re-prepares the material.
+            let k = ((s.age / DRY_TIME).min(1.0) * 32.0).round() / 32.0;
+            crate::shapes::set_color(&mut materials, &s.mat, Oklaba::from(s.fluid.fresh()).mix(&s.fluid.dry().into(), k).into());
         }
     }
     let count = splats.iter().count();
@@ -579,6 +578,24 @@ fn cap_stains(mut commands: Commands, stains: Query<(Entity, &Stain)>) {
         all.sort_unstable_by_key(|&(seq, _)| seq);
         for &(_, e) in &all[..count - MAX_STAINS] {
             commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Blood and stains far from the view (and from where it is heading) are simply gone.
+fn clear_far(
+    mut commands: Commands,
+    view: Res<crate::terrain_props::ViewReach>,
+    mut frame: Local<u32>,
+    gore: Query<(Entity, &GlobalTransform), Or<(With<Splat>, With<Stain>, With<Drop>)>>,
+) {
+    *frame += 1;
+    if *frame % 30 != 0 || view.half == 0.0 {
+        return;
+    }
+    for (e, gt) in &gore {
+        if !view.near(gt.translation().truncate(), crate::terrain_props::SLEEP_MARGIN) {
+            commands.entity(e).try_despawn();
         }
     }
 }

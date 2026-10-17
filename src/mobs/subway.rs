@@ -642,7 +642,7 @@ pub(super) fn split(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<crate::terrain_props::Asleep>>,
 ) {
     let rat = MobKind::Rat.spec();
     for (e, mut m, tf) in &mut mobs {

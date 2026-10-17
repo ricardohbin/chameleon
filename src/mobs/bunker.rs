@@ -776,7 +776,7 @@ pub(super) fn balls(
     mut hits: MessageWriter<SpitHit>,
     player: Single<(&mut Player, &Transform), (Without<Mob>, Without<Ball>)>,
     anim: Single<&ChameleonAnim>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<Ball>>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), (Without<Ball>, Without<crate::terrain_props::Asleep>)>,
     mut balls: Query<(Entity, &mut Ball, &mut Transform), (Without<Mob>, Without<Player>)>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);

@@ -184,10 +184,8 @@ pub(crate) fn regrow(
         (vine.shown, vine.lit) = (want, lit);
         *visibility = if want > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
         for (h, base) in [(&vine.stem, vine.base[0]), (&vine.leaf, vine.base[1])] {
-            if let Some(mut m) = materials.get_mut(h) {
-                // The flash overlay doesn't reach the color layer: tint them the same.
-                m.color = base.mix(&FLASH, lit).with_alpha(want);
-            }
+            // The flash overlay doesn't reach the color layer: tint them the same.
+            crate::shapes::set_color(&mut materials, h, base.mix(&FLASH, lit).with_alpha(want));
         }
     }
 }
@@ -239,9 +237,7 @@ fn indigo_sky(
     let (revealed, _) = regrowth.felt_at(BossKind::Crab, &terrain, eye);
     let (mut tf, mat) = sky.into_inner();
     (tf.translation.x, tf.translation.y) = (eye.x, eye.y);
-    if let Some(mut m) = materials.get_mut(&mat.0) {
-        m.color = m.color.with_alpha(revealed);
-    }
+    crate::shapes::set_alpha(&mut materials, &mat.0, revealed);
 }
 
 fn tint_and_pulse(
@@ -281,10 +277,8 @@ fn tint_and_pulse(
             waved[i] = false;
         }
     }
-    if let Some(mut m) = materials.get_mut(&mat.0) {
-        let c = if alpha > 0.0 { rgb / alpha } else { Vec3::ONE };
-        m.color = Color::srgba(c.x, c.y, c.z, alpha.min(0.22));
-    }
+    let c = if alpha > 0.0 { rgb / alpha } else { Vec3::ONE };
+    crate::shapes::set_color(&mut materials, &mat.0, Color::srgba(c.x, c.y, c.z, alpha.min(0.22)));
 }
 
 /// The Venom Mother's color doesn't hang in the air like the king's fumes: in
@@ -378,9 +372,7 @@ fn skylight(
     let strength = revealed * (0.35 + 0.65 * near);
     let (mut tf, mat) = glow.into_inner();
     (tf.translation.x, tf.translation.y) = (eye.x, eye.y);
-    if let Some(mut m) = materials.get_mut(&mat.0) {
-        m.color = m.color.with_alpha(strength * (0.12 + 0.2 * open));
-    }
+    crate::shapes::set_alpha(&mut materials, &mat.0, strength * (0.12 + 0.2 * open));
     let t = time.elapsed_secs();
     for (mut tf, mat, mut vis, shaft) in &mut shafts {
         let a = strength * open * (0.55 + 0.45 * (t * 0.35 + shaft.phase).sin()) * 0.2;
@@ -388,9 +380,7 @@ fn skylight(
         // Drifts slowly against the world, wrapped around the camera.
         let x = (shaft.base_x - eye.x * 0.12 + t * 6.0).rem_euclid(3600.0) - 1800.0;
         tf.translation = Vec3::new(eye.x + x, eye.y - 700.0, tf.translation.z);
-        if let Some(mut m) = materials.get_mut(&mat.0) {
-            m.color = m.color.with_alpha(a);
-        }
+        crate::shapes::set_alpha(&mut materials, &mat.0, a);
     }
 }
 

@@ -9,9 +9,8 @@
 
 use std::f32::consts::{PI, TAU};
 
-use bevy::sprite_render::AlphaMode2d;
 
-use crate::{camera, regrowth::Vine};
+use crate::regrowth::Vine;
 
 use super::*;
 
@@ -893,23 +892,23 @@ fn sign_frame(rng: &mut Rng) -> Vec<Mesh> {
 /// meshes only have the gray copy (stems under colored blossoms).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dress(p: &mut Props, at: Vec2, flip: f32, tilt: f32, indoor: bool, meshes: Vec<Mesh>, color: Color, gray: M, boss: crate::boss::BossKind, dist: f32, plain: usize) {
-    let meshes: Vec<Handle<Mesh>> = meshes.into_iter().map(|m| p.meshes.add(m)).collect();
     let jitter = (seed(at.x as i32, at.y as i32) >> 8) as f32 / (1u32 << 24) as f32 * 0.08;
     p.tilt = tilt;
     p.depth = if indoor { INDOOR } else { BACK } + jitter * 0.1;
     let dead = p.root(at, flip, 0.0);
     for m in &meshes {
-        p.commands.spawn((Mesh2d(m.clone()), MeshMaterial2d(p.mats[gray as usize].clone()), Transform::default(), ChildOf(dead)));
+        let gray_mat = p.mats[gray as usize].clone();
+        p.emit(dead, m.clone(), gray_mat, 0.0, None);
     }
-    let mat = p.colors.add(ColorMaterial { color: color.with_alpha(0.0), alpha_mode: AlphaMode2d::Blend, ..default() });
+    let (mat, dist) = p.vine_mat(boss, dist);
     p.depth = -0.5 + jitter;
     let alive = p.root(at, flip, 0.0);
     p.commands.entity(alive).insert((
         Visibility::Hidden,
-        Vine { boss, dist, stem: mat.clone(), leaf: mat.clone(), shown: 0.0, base: [color, color], lit: 0.0 },
+        Vine { boss, dist, stem: mat.clone(), leaf: mat.clone(), shown: 0.0, base: [Color::WHITE; 2], lit: 0.0 },
     ));
     for m in meshes.into_iter().skip(plain) {
-        p.commands.spawn((Mesh2d(m), MeshMaterial2d(mat.clone()), Transform::default(), camera::color_layer(), ChildOf(alive)));
+        p.emit_color(alive, bake(&m, color, 0.0), mat.clone(), 0.0);
     }
     p.tilt = 0.0;
     p.depth = BACK;

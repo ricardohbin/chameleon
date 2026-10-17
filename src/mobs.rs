@@ -31,6 +31,7 @@
 //!
 //! Bodies, animation and gibs live in `mob_art.rs`.
 
+use crate::terrain_props::{Asleep, ViewReach, SLEEP_MARGIN};
 use std::{collections::HashMap, f32::consts::PI};
 
 use bevy::prelude::*;
@@ -116,7 +117,7 @@ impl Plugin for MobPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, load_glob).add_systems(
             Update,
-            (rebuild, hole_up, slash_mobs, think, subway::split, nests, cave::hatch, catacombs::hatch, bunker::balls, move_globs, mob_art::dismember, mob_art::animate, flash_mobs)
+            (rebuild, hole_up, slash_mobs, think, subway::split, nests, cave::hatch, catacombs::hatch, bunker::balls, move_globs, mob_art::dismember, mob_art::animate, flash_mobs, clear_far_corpses, reset_sleepers)
                 .chain()
                 .after(player::move_player)
                 .after(chameleon::update_anim_state)
@@ -1234,8 +1235,6 @@ fn seed_from(name: &str) -> u32 {
 /// the new `Terrain` is in).
 fn rebuild(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
     mut respawned: MessageReader<Respawned>,
     mut reloaded: MessageReader<WorldReloaded>,
@@ -1257,7 +1256,7 @@ fn rebuild(
         commands.entity(e).despawn();
     }
     for (kind, at) in plan(&terrain) {
-        mob_art::spawn(&mut commands, &mut meshes, &mut materials, kind, at, None);
+        mob_art::spawn_asleep(&mut commands, kind, at, None);
     }
 }
 
@@ -1379,7 +1378,7 @@ fn slash_mobs(
     mut spat: MessageReader<SpitHit>,
     party: Res<boss::Celebration>,
     player: Single<(&Player, &Transform, &ChameleonAnim)>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<Asleep>>,
 ) {
     let (p, ptf, anim) = *player;
     let ppos = ptf.translation.truncate();
@@ -1529,7 +1528,7 @@ fn think(
     glob: Res<GlobAssets>,
     player: Single<(&mut Player, &Transform), Without<Mob>>,
     anim: Single<&ChameleonAnim>,
-    mut mobs: Query<(&mut Mob, &mut Transform)>,
+    mut mobs: Query<(&mut Mob, &mut Transform), Without<Asleep>>,
     platforms: Query<(&Platform, &Transform), (Without<Mob>, Without<Player>)>,
     terrain: Res<Terrain>,
     party: Res<boss::Celebration>,
@@ -2207,7 +2206,7 @@ fn nests(
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
     player: Single<(&Player, &Transform)>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<Asleep>>,
 ) {
     let dt = time.delta_secs();
     let (p, ptf) = *player;
@@ -2276,7 +2275,87 @@ fn move_globs(
     }
 }
 
-fn flash_mobs(time: Res<Time>, mut materials: ResMut<Assets<ColorMaterial>>, mut mobs: Query<&mut Mob>) {
+/// Mobs far from the view lose their body (entities, meshes, materials, visibility): nothing of them is left
+/// but the mob itself. Near the view (or where it is heading) the body is built again. Dead mobs are left
+/// alone (`clear_far_corpses`).
+pub fn cull_mobs(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    view: Res<ViewReach>,
+    party: Res<boss::Celebration>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform, Option<&Asleep>, Option<&Visibility>, Has<mob_art::NeedsOutline>)>,
+    mut frame: Local<u32>,
+) {
+    // Building a body takes a moment: a few per pass.
+    const WAKES: usize = 6;
+    const SLEEPS: usize = 60;
+    *frame += 1;
+    if *frame % 2 != 0 || view.half == 0.0 {
+        return;
+    }
+    let (mut woke, mut slept) = (0, 0);
+    for (e, mut m, tf, asleep, vis, pending) in &mut mobs {
+        if pending {
+            continue;
+        }
+        let p = tf.translation.truncate();
+        match asleep {
+            Some(Asleep(v)) => {
+                if woke >= WAKES || !view.near(p, crate::terrain_props::WAKE_MARGIN) {
+                    continue;
+                }
+                woke += 1;
+                m.mats = mob_art::art(&mut commands, &mut meshes, &mut materials, m.kind, e);
+                if party.0 {
+                    m.tint(&mut materials);
+                }
+                commands.entity(e).insert((v.clone(), mob_art::NeedsOutline)).remove::<Asleep>();
+            }
+            None => {
+                if slept >= SLEEPS || view.near(p, SLEEP_MARGIN) || matches!(m.state, State::Dead { .. }) {
+                    continue;
+                }
+                slept += 1;
+                m.mats.clear();
+                commands.entity(e).despawn_related::<Children>();
+                commands.entity(e).insert(Asleep(vis.cloned().unwrap_or_default())).remove::<(Visibility, InheritedVisibility, ViewVisibility)>();
+            }
+        }
+    }
+}
+
+/// A mob put to sleep goes back to where it was placed, as it was before it noticed anything (health kept),
+/// so it does not wake up in the middle of a leap or an attack.
+fn reset_sleepers(mut mobs: Query<(&mut Mob, &mut Transform, &mut Asleep), Added<Asleep>>) {
+    for (mut m, mut tf, mut asleep) in &mut mobs {
+        if matches!(m.state, State::Dead { .. }) {
+            continue;
+        }
+        let hp = m.hp;
+        let fresh = Mob::new(m.kind, m.home, std::mem::take(&mut m.mats), m.parent);
+        let hp = hp.min(fresh.hp);
+        *m = Mob { hp, ..fresh };
+        (tf.translation.x, tf.translation.y) = (m.home.x, m.home.y);
+        // Whatever hid it (digging in) is over: it wakes in plain sight.
+        asleep.0 = Visibility::Inherited;
+    }
+}
+
+/// Dead mobs far from the view (and from where it is heading) just go: their bodies don't matter.
+fn clear_far_corpses(mut commands: Commands, view: Res<ViewReach>, mut frame: Local<u32>, mobs: Query<(Entity, &Mob, &GlobalTransform)>) {
+    *frame += 1;
+    if *frame % 30 != 0 || view.half == 0.0 {
+        return;
+    }
+    for (e, m, gt) in &mobs {
+        if matches!(m.state, State::Dead { .. }) && !view.near(gt.translation().truncate(), SLEEP_MARGIN) {
+            commands.entity(e).try_despawn();
+        }
+    }
+}
+
+fn flash_mobs(time: Res<Time>, mut materials: ResMut<Assets<ColorMaterial>>, mut mobs: Query<&mut Mob, Without<Asleep>>) {
     for mut m in &mut mobs {
         if m.flash <= 0.0 {
             continue;

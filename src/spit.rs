@@ -99,7 +99,7 @@ pub fn move_spit(
     mut hits: MessageWriter<SpitHit>,
     mut globs: Query<(Entity, &mut Glob, &mut Transform)>,
     bosses: Query<(Entity, &Boss, &Transform), Without<Glob>>,
-    mobs: Query<(Entity, &Mob, &Transform), Without<Glob>>,
+    mobs: Query<(Entity, &Mob, &Transform), (Without<Glob>, Without<crate::terrain_props::Asleep>)>,
     platforms: Query<(&Platform, &Transform), Without<Glob>>,
     terrain: Res<Terrain>,
 ) {

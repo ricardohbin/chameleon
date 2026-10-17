@@ -5,18 +5,91 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>Ghore, The Chameleon</title>
   <style>
+    @font-face { font-family: "Ghore"; src: url("GhoreSerif.ttf") format("truetype"); font-display: swap; }
+    :root { --ink: #e0d9c7; --dim: #8f8a7e; --hot: #ffec8a; }
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
     #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
     canvas#bevy { width: 100%; height: 100%; display: block; outline: none; }
-    #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      color: #9c9; font: 18px/1.4 serif; text-align: center; pointer-events: none; }
-    #loading.done { display: none; }
+
+    #loading { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 18px; padding: 24px; box-sizing: border-box; text-align: center;
+      color: var(--ink); font: 18px/1.4 "Ghore", Georgia, serif;
+      background: radial-gradient(ellipse at 50% 45%, #202020 0%, #0b0b0b 60%, #000 100%);
+      transition: opacity 0.9s ease; }
+    #loading.done { opacity: 0; pointer-events: none; }
+    #loading h1 { margin: 0 0 14px; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
+      font-size: clamp(26px, 5.5vw, 58px); }
+    .bar { width: min(440px, 72vw); height: 6px; background: #2b2a28; border-radius: 3px; overflow: hidden; position: relative; }
+    .bar i { display: block; height: 100%; width: 0; background: var(--hot); border-radius: 3px; transition: width 0.2s linear; }
+    .bar.wait i { width: 32%; transition: none; animation: slide 1.5s ease-in-out infinite; }
+    @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(320%); } }
+    #status { color: var(--ink); min-height: 1.4em; }
+    #detail { color: var(--dim); font-size: 15px; min-height: 1.3em; }
+    .hints { display: grid; grid-template-columns: auto auto; gap: 4px 18px; margin-top: 26px; color: var(--dim); font-size: 15px; text-align: left; }
+    .hints b { font-weight: 400; color: var(--ink); }
+    #error { display: none; max-width: 560px; color: #e8a0a0; font-size: 15px; }
+    #error button { margin-top: 12px; font: inherit; color: var(--ink); background: #2b2a28; border: 1px solid #55524b;
+      padding: 6px 18px; border-radius: 4px; cursor: pointer; }
+    @media (max-width: 520px) { .hints { display: none; } }
+    @media (prefers-reduced-motion: reduce) { .bar.wait i { animation: none; width: 100%; opacity: 0.5; } #loading { transition: none; } }
   </style>
 </head>
 <body>
   <div id="stage"><canvas id="bevy" tabindex="0"></canvas></div>
-  <div id="loading">Ghore, The Chameleon<br>loading…</div>
+  <div id="loading">
+    <h1>Ghore, The Chameleon</h1>
+    <div class="bar" id="bar"><i id="fill"></i></div>
+    <div id="status">Starting…</div>
+    <div id="detail"></div>
+    <div id="error"></div>
+    <div class="hints">
+      <span>Move</span><b>A D</b><span>Jump</span><b>Space</b><span>Aim</span><b>Mouse</b><span>Slash</span><b>F / LMB</b>
+      <span>Feed</span><b>E</b><span>Pause</span><b>P</b><span>Menu</span><b>Esc</b>
+    </div>
+    <noscript>This game needs JavaScript and WebAssembly.</noscript>
+  </div>
   <script type="module">
+    // The build fills these in (web/build.sh): the file to load (Brotli-compressed when it could be) and its
+    // size once decompressed, which is what the progress counts (the browser only reports the compressed size).
+    const BUILT_FILE = "__WASM_FILE__", BUILT_SIZE = "__WASM_SIZE__";
+    const WASM = BUILT_FILE.startsWith("__") ? "ghore_bg.wasm" : BUILT_FILE;
+    const SIZE = Number(BUILT_SIZE) || 0;
+
+    const $ = (id) => document.getElementById(id);
+    const loading = $("loading"), bar = $("bar"), fill = $("fill"), status = $("status"), detail = $("detail");
+    const mb = (n) => (n / 1048576).toFixed(1);
+    let phase = "download", tick = null;
+
+    // An unknown wait (compiling, building the world): a sliding bar and a clock.
+    function wait(text) {
+      bar.classList.add("wait");
+      status.textContent = text;
+      clearInterval(tick);
+      const since = performance.now();
+      detail.textContent = "";
+      tick = setInterval(() => { detail.textContent = Math.round((performance.now() - since) / 1000) + " s"; }, 500);
+    }
+    function done() {
+      if (loading.classList.contains("done")) return;
+      clearInterval(tick);
+      loading.classList.add("done");
+      setTimeout(() => (loading.style.display = "none"), 1000);
+      $("bevy").focus();
+    }
+    function fail(e) {
+      clearInterval(tick);
+      bar.style.display = "none";
+      status.textContent = "Could not start the game";
+      detail.textContent = "";
+      const err = $("error");
+      err.style.display = "block";
+      err.textContent = String((e && e.message) || e) + " ";
+      const b = document.createElement("button");
+      b.textContent = "Try again";
+      b.onclick = () => location.reload();
+      err.append(document.createElement("br"), b);
+    }
+
     // Browsers keep audio suspended until a user gesture: track every AudioContext the game makes
     // and resume them on the first click / key press / touch.
     const contexts = [];
@@ -30,18 +103,64 @@
     const resume = () => contexts.forEach((c) => c.state !== "running" && c.resume());
     for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, resume);
 
-    import init from "./ghore.js";
-    try {
-      await init();
-    } catch (e) {
-      // Bevy ends its main loop by throwing a control-flow "exception" on the web: not an error.
-      if (!String(e).includes("Using exceptions for control flow")) {
-        document.getElementById("loading").textContent = "Could not start: " + e;
-        throw e;
-      }
+    // The game says so (src/terrain_props.rs) when the world is built and the props are in place.
+    window.addEventListener("ghore-ready", done, { once: true });
+
+    // Download the game ourselves to count the bytes, and hand the stream on: the browser still compiles it
+    // while it arrives (the type is forced, so a host that gets it wrong does not slow this down).
+    async function download() {
+      const res = await fetch(WASM);
+      if (!res.ok) throw new Error("Could not download " + WASM + " (HTTP " + res.status + ")");
+      const total = SIZE || Number(res.headers.get("content-length")) || 0;
+      const reader = res.body.getReader();
+      let got = 0, last = 0;
+      const progress = () => {
+        if (total) {
+          const k = Math.min(1, got / total);
+          fill.style.width = (k * 100).toFixed(1) + "%";
+          status.textContent = "Downloading the game… " + Math.floor(k * 100) + "%";
+          detail.textContent = mb(got) + " of " + mb(total) + " MB";
+        } else {
+          status.textContent = "Downloading the game…";
+          detail.textContent = mb(got) + " MB";
+        }
+      };
+      status.textContent = "Downloading the game…";
+      const stream = new ReadableStream({
+        async pull(ctrl) {
+          const { done: end, value } = await reader.read();
+          if (end) { phase = "compile"; ctrl.close(); return; }
+          got += value.length;
+          ctrl.enqueue(value);
+          const now = performance.now();
+          if (now - last > 80) { last = now; progress(); }
+        },
+        cancel(reason) { return reader.cancel(reason); },
+      });
+      return new Response(stream, { headers: { "Content-Type": "application/wasm" } });
     }
-    document.getElementById("loading").classList.add("done");
-    document.getElementById("bevy").focus();
+
+    try {
+      const { default: init } = await import("./ghore.js");
+      const response = await download();
+      // `init` resolves once the browser has compiled and started the game.
+      const started = init({ module_or_path: response }).catch((e) => {
+        // Bevy ends its main loop by throwing a control-flow "exception" on the web: not an error.
+        if (!String(e).includes("Using exceptions for control flow")) throw e;
+      });
+      // The download ends before the compile does: show it.
+      const watch = setInterval(() => {
+        if (phase === "compile") { clearInterval(watch); fill.style.width = "100%"; wait("Compiling the game…"); }
+      }, 100);
+      await started;
+      clearInterval(watch);
+      wait("Building the world…");
+      // If the game never says it is ready (an old build), do not hide it behind this for ever.
+      setTimeout(done, 120000);
+    } catch (e) {
+      console.error(e);
+      fail(e);
+    }
   </script>
 </body>
 </html>

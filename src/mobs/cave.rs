@@ -945,7 +945,7 @@ pub(super) fn hatch(
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
     player: Single<(&Player, &Transform)>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<crate::terrain_props::Asleep>>,
 ) {
     let dt = time.delta_secs();
     let (p, ptf) = *player;

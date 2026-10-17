@@ -143,9 +143,12 @@ fn emit(
 fn drift(
     time: Res<Time>,
     mut commands: Commands,
+    camera: Single<&Transform, (With<crate::camera::MainCamera>, Without<Puff>)>,
     mut puffs: Query<(Entity, &mut Puff, &mut Transform)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
+    // Far puffs keep their last color (a write re-prepares the material): fixed up when they come near.
+    let eye = camera.translation.truncate();
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
     for (e, mut puff, mut tf) in &mut puffs {
@@ -159,9 +162,11 @@ fn drift(
         let sway = (now * 0.5 + puff.phase).sin() * 10.0;
         tf.translation += ((puff.vel + Vec2::X * sway) * dt).extend(0.0);
         tf.scale = Vec3::splat(puff.size * 0.5 * (0.6 + 1.5 * t));
-        if let Some(mut m) = materials.get_mut(&puff.material) {
+        if tf.translation.truncate().distance_squared(eye) < 2500.0 * 2500.0 {
             let fade = (t * std::f32::consts::PI).sin().powf(0.8);
-            m.color = m.color.with_alpha(puff.peak * puff.strength * fade);
+            if let Some(color) = materials.get(&puff.material).map(|m| m.color.with_alpha(puff.peak * puff.strength * fade)) {
+                crate::shapes::set_color(&mut materials, &puff.material, color);
+            }
         }
     }
 }

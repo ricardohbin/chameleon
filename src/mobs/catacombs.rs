@@ -681,7 +681,7 @@ pub(super) fn hatch(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     terrain: Res<Terrain>,
-    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform), Without<crate::terrain_props::Asleep>>,
 ) {
     for (e, mut m, tf) in &mut mobs {
         let n = std::mem::take(&mut m.catacombs.shed);

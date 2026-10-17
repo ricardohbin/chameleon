@@ -120,7 +120,7 @@ pub(crate) fn stick(
     webs: Query<(&Web, &GlobalTransform)>,
     curtains: Query<&Curtain>,
     mut player: Single<(&mut Player, &Transform)>,
-    mut mobs: Query<(&mut Mob, &Transform)>,
+    mut mobs: Query<(&mut Mob, &Transform), Without<crate::terrain_props::Asleep>>,
 ) {
     let world: Vec<(Vec2, f32)> = webs
         .iter()

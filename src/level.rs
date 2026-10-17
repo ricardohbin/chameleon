@@ -116,14 +116,17 @@ impl Plugin for LevelPlugin {
         app.insert_resource(terrain)
             .add_message::<WorldReloaded>()
             .init_resource::<terrain_art::Contrast>()
+            .init_resource::<terrain_props::ViewReach>()
             .add_systems(
                 Update,
-                (terrain_art::finish_tiles, terrain_props::place_props, (terrain_art::adjust_contrast, terrain_art::apply_contrast, terrain_art::fade_backs.after(crate::regrowth::regrow)).chain()),
+                (terrain_art::finish_tiles, terrain_props::bake_chunks.after(terrain_props::place_props), terrain_props::track_view.before(terrain_props::cull::<terrain_props::PropRoot>).before(crate::mobs::cull_mobs), terrain_props::place_props, terrain_props::cull::<terrain_props::PropRoot>.after(terrain_props::place_props).after(terrain_props::bake_chunks), crate::mobs::cull_mobs, terrain_props::wake_vines.before(crate::regrowth::regrow), (terrain_art::adjust_contrast, terrain_art::apply_contrast, terrain_art::fade_backs.after(crate::regrowth::regrow)).chain()),
             )
             .add_message::<Restart>()
             .add_message::<NewGame>()
             .add_systems(Startup, spawn_level)
             .add_systems(PreUpdate, restart.after(bevy::input::InputSystems));
+        #[cfg(feature = "diag")]
+        app.add_systems(Update, (terrain_props::log_counts, terrain_props::log_churn, terrain_props::log_archetypes));
         #[cfg(debug_assertions)]
         // Before the painters, so a reload's despawns land first: a tile (or
         // the canvas) finishing that same frame is then simply gone, not
