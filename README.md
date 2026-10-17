@@ -58,14 +58,14 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Wall walk | push into a steep surface (or stand on one that would slide you) to grip it, then `A` `D` `W` `S` walk along it, `Space` leaps off. Works on any surface short of a ceiling, with no sliding; costs the strength bar (a full bar is ~5 floors of vertical wall, less on gentler slopes, overhangs wear it out much faster). At zero the grip lets go and only a full bar grips again |
 | Power pill (take one you carry; see below) | `Z` |
 | Pause | `P` / `Pause` |
-| Menu | `Esc` |
+| Menu | `Esc` / `Tab` / `M` |
 | Quick save / quick load | `F5` / `F9` |
 | Restart | `F8` |
 | Brightness contrast | `F6` / `F7` |
 | Screenshot (lossless WebP in `screenshots/`) | `F12` |
 | Full map export | `F10` |
 
-**Menu** (`Esc`, or a gamepad's Start): resume, load the last checkpoint, start a new game, settings (difficulty,
+**Menu** (`Esc`, `Tab` or `M`, or a gamepad's Start): resume, load the last checkpoint, start a new game, settings (difficulty,
 volume, contrast, control scheme) and exit.
 
 **Gamepad:** left stick or d-pad moves, right stick aims, South jumps, West / right trigger slashes, East spits, left

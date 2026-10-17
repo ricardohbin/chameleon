@@ -421,7 +421,7 @@ fn hints(defeated: &Defeated, scheme: Scheme, pills: bool) -> Vec<(&'static str,
         v.push(("Power pill", "Z"));
     }
     v.push(("Pause", "P"));
-    v.push(("Menu", "Esc"));
+    v.push(("Menu", if cfg!(target_arch = "wasm32") { "Tab" } else { "Esc" }));
     v
 }
 

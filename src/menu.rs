@@ -308,7 +308,7 @@ pub fn input(
     let pad = |b: GamepadButton| pads.iter().any(|p| p.just_pressed(b));
     let key = |ks: &[KeyCode]| keys.any_just_pressed(ks.iter().copied());
 
-    let back = key(&[KeyCode::Escape]) || pad(GamepadButton::East) || pad(GamepadButton::Start);
+    let back = key(&[KeyCode::Escape, KeyCode::Tab, KeyCode::KeyM]) || pad(GamepadButton::East) || pad(GamepadButton::Start);
     if !menu.open {
         if back || pad(GamepadButton::Start) {
             menu.open = true;

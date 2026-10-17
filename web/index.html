@@ -44,7 +44,7 @@
     <div id="error"></div>
     <div class="hints">
       <span>Move</span><b>A D</b><span>Jump</span><b>Space</b><span>Aim</span><b>Mouse</b><span>Slash</span><b>F / LMB</b>
-      <span>Feed</span><b>E</b><span>Pause</span><b>P</b><span>Menu</span><b>Esc</b>
+      <span>Feed</span><b>E</b><span>Pause</span><b>P</b><span>Menu</span><b>Tab</b>
     </div>
     <noscript>This game needs JavaScript and WebAssembly.</noscript>
   </div>
@@ -102,6 +102,8 @@
     }
     const resume = () => contexts.forEach((c) => c.state !== "running" && c.resume());
     for (const ev of ["pointerdown", "keydown", "touchend"]) window.addEventListener(ev, resume);
+    // Tab opens the menu: keep the browser from moving focus away from the canvas.
+    window.addEventListener("keydown", (e) => { if (e.key === "Tab") e.preventDefault(); });
 
     // The game says so (src/terrain_props.rs) when the world is built and the props are in place.
     window.addEventListener("ghore-ready", done, { once: true });

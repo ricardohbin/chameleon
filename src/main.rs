@@ -155,7 +155,7 @@ fn capture_mouse(
     if !window.focused
         || idle
         || settings.scheme != settings::Scheme::MouseKeyboard
-        || keys.any_just_pressed([KeyCode::Escape, KeyCode::KeyP, KeyCode::Pause])
+        || keys.any_just_pressed([KeyCode::Escape, KeyCode::Tab, KeyCode::KeyM, KeyCode::KeyP, KeyCode::Pause])
     {
         cursor.grab_mode = CursorGrabMode::None;
     } else if !menu_was_open && window.cursor_position().is_some() && mouse.get_just_pressed().next().is_some() {
