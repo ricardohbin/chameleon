@@ -33,6 +33,7 @@ mod mobs;
 mod outline;
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 mod perf;
+mod pill;
 mod player;
 mod regrowth;
 mod roach;
@@ -114,7 +115,7 @@ fn main() {
             hud::HudPlugin,
         ))
         .add_plugins((feeding::FeedingPlugin, save::SavePlugin, spit::SpitPlugin, regrowth::RegrowthPlugin, fumes::FumesPlugin, water::WaterPlugin, electric::ElectricPlugin, webs::WebPlugin, dragonfly::DragonflyPlugin, spider::SpiderPlugin, sound::SoundPlugin, centipede::CentipedePlugin, burrow::BurrowPlugin, frog::FrogPlugin, grasshopper::GrasshopperPlugin))
-        .add_plugins((king_rat::KingRatPlugin, mantis::MantisPlugin, crab::CrabPlugin, beetle::BeetlePlugin, ending::EndingPlugin))
+        .add_plugins((king_rat::KingRatPlugin, mantis::MantisPlugin, crab::CrabPlugin, beetle::BeetlePlugin, ending::EndingPlugin, pill::PillPlugin))
         .add_systems(
             PreUpdate,
             capture_mouse.after(bevy::input::InputSystems).after(menu::input).before(level::restart),

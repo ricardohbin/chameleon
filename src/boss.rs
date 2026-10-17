@@ -98,7 +98,7 @@ impl Defeated {
         self.0.contains(&BossKind::Dragonfly)
     }
 
-    /// E at a rubble feature: burrow through it.
+    /// C at a rubble feature: burrow through it.
     pub fn burrow(&self) -> bool {
         self.0.contains(&BossKind::Centipede)
     }
@@ -151,7 +151,7 @@ impl BossKind {
             BossKind::Wasp => "VENOM SPIT  (Right click / Q)",
             BossKind::Dragonfly => "AIR SPIN  (attack in the air)",
             BossKind::Spider => "WALL WALK  (push into a wall, W / S)",
-            BossKind::Centipede => "BURROW  (aim into rubble, E)",
+            BossKind::Centipede => "BURROW  (aim into rubble, C)",
             BossKind::Frog => "WATER WALK  (water no longer slows or tires you)",
             BossKind::Grasshopper => "BIG JUMP  (hold S to charge, release)",
             BossKind::Rat => "SEWER RAT  (the sewer air no longer hurts you)",

@@ -339,6 +339,12 @@ pub fn follow_player(
         let keep = |v: f32, lo: f32, hi: f32, h: f32| if hi - lo < 2.0 * h { (lo + hi) * 0.5 } else { v.clamp(lo + h, hi - h) };
         let inside = Vec2::new(keep(at.x, r.min.x, r.max.x, half.x), keep(at.y, r.min.y, r.max.y, half.y));
         at = at.lerp(inside, ease);
+        // Whatever the boss is doing, the chameleon stays in frame, 5% of it from the edge
+        // (even when the arena clamp or the zoom limit would leave it out).
+        let k = shake.trauma * shake.trauma;
+        let reach = (half * 0.9 - Vec2::splat(18.0 * k)).max(Vec2::ZERO);
+        let ppos = ptf.translation.truncate();
+        at = at.clamp(ppos - reach, ppos + reach);
     }
 
     let t = time.elapsed_secs();

@@ -780,7 +780,7 @@ fn think(
                     Some((i, rect, level)) => {
                         // Glides under the surface toward the chameleon (in the water: right at it).
                         let want = if swimming { ppos } else { Vec2::new(ppos.x, level - SUBMERGE) };
-                        let goal = Vec2::new(in_pool(rect, want.x), want.y.clamp(rect.min.y + FOOT, level - SUBMERGE));
+                        let goal = Vec2::new(in_pool(rect, want.x), want.y.clamp(rect.min.y + FOOT, (level - SUBMERGE).max(rect.min.y + FOOT)));
                         let step = (goal - pos).clamp_length_max(SWIM * dt);
                         tf.translation.x += step.x;
                         tf.translation.y += step.y;

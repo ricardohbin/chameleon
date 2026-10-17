@@ -87,6 +87,11 @@ struct Snapshot {
     dead: Vec<BossKind>,
     /// After the ending: everyone is back and cheering (`boss::Celebration`), not dead.
     celebration: bool,
+    /// Power pills carried, and which of the map's were picked up (`pill.rs`).
+    pills: u32,
+    taken: Vec<IVec2>,
+    /// The high and the crash (`Pill::state`).
+    pill_state: [f32; 6],
 }
 
 /// A loaded snapshot waiting for the rebuilt world (bosses and the new chameleon
@@ -126,6 +131,11 @@ impl Snapshot {
         if self.celebration {
             line("celebration", "1".into());
         }
+        line("pills", self.pills.to_string());
+        line("pill_state", self.pill_state.map(|v| v.to_string()).join(" "));
+        for i in &self.taken {
+            line("pill_taken", format!("{} {}", i.x, i.y));
+        }
         out
     }
 
@@ -144,6 +154,9 @@ impl Snapshot {
             digest: 0.0,
             dead: Vec::new(),
             celebration: false,
+            pills: 0,
+            taken: Vec::new(),
+            pill_state: [0.0; 6],
         };
         let mut has_pos = false;
         for line in lines {
@@ -165,6 +178,12 @@ impl Snapshot {
                 "shadow" => s.shadow = num(value)?,
                 "digest" => s.digest = num(value)?,
                 "celebration" => s.celebration = value.trim() == "1",
+                "pills" => s.pills = num(value)? as u32,
+                "pill_state" => {
+                    let v: Vec<f32> = value.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+                    s.pill_state = v.try_into().map_err(|_| format!("{key}: expected six numbers"))?;
+                }
+                "pill_taken" => s.taken.push(vec(value)?.round().as_ivec2()),
                 "dead" => s.dead.extend(BossKind::ALL.into_iter().find(|k| kind_name(*k) == value.trim())),
                 _ => {}
             }
@@ -190,6 +209,9 @@ impl Snapshot {
             digest: p.digest,
             dead: defeated.0.clone(),
             celebration: party.0,
+            pills: p.pill.stock,
+            taken: p.pill.taken.clone(),
+            pill_state: p.pill.state(),
         }
     }
 }
@@ -324,6 +346,9 @@ fn apply_load(
     p.hp = s.hp;
     p.shadow = s.shadow.clamp(0.0, (p.max_hp - p.hp) as f32);
     p.digest = s.digest.clamp(0.0, 1.0).min(p.shadow);
+    p.pill.stock = s.pills.min(crate::pill::MAX_STOCK);
+    p.pill.taken = s.taken;
+    p.pill.set_state(s.pill_state);
     follow.cut_to(s.pos);
     flash.flash(Color::WHITE, 0.3);
 }

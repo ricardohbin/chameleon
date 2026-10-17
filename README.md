@@ -49,12 +49,14 @@ The game is set up for a mouse and keyboard by default. The control scheme can b
 | Jump (hold for higher) | `Space` / `W` / `Up` |
 | Slash (hold to keep slashing) | `F` / `J` / left mouse button, toward the mouse |
 | Eat remains | `E` |
+| Burrow through rubble (aim at it) | `C` |
 | Dash (on firm ground only; needs the full strength meter and drains all of it, like swimming) | `Shift` / `K` |
 | Venom spit (lobbed like a grenade; each spit costs half the strength meter) | `Q` / right mouse button |
 | Shield | `G` |
 | Air spin | attack while in the air |
 | Big jump | hold `S` / `Down` on the ground, then let go |
 | Wall walk | push into a steep surface (or stand on one that would slide you) to grip it, then `A` `D` `W` `S` walk along it, `Space` leaps off. Works on any surface short of a ceiling, with no sliding; costs the strength bar (a full bar is ~5 floors of vertical wall, less on gentler slopes, overhangs wear it out much faster). At zero the grip lets go and only a full bar grips again |
+| Power pill (take one you carry; see below) | `Z` |
 | Pause | `P` / `Pause` |
 | Menu | `Esc` |
 | Quick save / quick load | `F5` / `F9` |
@@ -125,6 +127,19 @@ instead of files next to the executable, and leaves out the native-only dev tool
 hot reload, window icon, mouse confinement). The files must be served over HTTP (not opened from disk) and the game
 embeds all its assets, so `web/dist` can be hosted as is on any static host.
 
+## Power pills
+
+Prismatic vermin crawl slowly on some walls. Touch one to pocket it (icons over the health, up to 12). `Z` swallows one:
+about 30 seconds of being faster, jumping higher and, above all, much stronger (the strength meter that wall walking,
+swimming, dashing and spitting spend drains far slower and refills faster; a dash needs only a bit of it). Meanwhile the
+health pips shimmer in every color, fewer of them as it wears off. Take as many as you dare, it is a gamble: each
+extra dose adds less than the one before, and from the second on the controls get more and more chaotic (what you
+press is briefly flipped, the body moves on its own, now and then it jumps by itself), until around six doses it is
+almost unplayable. When it ends comes the crash: exactly as much worse as the peak was better, for a fifth of the time
+spent high at one dose, and disproportionately longer the more you took (about 6 s for one, 17 s for two, 31 s for three,
+over a minute for five). The pips go ash-gray and sag meanwhile. No pill can be taken during the crash. Pills are precious: picking one up and swallowing one both write a checkpoint, and saves remember how many you carry and which ones
+were already taken from the map and whether you are high or crashing, with the time left.
+
 ## The world is a sketch
 
 The whole map is one Aseprite file, [`assets/world.aseprite`](assets/world.aseprite) (4096×2048, RGBA). It holds
@@ -137,6 +152,8 @@ the layout only. The game reads the **colors** of the pixels, not the layer name
 | Black | air |
 | Magenta cross | world origin (0, 0) |
 | Red | player spawn |
+| Pure blue `#0000ff` | a power pill: an iridescent vermin crawling slowly around the spot (the tile under it is a normal wall) |
+| Pale green `#bdffc2` | a health pill bug: a pulsating red vermin (red even in a colorless world) that is eaten on touch for one health tick, only when health is below max (the tile under it is a normal wall) |
 | Yellow, green, dusty blue `#7f9fd6`, dusty pink `#d1b0c6`, brown `#8f563b`, violet `#b800ff` | boss markers: Gutter King, Venom Mother, Weaver, Razorwing, Sawleg, Plague Frog (the last four are matched exactly) |
 
 **Slices** name the areas. `region: …` is an area, which gets an art style from keywords in its name and is
@@ -190,7 +207,7 @@ Baking without step 3 silences the warning but ships a world the code hasn't bee
 | `F12` with `F1` on | also writes `screenshots/shot-*.txt` with the panel text |
 | `F2` | teleport to the next boss's lair |
 | `F3` | invulnerability (any blow kills a boss) |
-| `F4` | flight (jump = impulse toward the mouse); small wings flap while flying, and burrow (`E`) works in flight. After the ending's credits you get control back flying and invulnerable (the key hints are hidden during the ending show) |
+| `F4` | flight (jump = impulse toward the mouse); small wings flap while flying, and burrow (`C`) works in flight. After the ending's credits you get control back flying and invulnerable (the key hints are hidden during the ending show) |
 | `F10` | full-map WebP export (painted, or annotated with `F1`) |
 | `TOUR=1 cargo run` | visits the spawn, bosses, every slice and pin, then an overview → `screenshots/tour-*.webp`, then quits |
 | `START=x,y EXIT_AFTER=4 cargo run` | drops the chameleon at a world spot, logs where it ends up (+ `screenshots/exit.webp`), quits |

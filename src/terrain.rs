@@ -150,6 +150,10 @@ pub struct Terrain {
     pub crab: Option<Vec2>,
     /// The beetle: on the ground below its marker (feet position).
     pub beetle: Option<Vec2>,
+    /// Power pill spots (world units, the marker's center).
+    pub pills: Vec<Vec2>,
+    /// Health pill bug spots (world units, the marker's center).
+    pub health_pills: Vec<Vec2>,
     /// Sketch hints (gray blobs) asking for a falling platform: center, size (world units) and slope (rise per run, up positive).
     pub falling_hints: Vec<(Vec2, Vec2, f32)>,
     /// The same for the fixed slabs.
@@ -214,6 +218,8 @@ impl Terrain {
             mantis: None,
             crab: None,
             beetle: None,
+            pills: Vec::new(),
+            health_pills: Vec::new(),
             falling_hints: Vec::new(),
             fixed_hints: Vec::new(),
             areas: Vec::new(),
@@ -249,6 +255,8 @@ impl Terrain {
             t.features.push(Feature { name: name.into(), rect, slide: false, crumbles: false, electrified: false, rubble: false, toxic: false, water: Some(kind) });
         }
 
+        t.pills = sketch.markers.iter().filter(|m| m.kind == MarkerKind::PowerPill).map(|m| to_world(m.at - lo.as_vec2())).collect();
+        t.health_pills = sketch.markers.iter().filter(|m| m.kind == MarkerKind::HealthPill).map(|m| to_world(m.at - lo.as_vec2())).collect();
         t.crab = marker(MarkerKind::Crab).map(|p| t.rest(to_world(p)));
         t.beetle = marker(MarkerKind::Beetle).map(|p| t.rest(to_world(p)));
         t.falling_hints = sketch.markers.iter().filter(|m| m.kind == MarkerKind::Falling).map(|m| (to_world(m.at - lo.as_vec2()), m.extent * PX, -m.slope)).collect();

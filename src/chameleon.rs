@@ -688,7 +688,7 @@ const TAIL_PLAYS: [(f32, &str); 5] = [
 
 /// The (curl, sway) of tail game `kind` at progress `u` in 0..1.
 fn tail_play(kind: usize, u: f32) -> (f32, f32) {
-    let env = (u * PI).sin();
+    let env = (u * PI).sin().max(0.0);
     match kind {
         // Slowly unrolls, holds it stretched, rolls back up.
         0 => (1.0 - 1.05 * env.powf(0.5).min(1.0), 0.0),
@@ -822,14 +822,17 @@ pub fn update_anim_state(
     let rate = if a.play.is_some() { 12.0 } else { 4.0 };
     a.curl = smooth(a.curl, play_curl, rate, dt);
     a.sway = smooth(a.sway, play_sway, 12.0, dt);
+    if !(a.curl.is_finite() && a.sway.is_finite()) {
+        eprintln!("tail: bad state curl={} sway={} play={:?} kind={} (reset)", a.curl, a.sway, a.play, a.play_kind);
+        (a.curl, a.sway, a.play) = (1.0, 0.0, None);
+    }
 
     // Claw slash: holding the button keeps slashing, one right after another.
     // In the air, with the dragonfly's power and when it's ready: the spin.
     // With the crab's power, holding it charges a power blow instead (a press still slashes once).
     let attack = keys.any_pressed([KeyCode::KeyF, KeyCode::KeyJ]) || mouse.pressed(MouseButton::Left);
     let free = a.slash.is_none() && a.spin.is_none() && a.bite.is_none() && p.stun <= 0.0 && !dead;
-    // (`E` at rubble with a way through burrows instead, see `burrow.rs`.)
-    a.eat = keys.just_pressed(KeyCode::KeyE) && free && p.burrow_target.is_none() && p.burrow.is_none();
+    a.eat = keys.just_pressed(KeyCode::KeyE) && free && p.burrow.is_none();
     a.spin_cooldown = (a.spin_cooldown - dt).max(0.0);
     a.scythe = defeated.scythe();
     let power = defeated.blow();
@@ -857,7 +860,8 @@ pub fn update_anim_state(
             a.slash = Some(0.0);
         }
     }
-    a.slash = a.slash.map(|t| t + dt).filter(|&t| t < SLASH_TIME);
+    // Power pills speed the claws up (the crash slows them).
+    a.slash = a.slash.map(|t| t + dt * p.pill.speed()).filter(|&t| t < SLASH_TIME);
     if a.slash.is_none() {
         a.blow = false;
     }

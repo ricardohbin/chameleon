@@ -62,8 +62,14 @@ const GRIP_MAX: f32 = 2.6;
 const OVERHANG_COST: f32 = 5.0;
 const WALL_LEAP: Vec2 = Vec2::new(380.0, 640.0);
 const CLIMB_LOCK: f32 = 0.25;
+/// Half-width (in cells) of the window whose average gives the gripped surface's angle.
+const GRIP_SAMPLE: i32 = 7;
 /// How hard a gripping chameleon presses into its surface (keeps it in contact).
 const GRIP_PRESS: f32 = 50.0;
+/// Climbing over a bump: the body is lifted off the surface in steps of `GRIP_LIFT_STEP`
+/// (up to `GRIP_LIFT_STEPS` of them) until it clears, instead of stopping dead.
+const GRIP_LIFT_STEP: f32 = 2.0;
+const GRIP_LIFT_STEPS: i32 = 8;
 /// Anywhere else, slopes (rise per run) up to `WALK_SLOPE` (45°) are walked
 /// normally; above it, walking uphill gets harder and the slope pulls you
 /// down, until `STEEP_SLOPE` (60°), where sliding is unavoidable. Jumps tilt
@@ -177,7 +183,7 @@ pub struct Player {
     /// The grasshopper's power: seconds spent charging the big jump (down held on
     /// the ground, feet planted); see `charging`.
     charge: Option<f32>,
-    /// Burrowing through rubble (`burrow.rs`): a dig in progress, and the way through that `E` would take now.
+    /// Burrowing through rubble (`burrow.rs`): a dig in progress, and the way through that `C` would take now.
     pub burrow: Option<crate::burrow::Burrow>,
     pub burrow_target: Option<crate::burrow::Path>,
     climb_lock: f32,
@@ -197,6 +203,8 @@ pub struct Player {
     /// about) and comes back out of it. Tired, the chameleon hangs deeper and deeper,
     /// until its head is under and it starts to drown.
     pub swim: f32,
+    /// Power pills: carried, in the blood, and the crash after (`pill.rs`).
+    pub pill: crate::pill::Pill,
     /// Drowning progress, one HP at 1.
     harm: f32,
     /// How much of the fall carries through the water (shallow water absorbs less).
@@ -528,6 +536,11 @@ pub fn move_player(
     if keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
         dir += 1.0;
     }
+    // A body full of pills twitches: what it is told gets flipped, or it moves on its own.
+    let glitch = p.pill.glitch();
+    if let Some((gx, _)) = glitch {
+        dir = gx;
+    }
     p.stun = (p.stun - dt).max(0.0);
     p.invuln = (p.invuln - dt).max(0.0);
     p.guard = (p.guard - dt).max(0.0);
@@ -538,7 +551,7 @@ pub fn move_player(
     if dir != 0.0 {
         p.facing = dir;
     }
-    let accel = if dead {
+    let accel = p.pill.speed() * if dead {
         GROUND_ACCEL
     } else if p.stun > 0.0 {
         AIR_ACCEL * 0.15
@@ -584,7 +597,7 @@ pub fn move_player(
     let wade = wet.as_ref().filter(|_| !at_home).map_or(1.0, |w| {
         1.0 - w.kind.t().wade * (w.fraction / SWIM_FRACTION).min(1.0)
     });
-    let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1);
+    let top_speed = MAX_SPEED * wade * (1.0 - 0.55 * p.webbed).max(0.1) * p.pill.speed();
 
     // --- Wall walking: grip any surface between `GRIP_MIN` and `GRIP_MAX` ---
     p.climb_lock = (p.climb_lock - dt).max(0.0);
@@ -598,15 +611,21 @@ pub fn move_player(
     let can_climb = defeated.climb() && !flying && !swimming && !dead && p.stun <= 0.0 && p.dash <= 0.0 && !p.grip_spent;
     let up_key = keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]);
     let down_key = keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]);
-    let steer = Vec2::new(dir, up_key as i32 as f32 - down_key as i32 as f32);
+    let steer_y = match glitch {
+        Some((_, gy)) if gy != 0.0 => gy,
+        _ => up_key as i32 as f32 - down_key as i32 as f32,
+    };
+    let steer = Vec2::new(dir, steer_y);
     let grippable = |n: Vec2, slack: f32| (GRIP_MIN - slack..=GRIP_MAX).contains(&n.y.clamp(-1.0, 1.0).acos());
     if p.climbing.is_some() {
         let old = p.grip_normal;
-        let attached = terrain.box_hits(here - old * 4.0, HALF);
+        // Dents and bumps may hold it a little off the surface: still attached.
+        let attached = (1..=GRIP_LIFT_STEPS).any(|k| terrain.box_hits(here - old * (k as f32 * GRIP_LIFT_STEP + 2.0), HALF));
         let contact = here - old * (old.x.abs() * HALF.x + old.y.abs() * HALF.y + 1.0);
-        let n = surface_normal(&terrain, contact)
+        // A wide sample averages the surface's angle instead of following every bump.
+        let n = surface_normal(&terrain, contact, GRIP_SAMPLE)
             .filter(|_| attached)
-            .and_then(|n| old.lerp(n, 0.4).try_normalize());
+            .and_then(|n| old.lerp(n, 1.0 - (-dt * 10.0).exp()).try_normalize());
         // Pushing away from a wall lets go; so does walking down onto level ground.
         let letting_go = n.is_some_and(|n| (dir * n.x > 0.0 && n.x.abs() > 0.7) || (p.grounded && p.ground.is_none() && steer.dot(tangent(n)) < 0.0 && slope.is_none_or(|s| s.atan().abs() < GRIP_MIN)));
         match n.filter(|&n| can_climb && grippable(n, 0.1) && !letting_go) {
@@ -622,7 +641,7 @@ pub fn move_player(
         }
     } else if can_climb && p.climb_lock <= 0.0 && p.swim > 0.05 {
         let on_wall = (dir != 0.0 && wall(dir) && tall(dir))
-            .then(|| surface_normal(&terrain, here + Vec2::new(dir * (HALF.x + 1.0), 0.0)))
+            .then(|| surface_normal(&terrain, here + Vec2::new(dir * (HALF.x + 1.0), 0.0), 3))
             .flatten()
             .filter(|&n| grippable(n, 0.0));
         // Steep ground that would slide you: grip it instead.
@@ -679,7 +698,7 @@ pub fn move_player(
             p.vel.x = if at_home {
                 move_towards(vx0, dir * top_speed, accel * dt)
             } else {
-                move_towards(vx0, dir * t.speed * (0.45 + 0.55 * p.swim), t.accel * dt)
+                move_towards(vx0, dir * t.speed * (0.45 + 0.55 * p.swim) * p.pill.speed(), t.accel * dt)
             };
         }
 
@@ -690,7 +709,7 @@ pub fn move_player(
         } else {
             p.coyote - dt
         };
-        p.jump_buffer = if keys.any_just_pressed(jump_keys) {
+        p.jump_buffer = if keys.any_just_pressed(jump_keys) || p.pill.take_jump() {
             JUMP_BUFFER
         } else {
             p.jump_buffer - dt
@@ -749,7 +768,8 @@ pub fn move_player(
             } else {
                 1.0
             };
-            take_off(p, JUMP_SPEED * push);
+            let boost = p.pill.jump();
+            take_off(p, JUMP_SPEED * push * boost);
             p.charge = None;
         }
         if keys.any_just_released(jump_keys) && p.vel.y > 0.0 && !launched {
@@ -764,12 +784,12 @@ pub fn move_player(
         if keys.any_just_pressed(DASH_KEYS)
             && defeated.dash()
             && firm
-            && p.swim >= DASH_MIN_STRENGTH
+            && p.swim >= DASH_MIN_STRENGTH.min(p.pill.dash_min())
             && p.dash_cooldown <= 0.0
             && p.stun <= 0.0
             && !dead
         {
-            p.swim = 0.0;
+            p.swim = (p.swim - p.pill.cost()).max(0.0);
             p.dash = DASH_TIME;
             p.dash_cooldown = DASH_COOLDOWN;
             p.dash_dir = if dir != 0.0 { dir } else { p.facing };
@@ -786,7 +806,7 @@ pub fn move_player(
                 && bank_near(&terrain, tf.translation.truncate())
             {
                 p.vel.y = JUMP_SPEED * w.kind.t().hop;
-                p.swim = (p.swim - 0.05).max(0.0);
+                p.swim = (p.swim - 0.05 * p.pill.cost()).max(0.0);
                 p.jump_buffer = 0.0;
                 p.grounded = false;
                 p.ground = None;
@@ -796,10 +816,12 @@ pub fn move_player(
             // Gripping: A D W S walk along the surface (no gravity), Space leaps off.
             let n = p.grip_normal;
             let along = steer.dot(tangent(n)).clamp(-1.0, 1.0);
-            p.vel = tangent(n) * along * CLIMB_SPEED * (1.0 - 0.55 * p.webbed).max(0.1) - n * GRIP_PRESS;
+            // Held off the surface by a dent: press back in harder to follow it.
+            let press = if terrain.box_hits(here - n * 3.0, HALF) { GRIP_PRESS } else { GRIP_PRESS * 4.0 };
+            p.vel = tangent(n) * along * CLIMB_SPEED * (1.0 - 0.55 * p.webbed).max(0.1) * p.pill.speed() - n * press;
             p.facing = side;
             // The steeper, the dearer; an overhang wears the strength out much faster.
-            p.swim = (p.swim - grip_cost(p.grip_angle) * dt).max(0.0);
+            p.swim = (p.swim - grip_cost(p.grip_angle) * p.pill.cost() * dt).max(0.0);
             if p.swim <= 0.0 {
                 p.grip_spent = true;
                 p.climbing = None;
@@ -823,7 +845,7 @@ pub fn move_player(
         } else if let (true, Some(w)) = (swimming, &wet) {
             let t = w.kind.t();
             let busy = dir != 0.0 || swim_up || swim_down;
-            p.swim = (p.swim - dt / if busy { t.active } else { t.idle }).max(0.0);
+            p.swim = (p.swim - p.pill.cost() * dt / if busy { t.active } else { t.idle }).max(0.0);
             // Tired, the head ends up under; the longer and the more tired, the worse.
             let tired = if dead { 1.0 } else { 1.0 - p.swim };
             if tf.translation.y + HALF.y < w.level && tired > 0.5 && !dead {
@@ -847,7 +869,7 @@ pub fn move_player(
             p.harm = (p.harm - dt * 0.8).max(0.0);
             // Only dry ground rests you: hopping out of the water and back doesn't.
             if wet_f <= 0.0 && p.grounded && p.climbing.is_none() {
-                p.swim = (p.swim + dt / SWIM_RECOVER).min(1.0);
+                p.swim = (p.swim + p.pill.recover() * dt / SWIM_RECOVER).min(1.0);
             }
         }
     } else {
@@ -888,12 +910,17 @@ pub fn move_player(
     let was_grounded = p.grounded;
     p.step *= (-dt * 20.0).exp();
     // Terrain: small steps so nothing is tunneled through; ramps and low steps are climbed.
+    let grip_n = p.climbing.map(|_| p.grip_normal);
     let dx = p.vel.x * dt;
     let steps = (dx.abs() / 2.0).ceil().max(1.0);
     for _ in 0..steps as i32 {
         let next = pos + Vec2::X * dx / steps;
         if !terrain.box_hits(next, HALF) {
             pos = next;
+            continue;
+        }
+        if let Some(q) = grip_n.and_then(|n| lift_over(&terrain, next, n)) {
+            pos = q;
             continue;
         }
         let feet = next.y - HALF.y;
@@ -945,6 +972,8 @@ pub fn move_player(
         let next = pos + Vec2::Y * dy / steps;
         if !terrain.box_hits(next, HALF) {
             pos = next;
+        } else if let Some(q) = grip_n.and_then(|n| lift_over(&terrain, next, n)) {
+            pos = q;
         } else if dy <= 0.0 {
             pos.y = terrain.box_top(next, HALF).unwrap_or(pos.y - HALF.y) + HALF.y;
             land_on_terrain(p, &terrain, pos);
@@ -1119,11 +1148,11 @@ pub fn move_player(
 
 /// Outward normal of the terrain around `p`: from the solid cells toward the open
 /// ones within a few pixels (`None` when it is all one or the other).
-fn surface_normal(terrain: &Terrain, p: Vec2) -> Option<Vec2> {
+fn surface_normal(terrain: &Terrain, p: Vec2, radius: i32) -> Option<Vec2> {
     let (mut solid, mut open) = (Vec2::ZERO, Vec2::ZERO);
     let (mut ns, mut no) = (0.0, 0.0);
-    for ix in -3..=3 {
-        for iy in -3..=3 {
+    for ix in -radius..=radius {
+        for iy in -radius..=radius {
             let q = p + Vec2::new(ix as f32, iy as f32) * PX;
             if terrain.solid_at(q) {
                 solid += q;
@@ -1138,6 +1167,12 @@ fn surface_normal(terrain: &Terrain, p: Vec2) -> Option<Vec2> {
         return None;
     }
     (open / no - solid / ns).try_normalize()
+}
+
+/// A gripping body blocked at `at` by a bump: the nearest spot straight out from the
+/// surface (along `n`) where it fits, so it rides over small irregularities.
+fn lift_over(terrain: &Terrain, at: Vec2, n: Vec2) -> Option<Vec2> {
+    (1..=GRIP_LIFT_STEPS).map(|k| at + n * (k as f32 * GRIP_LIFT_STEP)).find(|&q| !terrain.box_hits(q, HALF))
 }
 
 /// The way along a surface with normal `n` that goes up (right, on level ground).

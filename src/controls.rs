@@ -51,13 +51,14 @@ impl Default for AimInput {
 const STICK_MOVE: f32 = 0.35;
 const STICK_AIM: f32 = 0.4;
 
-const BUTTONS: [(GamepadButton, KeyCode); 7] = [
+const BUTTONS: [(GamepadButton, KeyCode); 8] = [
     (GamepadButton::South, KeyCode::Space),
     (GamepadButton::West, KeyCode::KeyF),
     (GamepadButton::RightTrigger2, KeyCode::KeyF),
     (GamepadButton::East, KeyCode::KeyQ),
     (GamepadButton::LeftTrigger2, KeyCode::KeyG),
     (GamepadButton::North, KeyCode::KeyE),
+    (GamepadButton::RightTrigger, KeyCode::KeyC),
     (GamepadButton::LeftTrigger, KeyCode::KeyK),
 ];
 

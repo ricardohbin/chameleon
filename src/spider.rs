@@ -56,8 +56,12 @@ const AGGRO: f32 = 800.0;
 const HANG: f32 = 190.0;
 /// Least room between the ceiling and its body.
 const CEILING_ROOM: f32 = 70.0;
-/// How fast its thread's anchor creeps along the ceiling.
-const CRAWL: f32 = 140.0;
+/// Moving its anchor means shooting a new web at the ceiling: this long to
+/// reach it, this long between shots when only repositioning.
+const SHOOT_TIME: f32 = 0.15;
+const WEB_EVERY: f32 = 2.0;
+/// It re-aims the web when the anchor is this far (x) from where it wants it.
+const WEB_SLACK: f32 = 160.0;
 /// Its legs reach this far below its center (standing on the floor).
 const LEGS: f32 = 13.0 * SCALE;
 /// Spitting: the tell, the glob's speed and drop, the pause between spits.
@@ -92,6 +96,20 @@ const BITE_WINDUP: f32 = 0.4;
 const BITE_REACH: f32 = 100.0;
 const BITE_DAMAGE: i32 = 1;
 const CLIMB_SPEED: f32 = 260.0;
+/// Evading a flurry from below: the new anchor is this far aside on the
+/// ceiling, the body reels in for this long and ends this much higher.
+const EVADE_SIDE: f32 = 260.0;
+const EVADE_TIME: f32 = 0.4;
+const EVADE_LIFT: f32 = 70.0;
+/// Each repeated escape reaches this much further (up to `EVADE_MAX`), and
+/// it forgets them after this long unhit.
+const EVADE_GROW: f32 = 0.7;
+const EVADE_MAX: f32 = 720.0;
+const EVADE_MEMORY: f32 = 6.0;
+/// How much higher (afraid) or lower (bold) it hangs, and how long boldness takes to build.
+const HANG_AFRAID: f32 = 90.0;
+const HANG_BOLD: f32 = 70.0;
+const BOLDEN_TIME: f32 = 12.0;
 /// The face-off the first time it sees the chameleon.
 const TAUNT_TIME: f32 = 1.6;
 const TAUNT_BREAK: f32 = 200.0;
@@ -136,12 +154,25 @@ struct Spider {
     spit_cd: f32,
     lay_cd: f32,
     drop_cd: f32,
+    web_cd: f32,
+    /// A web in flight toward this spot on the ceiling (the anchor stays put until it sticks).
+    shot: Option<Vec2>,
+    /// The shot is an escape: afterwards it is pulled higher, and fast.
+    flee: bool,
+    /// Recent escapes: each repeat goes further, until it has been left alone a while.
+    evasions: u32,
+    evade_memory: f32,
+    /// -1 bold (hangs low) .. 1 afraid (hangs high): fear comes from fleeing, boldness from being left alone.
+    nerve: f32,
     /// Where it aimed its spit (or bite).
     plan: Vec2,
     introduced: bool,
     dismember: bool,
     /// A flurry of hits: answer (see `BossHit::retaliate`).
     retaliate: bool,
+    /// Hurt (not killed): it flees every blow, not only flurries.
+    hurt: bool,
+    evade_cd: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -157,6 +188,9 @@ enum State {
     Bite { t: f32, ground: f32 },
     Climb,
     Taunt(f32),
+    /// Out of harm's way: shot its thread to a new anchor, diagonally up and
+    /// aside, and reels itself there (seconds so far).
+    Evade(f32),
     Dead { t: f32, angle: f32, landed: bool },
 }
 
@@ -180,6 +214,8 @@ enum BoneKind {
 #[derive(Component)]
 struct Thread {
     owner: Entity,
+    /// The one being shot (else the one it hangs from).
+    shot: bool,
 }
 
 /// A glob of web in flight.
@@ -290,7 +326,9 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
     let mut b = Builder { commands, meshes, owner: root };
 
     // The thread (not in the rig: it doesn't turn with the body).
-    let thread = b.commands.spawn((Thread { owner: root }, Transform::from_xyz(0.0, 0.0, -0.6), Visibility::default(), ChildOf(root))).id();
+    let shot = b.commands.spawn((Thread { owner: root, shot: true }, Transform::from_xyz(0.0, 0.0, -0.6), Visibility::default(), ChildOf(root))).id();
+    b.part(stroke(&[Vec2::ZERO, Vec2::Y], |_| 1.4, 1.0, 1.0, |_| 1.0), &silk, Vec3::ZERO, shot);
+    let thread = b.commands.spawn((Thread { owner: root, shot: false }, Transform::from_xyz(0.0, 0.0, -0.6), Visibility::default(), ChildOf(root))).id();
     b.part(stroke(&[Vec2::ZERO, Vec2::Y], |_| 1.4, 1.0, 1.0, |_| 1.0), &silk, Vec3::ZERO, thread);
 
     let rig = b.bone(Vec3::ZERO, root, BoneKind::Rig);
@@ -349,10 +387,18 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, materials: &mut
             spit_cd: rng.range(1.0, 2.0),
             lay_cd: rng.range(LAY_EVERY.0 * 0.5, LAY_EVERY.0),
             drop_cd: 1.0,
+            web_cd: 0.0,
+            shot: None,
+            flee: false,
+            evasions: 0,
+            evade_memory: 0.0,
+            nerve: 0.0,
             plan: home,
             introduced: false,
             dismember: false,
             retaliate: false,
+            hurt: false,
+            evade_cd: 0.0,
             rng,
         },
     ));
@@ -435,25 +481,58 @@ fn think(
         s.spit_cd -= dt;
         s.lay_cd -= dt;
         s.drop_cd -= dt;
-        let hung = matches!(s.state, State::Hang | State::Spit(_) | State::Lay { .. } | State::Brace(_) | State::Taunt(_));
 
-        // Its thread's anchor creeps along the ceiling: over the chameleon
-        // while it hunts, home otherwise (never off its floor).
-        if hung {
-            let want = if aggro { ppos.x } else { boss.home.x };
-            let want = clamp_span(want, s.span, 60.0);
-            let speed = if matches!(s.state, State::Brace(_)) { 0.0 } else { CRAWL * if enraged { 1.25 } else { 1.0 } };
-            let next = s.anchor.x + (want - s.anchor.x).clamp(-speed * dt, speed * dt);
-            if let Some(top) = ceiling(&terrain, next, s.floor) {
-                s.anchor = Vec2::new(next, top);
-            }
+        // Where it wants its anchor: over the chameleon while it hunts, home
+        // otherwise (never off its floor). The anchor never slides: it shoots
+        // a new web there.
+        s.web_cd -= dt;
+        s.evade_memory -= dt;
+        if s.evade_memory <= 0.0 {
+            s.evasions = 0;
+            // Left alone and hunting it grows bold; at rest it calms down.
+            let calm = if aggro { -1.0 } else { 0.0 };
+            s.nerve += (calm - s.nerve).clamp(-dt / BOLDEN_TIME, dt / BOLDEN_TIME);
         }
+        let want = clamp_span(if aggro { ppos.x } else { boss.home.x }, s.span, 60.0);
+        let web_to = if (want - s.anchor.x).abs() > WEB_SLACK && s.web_cd <= 0.0 && s.nerve <= 0.0 && s.evade_memory <= 0.0 {
+            ceiling(&terrain, want, s.floor).map(|top| Vec2::new(want, top))
+        } else {
+            None
+        };
 
-        // Answer a flurry: from the floor it flees up its thread, up there it spits at once.
-        if std::mem::take(&mut s.retaliate) {
+        // Answer a flurry: from the floor it flees up its thread, up there it
+        // slings the thread diagonally up and aside, away from a chameleon
+        // hitting from below (else it spits at once).
+        s.evade_cd -= dt;
+        let flinch = std::mem::take(&mut s.hurt);
+        if std::mem::take(&mut s.retaliate) || flinch {
+            let below = alive && to_player.length() < 450.0;
+            let dir = if to_player.x.abs() < 8.0 { if s.rng.chance(0.5) { 1.0 } else { -1.0 } } else { -side };
+            // Away from the chameleon, further the more it has had to flee
+            // lately (nearer if the ceiling or its span runs out).
+            let reach = (EVADE_SIDE * (1.0 + EVADE_GROW * s.evasions as f32)).min(EVADE_MAX);
+            let spot = [dir, -dir].into_iter().find_map(|d| {
+                [1.0, 0.75, 0.5, 0.3].into_iter().find_map(|k| {
+                    let x = (pos.x + d * reach * k).clamp(s.span.0 + 60.0, s.span.1 - 60.0);
+                    if (x - pos.x).abs() < 100.0 {
+                        return None;
+                    }
+                    ceiling(&terrain, x, s.floor).map(|top| Vec2::new(x, top))
+                })
+            });
             s.state = match s.state {
                 State::Ground(_) | State::Bite { .. } => State::Climb,
-                State::Hang if sees => {
+                State::Hang | State::Spit(_) | State::Lay { .. } | State::Brace(_) if below && spot.is_some() && s.evade_cd <= 0.0 => {
+                    s.shot = spot;
+                    s.flee = true;
+                    s.evasions += 1;
+                    s.evade_cd = EVADE_TIME + 0.2;
+                    s.evade_memory = EVADE_MEMORY;
+                    s.nerve = (s.nerve + 0.6).min(1.0);
+                    s.vel = Vec2::ZERO;
+                    State::Evade(0.0)
+                }
+                State::Hang if sees && !flinch => {
                     s.plan = ppos;
                     State::Spit(SPIT_WINDUP * 0.5)
                 }
@@ -510,6 +589,11 @@ fn think(
                     _ if !aggro => State::Hang,
                     _ if under && s.drop_cd <= 0.0 => State::Brace(0.0),
                     _ if s.lay_cd <= 0.0 && alive_brood + eggs.iter().filter(|g| g.owner == e).count() < MAX_BROOD => State::Lay { t: 0.0, laid: false },
+                    _ if web_to.is_some() => {
+                        s.shot = web_to;
+                        s.flee = false;
+                        State::Evade(0.0)
+                    }
                     _ if s.spit_cd <= 0.0 && sees && to_player.length() < AGGRO => {
                         s.plan = ppos;
                         State::Spit(0.0)
@@ -624,6 +708,22 @@ fn think(
                     State::Bite { t: s0 + dt, ground }
                 }
             }
+            State::Evade(s0) => {
+                if s0 >= SHOOT_TIME {
+                    // The web sticks: now it is the thread.
+                    if let Some(to) = s.shot.take() {
+                        s.anchor = to;
+                    }
+                }
+                if !alive || s0 >= EVADE_TIME {
+                    s.shot = None;
+                    s.web_cd = WEB_EVERY;
+                    s.spit_cd = s.spit_cd.max(0.5);
+                    State::Hang
+                } else {
+                    State::Evade(s0 + dt)
+                }
+            }
             State::Climb => {
                 // Reels itself up its thread (the anchor comes over it first).
                 let top = hang_y(&s, &terrain, pos.x);
@@ -641,10 +741,25 @@ fn think(
         };
 
         // Hanging, the body swings under its anchor.
-        if matches!(s.state, State::Hang | State::Spit(_) | State::Lay { .. } | State::Brace(_) | State::Taunt(_)) {
+        if matches!(s.state, State::Hang | State::Spit(_) | State::Lay { .. } | State::Brace(_) | State::Taunt(_) | State::Evade(_)) {
             let mut target = Vec2::new(s.anchor.x, hang_y(&s, &terrain, s.anchor.x));
+            // Afraid it hangs higher, bold lower (within the room it has).
+            let off = if s.nerve > 0.0 { s.nerve * HANG_AFRAID } else { s.nerve * HANG_BOLD };
+            target.y = (target.y + off).clamp(s.floor + LEGS + 20.0, (s.anchor.y - CEILING_ROOM * 0.6).max(s.floor + LEGS + 20.0));
             if let State::Taunt(s0) = s.state {
                 target.y -= 40.0 * (s0 / 0.6).min(1.0);
+            }
+            if let State::Evade(_) = s.state {
+                // Waits for the web to stick, then is pulled up it (higher than
+                // it usually hangs when fleeing).
+                if s.shot.is_none() && s.flee {
+                    target.y = (target.y + EVADE_LIFT * (1.0 + 0.3 * s.evasions.saturating_sub(1).min(3) as f32)).min(s.anchor.y - CEILING_ROOM * 0.6);
+                }
+                let pull = if s.shot.is_none() { if s.flee { 12.0 } else { 5.0 } } else { 0.0 };
+                s.vel = (target - pos) * pull;
+                tf.translation.x += s.vel.x * dt;
+                tf.translation.y += s.vel.y * dt;
+                continue;
             }
             let swing = Vec2::new((t * 1.1 + s.seed).sin() * 10.0, (t * 0.8 + s.seed).sin() * 6.0);
             let goal = target + swing;
@@ -811,6 +926,7 @@ fn eggs(
 fn on_hit(mut hits: MessageReader<BossHit>, mut spiders: Query<&mut Spider>) {
     for hit in hits.read() {
         let Ok(mut s) = spiders.get_mut(hit.boss) else { continue };
+        s.hurt = true;
         if hit.killed {
             // The thread snaps: it drops, curling up.
             s.vel = Vec2::new(hit.dir.x * 160.0, 200.0);
@@ -944,9 +1060,18 @@ fn animate(
     // The thread: from the body up to its anchor (gone once dead or loose on the floor).
     for (th, mut tf, mut vis) in &mut threads {
         let Ok((s, stf)) = spiders.get(th.owner) else { continue };
-        let shown = !matches!(s.state, State::Dead { .. } | State::Ground(_) | State::Bite { .. } | State::Drop);
+        let body = stf.translation.truncate();
+        let (shown, end) = if th.shot {
+            // The web being shot, growing toward the ceiling.
+            match (s.state, s.shot) {
+                (State::Evade(s0), Some(to)) => (true, body.lerp(to, (s0 / SHOOT_TIME).min(1.0))),
+                _ => (false, s.anchor),
+            }
+        } else {
+            (!matches!(s.state, State::Dead { .. } | State::Ground(_) | State::Bite { .. } | State::Drop), s.anchor)
+        };
         *vis = if shown { Visibility::Inherited } else { Visibility::Hidden };
-        let to = s.anchor - stf.translation.truncate();
+        let to = end - body;
         tf.translation = Vec3::new(0.0, 4.0 * SCALE, tf.translation.z);
         tf.rotation = Quat::from_rotation_z(to.to_angle() - PI / 2.0);
         tf.scale = Vec3::new(1.0, (to.length() - 4.0 * SCALE).max(0.001), 1.0);

@@ -14,6 +14,7 @@ use bevy::{
 use crate::{
     boss::{Beaten, BossKind, BossStatus, Defeated},
     level::{self, Restart},
+    pill::{self, prism},
     player::{self, God, Player},
     settings::{Scheme, Settings},
 };
@@ -48,7 +49,7 @@ impl Plugin for HudPlugin {
             })
             .after(level::restart))
             .add_systems(PreUpdate, pause.after(level::restart))
-            .add_systems(Update, (update_pips, update_swim_bar, update_boss_bar, update_flash, update_hint, announce, crosshair));
+            .add_systems(Update, (update_pips, update_swim_bar, update_pill_icons, update_boss_bar, update_flash, update_hint, announce, crosshair));
     }
 }
 
@@ -100,7 +101,7 @@ const ANNOUNCE_TIME: f32 = 4.0;
 struct Crosshair(Handle<Image>);
 
 /// Cursor image size in pixels (the hotspot is its center).
-const CROSSHAIR: u32 = 25;
+const CROSSHAIR: u32 = 31;
 
 #[derive(Component)]
 struct Pip(i32);
@@ -119,6 +120,14 @@ struct SwimBar;
 
 #[derive(Component)]
 struct SwimFill;
+
+/// A power pill carried: the icons over the health.
+#[derive(Component)]
+struct PillIcon(u32);
+
+/// The shine on a pill icon.
+#[derive(Component)]
+struct PillShine;
 
 #[derive(Component)]
 struct BossBar;
@@ -273,6 +282,29 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         commands.spawn((PipFill(i), layer(0), BackgroundColor(PIP_FILLING), ChildOf(pip)));
     }
 
+    // Power pills carried: little prismatic capsules over the health.
+    let icons = commands
+        .spawn(Node { position_type: PositionType::Absolute, bottom: px(94), left: px(28), column_gap: px(10), ..default() })
+        .id();
+    for i in 0..pill::MAX_STOCK {
+        let icon = commands
+            .spawn((
+                PillIcon(i),
+                Node { width: px(34), height: px(18), border_radius: BorderRadius::MAX, ..default() },
+                BackgroundColor(Color::WHITE),
+                Outline { width: px(2), offset: px(1), color: Color::NONE },
+                UiTransform { rotation: Rot2::radians(-0.5), ..default() },
+                ChildOf(icons),
+            ))
+            .id();
+        commands.spawn((
+            PillShine,
+            Node { position_type: PositionType::Absolute, left: px(5), top: px(3), width: px(14), height: px(4), border_radius: BorderRadius::MAX, ..default() },
+            BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.6)),
+            ChildOf(icon),
+        ));
+    }
+
     // Swimming strength.
     let swim = commands
         .spawn((
@@ -342,7 +374,7 @@ fn update_swim_bar(
 }
 
 /// The controls, as (action, key): powers only once earned.
-fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str)> {
+fn hints(defeated: &Defeated, scheme: Scheme, pills: bool) -> Vec<(&'static str, &'static str)> {
     let mouse = scheme == Scheme::MouseKeyboard;
     let mut v = vec![("Move", "A D"), ("Jump", "Space")];
     v.push(match scheme {
@@ -368,7 +400,7 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
         v.push(("Climb", "Push at surface, A D W S"));
     }
     if defeated.burrow() {
-        v.push(("Burrow", "E at rubble"));
+        v.push(("Burrow", "C on rubble"));
     }
     if defeated.leap() {
         v.push(("Big jump", "Hold S, release"));
@@ -385,6 +417,9 @@ fn hints(defeated: &Defeated, scheme: Scheme) -> Vec<(&'static str, &'static str
     if defeated.sewer() {
         v.push(("Sewer air", "Passive"));
     }
+    if pills {
+        v.push(("Power pill", "Z"));
+    }
     v.push(("Pause", "P"));
     v.push(("Menu", "Esc"));
     v
@@ -395,18 +430,22 @@ fn update_hint(
     settings: Res<Settings>,
     party: Res<crate::boss::Celebration>,
     ending: Res<crate::ending::Ending>,
+    player: Single<&Player>,
+    mut had_pills: Local<bool>,
     mut was_playing: Local<bool>,
     mut rows: Query<(&HintRow, &mut Node)>,
     mut labels: Query<(&HintLabel, &mut Text), Without<HintKey>>,
     mut keys: Query<(&HintKey, &mut Text), Without<HintLabel>>,
 ) {
     let playing = ending.playing();
-    let toggled = playing != *was_playing;
+    let pills = player.pill.stock > 0;
+    let toggled = playing != *was_playing || pills != *had_pills;
     *was_playing = playing;
+    *had_pills = pills;
     if !toggled && !defeated.is_changed() && !settings.is_changed() && !party.is_changed() {
         return;
     }
-    let mut list = hints(&defeated, settings.scheme);
+    let mut list = hints(&defeated, settings.scheme, pills);
     if playing {
         // The ending's show: no hints on the side of the screen.
         list.clear();
@@ -447,24 +486,24 @@ fn announce(
     bg.0 = CHIP.with_alpha(CHIP.alpha() * fade);
 }
 
-/// A crosshair: four ticks around a gap and a dot in bone white, outlined in
-/// black so it reads on any gray.
+/// A crosshair: four ticks around a gap and a dot in thick white, outlined in
+/// thick black so it reads on any gray.
 fn crosshair_image() -> Image {
     let n = CROSSHAIR as i32;
     let c = n / 2;
-    let (gap, tick) = (3, 7);
+    let (gap, tick, half, outline) = (4, 8, 1, 2);
     let ink = |x: i32, y: i32| {
         let (dx, dy) = ((x - c).abs(), (y - c).abs());
-        let on_axis = |a: i32, b: i32| a == 0 && (gap..gap + tick).contains(&b);
-        on_axis(dx, dy) || on_axis(dy, dx) || (dx == 0 && dy == 0)
+        let on_axis = |a: i32, b: i32| a <= half && (gap..gap + tick).contains(&b);
+        on_axis(dx, dy) || on_axis(dy, dx) || (dx <= half && dy <= half)
     };
     let mut data = vec![0u8; (n * n * 4) as usize];
     for y in 0..n {
         for x in 0..n {
             let rgba = if ink(x, y) {
-                [235, 230, 214, 255]
-            } else if (-1..=1).any(|j| (-1..=1).any(|i| ink(x + i, y + j))) {
-                [0, 0, 0, 190]
+                [255, 255, 255, 255]
+            } else if (-outline..=outline).any(|j| (-outline..=outline).any(|i| ink(x + i, y + j))) {
+                [0, 0, 0, 255]
             } else {
                 continue;
             };
@@ -525,8 +564,34 @@ fn update_pips(
         let full = pip.0 < player.hp;
         // Each pip beats a little out of step with its neighbor, so the row ripples.
         let phase = pip.0 as f32 * 0.55;
+        // Power pill: the first `lit` full pips are prismatic (fewer as it times out).
+        let drained = (player.pill.crash_bar() * player.hp as f32).ceil() as i32;
+        let (mut sag, mut droop) = (0.0, 0.0);
+        let lit = (player.pill.bar() * player.hp as f32).ceil() as i32;
         let (color, ring, scale) = match player.god {
             _ if !full => (PIP_EMPTY, Color::NONE, 1.0),
+            _ if pip.0 < lit => {
+                let level = player.pill.level().max(1.0);
+                let fast = 1.0 + 0.5 * level;
+                let flicker = 0.5 + 0.5 * (t * 29.0 * fast + phase * 3.1).sin() * (t * 8.3 - phase).cos();
+                let throb = (0.5 + 0.5 * (t * 11.0 * fast - phase).sin()).powi(3);
+                let hue = t * 220.0 * fast + pip.0 as f32 * 47.0;
+                (
+                    prism(hue, 0.5 + 0.2 * flicker).mix(&Color::WHITE, 0.35 * flicker),
+                    prism(hue + 180.0, 0.6).with_alpha(0.7 + 0.3 * throb),
+                    1.14 + 0.1 * level * throb + 0.12 * throb,
+                )
+            }
+            _ if pip.0 < drained => {
+                // The comedown, the opposite of the high: ash-gray and dark, shrunken, sagging, with a slow
+                // labored beat instead of the frenzy. Fewer pips stay drained as it eases off.
+                let sick = (player.pill.crash_level() / pill::MAX_STACKS).sqrt().clamp(0.25, 1.0);
+                let beat = (0.5 + 0.5 * (t * 1.6 - phase * 0.3).sin()).powi(2);
+                let ash = Color::srgb(0.30 + 0.08 * beat, 0.31 + 0.08 * beat, 0.33 + 0.08 * beat);
+                sag = 5.0 * sick;
+                droop = 0.2 * sick;
+                (PIP_FULL.mix(&ash, 0.9 * sick), Color::srgba(0.05, 0.06, 0.1, 0.8 * sick), 1.0 - 0.2 * sick + 0.04 * beat)
+            }
             God::Off => (PIP_FULL, Color::NONE, 1.0),
             // Molten gold, breathing; a bright halo.
             God::Invulnerable => {
@@ -547,6 +612,8 @@ fn update_pips(
         bg.0 = color;
         outline.color = ring;
         tf.scale = Vec2::splat(scale);
+        tf.translation = Val2::px(0.0, sag);
+        tf.rotation = Rot2::radians(0.25 + droop);
     }
     // Empty pips, from the first one: shadow promised there, and the one filling.
     let past_hp = |i: i32| (i - player.hp) as f32;
@@ -558,6 +625,21 @@ fn update_pips(
     for (f, mut node) in &mut fills {
         let filled = if past_hp(f.0) == 0.0 { player.digest } else { 0.0 };
         node.height = percent(filled * 100.0);
+    }
+}
+
+/// The pills carried, each sliding around the color wheel; one icon per pill.
+fn update_pill_icons(
+    time: Res<Time<Real>>,
+    player: Single<&Player>,
+    mut icons: Query<(&PillIcon, &mut Node, &mut BackgroundColor, &mut Outline), Without<PillShine>>,
+) {
+    let t = time.elapsed_secs();
+    for (icon, mut node, mut bg, mut ring) in &mut icons {
+        node.display = if icon.0 < player.pill.stock { Display::Flex } else { Display::None };
+        let hue = t * 120.0 + icon.0 as f32 * 52.0;
+        bg.0 = prism(hue, 0.55);
+        ring.color = prism(hue + 150.0, 0.7).with_alpha(0.8);
     }
 }
 

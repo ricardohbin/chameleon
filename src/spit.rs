@@ -76,10 +76,10 @@ fn spit(
     *cooldown = (*cooldown - time.delta_secs()).max(0.0);
     let pressed = keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Right);
     let (mut p, tf, mut anim) = player.into_inner();
-    if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 || p.swim < COST {
+    if !pressed || !defeated.spit() || *cooldown > 0.0 || p.dead.is_some() || p.stun > 0.0 || p.swim < COST * p.pill.cost() {
         return;
     }
-    p.swim -= COST;
+    p.swim -= COST * p.pill.cost();
     *cooldown = COOLDOWN;
     anim.spit();
     let from = chameleon::neck(tf.translation.truncate(), p.facing) + p.aim * MOUTH;

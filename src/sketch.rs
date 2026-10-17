@@ -39,6 +39,10 @@ const MANTIS_MARK: [u8; 3] = [0x00, 0xff, 0xff];
 const CRAB_MARK: [u8; 3] = [0x5b, 0x6e, 0xe1];
 /// The beetle's orange (its blood): saturated, so matched before the channel test (it would read as the player's red).
 const BEETLE_MARK: [u8; 3] = [0xff, 0x81, 0x00];
+/// Pure blue `#0000ff`: a power pill (the tile under it is a plain wall).
+const PILL_MARK: [u8; 3] = [0x00, 0x00, 0xff];
+/// Pale green `#bdffc2`: a pill bug that heals one health tick (the tile under it is a plain wall).
+const HEALTH_MARK: [u8; 3] = [0xbd, 0xff, 0xc2];
 
 /// Light purple `#bc75be`: asks `level::loose` for a falling platform, over a back wall (`#976099` over open air).
 const FALLING_MARK: [u8; 3] = [0xbc, 0x75, 0xbe];
@@ -92,6 +96,10 @@ pub enum MarkerKind {
     Crab,
     /// Orange `#ff8100` (`BEETLE_MARK`, its blood): the beetle boss (rests on the ground).
     Beetle,
+    /// Pure blue `#0000ff`: a power pill creature crawls here; the tile under it is a normal wall.
+    PowerPill,
+    /// Pale green `#bdffc2`: a pill bug that gives one health tick; the tile under it is a normal wall.
+    HealthPill,
 }
 
 pub struct Marker {
@@ -205,6 +213,16 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
             marks[i] = Some(MarkerKind::Spider);
             continue;
         }
+        if is(PILL_MARK) {
+            marks[i] = Some(MarkerKind::PowerPill);
+            cells[i] = Cell::Back;
+            continue;
+        }
+        if is(HEALTH_MARK) {
+            marks[i] = Some(MarkerKind::HealthPill);
+            cells[i] = Cell::Back;
+            continue;
+        }
         if max - min > 100 {
             marks[i] = match (r > 160, g > 160, b > 160) {
                 (true, false, false) => Some(MarkerKind::Player),
@@ -227,7 +245,7 @@ pub fn decode(bytes: &[u8]) -> Result<Sketch, String> {
     // Markers may be drawn over the ground: under them, continue whatever surrounds them.
     for y in 0..h {
         for x in 0..w {
-            if matches!(marks[y * w + x], None | Some(MarkerKind::Falling | MarkerKind::Fixed | MarkerKind::ClearWater | MarkerKind::Sludge)) {
+            if matches!(marks[y * w + x], None | Some(MarkerKind::Falling | MarkerKind::Fixed | MarkerKind::ClearWater | MarkerKind::Sludge | MarkerKind::PowerPill | MarkerKind::HealthPill)) {
                 continue;
             }
             let side = |dir: isize| {
@@ -331,6 +349,8 @@ fn unbake(packed: &[u8], version: u8) -> Result<Sketch, String> {
             14 => MarkerKind::Sludge,
             15 => MarkerKind::Crab,
             16 => MarkerKind::Beetle,
+            17 => MarkerKind::PowerPill,
+            18 => MarkerKind::HealthPill,
             k => return Err(format!("bad baked marker {k}")),
         };
         let at = Vec2::new(f32::from_bits(r.u32()?), f32::from_bits(r.u32()?));

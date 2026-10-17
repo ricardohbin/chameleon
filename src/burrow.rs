@@ -1,7 +1,7 @@
 //! Burrowing (earned from the Burrower): through rubble, like the centipede.
 //!
 //! Areas drawn as "feature: rubble" in the sketch are loose rock the chameleon can
-//! carve through. Standing at the rubble and aiming (the mouse) at it, `E` digs in
+//! carve through. Standing at the rubble and aiming (the mouse) at it, `C` digs in
 //! and the chameleon comes out on the other side. The straight line along the aim must
 //! go through nothing but rubble before it reaches open air (any other solid rock in
 //! the way and it can't be done), and there must be room to stand where it comes out.
@@ -135,7 +135,7 @@ fn spawn_ui(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materi
     }
 }
 
-/// Looks for a way through (and says so), and starts digging when `E` is pressed.
+/// Looks for a way through (and says so), and starts digging when `C` is pressed.
 fn scan(
     mut last: Local<Vec2>,
     time: Res<Time>,
@@ -177,7 +177,7 @@ fn scan(
         *last = Vec2::ZERO;
     }
     let (text, alpha) = match (p.burrow_target, near) {
-        (Some(_), _) => ("E  Burrow", 1.0),
+        (Some(_), _) => ("C  Burrow", 1.0),
         (None, true) => ("Aim through", 0.7),
         _ => ("", 0.0),
     };
@@ -201,7 +201,7 @@ fn scan(
         }
     }
 
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyC) {
         if let Some(path) = p.burrow_target {
             p.burrow = Some(Burrow { path, from: ppos, t: 0.0, dug_in: false, dug_out: false });
             p.vel = Vec2::ZERO;
