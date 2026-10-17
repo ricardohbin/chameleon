@@ -1,3 +1,6 @@
+// Release builds on Windows are a GUI program: no console window opening beside the game (dev builds keep it for the logs).
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+
 mod atmosphere;
 mod boss;
 mod camera;
@@ -82,6 +85,8 @@ fn main() {
             primary_window: Some(Window {
                 title: "Ghore, The Chameleon".into(),
                 resolution: (1280, 720).into(),
+                // Native: hidden until `set_window_icon` has installed the icon (the web canvas is always shown).
+                visible: cfg!(target_arch = "wasm32"),
                 // Web: draw into the page's `<canvas id="bevy">`, sized by its parent, and keep the
                 // browser from scrolling/zooming on the game's keys.
                 canvas: Some("#bevy".into()),
@@ -178,18 +183,74 @@ fn set_window_icon(world: &mut World, mut done: Local<bool>) {
     let Some(window) = world.query_filtered::<Entity, With<PrimaryWindow>>().iter(world).next() else {
         return;
     };
-    let Ok(img) = image::load_from_memory_with_format(include_bytes!("../assets/icon.png"), image::ImageFormat::Png) else {
-        return;
-    };
-    let img = img.into_rgba8();
-    let Ok(icon) = winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()) else {
-        return;
-    };
+    // A bad icon must not keep the window hidden: it is shown either way.
+    let icon = image::load_from_memory_with_format(include_bytes!("../assets/icon.png"), image::ImageFormat::Png)
+        .ok()
+        .map(|img| img.into_rgba8())
+        .and_then(|img| winit::window::Icon::from_rgba(img.to_vec(), img.width(), img.height()).ok());
     bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
         // The OS window is created after `Startup`: keep trying until it exists.
         if let Some(w) = windows.get_window(window) {
-            w.set_window_icon(Some(icon));
+            if let Some(icon) = icon {
+                // The title-bar icon is the small one; the taskbar and Alt+Tab use the big one.
+                #[cfg(target_os = "windows")]
+                winit::platform::windows::WindowExtWindows::set_taskbar_icon(&**w, Some(icon.clone()));
+                w.set_window_icon(Some(icon));
+            }
+            // The window starts hidden (see `main`): Windows builds its taskbar button from the
+            // icon the window has when it first appears, so show it only once the icon is set.
+            #[cfg(target_os = "windows")]
+            class_icons::set(w);
+            w.set_visible(true);
             *done = true;
         }
     });
+}
+
+/// Windows only: also put the exe's embedded icon (resource 1, see `build.rs`) on the window *class*.
+/// The taskbar button can ignore `WM_SETICON` (winit#4170) and fall back to the class icon.
+#[cfg(target_os = "windows")]
+mod class_icons {
+    use std::ffi::c_void;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn LoadImageW(inst: *mut c_void, name: *const u16, kind: u32, cx: i32, cy: i32, flags: u32) -> *mut c_void;
+        fn GetSystemMetrics(index: i32) -> i32;
+        fn SetClassLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> usize;
+        fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+    }
+
+    pub fn set(window: &winit::window::Window) {
+        let Ok(handle) = window.window_handle() else { return };
+        let RawWindowHandle::Win32(win) = handle.as_raw() else { return };
+        let hwnd = win.hwnd.get() as *mut c_void;
+        const IMAGE_ICON: u32 = 1;
+        const GCLP_HICON: i32 = -14;
+        const GCLP_HICONSM: i32 = -34;
+        const WM_SETICON: u32 = 0x0080;
+        const SM_CXICON: i32 = 11;
+        const SM_CYICON: i32 = 12;
+        const SM_CXSMICON: i32 = 49;
+        const SM_CYSMICON: i32 = 50;
+        // SAFETY: plain Win32 calls on this process's own window and its own embedded icon resource.
+        unsafe {
+            let inst = GetModuleHandleW(std::ptr::null());
+            let load = |cx, cy| LoadImageW(inst, 1 as *const u16, IMAGE_ICON, GetSystemMetrics(cx), GetSystemMetrics(cy), 0);
+            let (big, small) = (load(SM_CXICON, SM_CYICON), load(SM_CXSMICON, SM_CYSMICON));
+            if !big.is_null() {
+                SetClassLongPtrW(hwnd, GCLP_HICON, big as isize);
+                SendMessageW(hwnd, WM_SETICON, 1, big as isize);
+            }
+            if !small.is_null() {
+                SetClassLongPtrW(hwnd, GCLP_HICONSM, small as isize);
+                SendMessageW(hwnd, WM_SETICON, 0, small as isize);
+            }
+        }
+    }
 }
