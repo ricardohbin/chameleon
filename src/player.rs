@@ -80,6 +80,8 @@ const STEEP_SLOPE: f32 = 1.85;
 /// so uphill crawls to a stop just short of it).
 const SLOPE_PULL: f32 = 120.0;
 const SLIDE_SPEED: f32 = 520.0;
+/// Once sliding, the fraction of the steep slope below which you stop.
+const SLIDE_KEEP: f32 = 0.85;
 const SLIDE_ACCEL: f32 = 1600.0;
 const GROUND_ACCEL: f32 = 2200.0;
 const AIR_ACCEL: f32 = 1300.0;
@@ -588,8 +590,20 @@ pub fn move_player(
     };
     let hardness = slope.map_or(0.0, |s| ((s.abs() - walk) / (steep - walk)).clamp(0.0, 1.0));
     // Too steep to stand on, or perched over a drop: slide (signed strength, + = right).
+    // The slide reads the incline like the climb does: a wide patch of ground around
+    // the feet, not a few height samples, so the strength stays steady along the slope
+    // (and, once sliding, a little less steepness keeps you sliding: no flicker at the threshold).
+    let probed = (on_terrain && slope.is_some())
+        .then(|| surface_normal(&terrain, feet - Vec2::Y * PX, GRIP_SAMPLE))
+        .flatten()
+        .filter(|n| n.y > 0.05)
+        .map(|n| -n.x / n.y);
+    let sliding = p.slipping > 0.0;
     let slide = match slope {
-        Some(s) if on_terrain && s.abs() > steep => Some(-s.signum() * s.abs().min(1.5)),
+        Some(s) if on_terrain && (s.abs() > steep || (sliding && s.abs() > steep * SLIDE_KEEP)) => {
+            let m = probed.filter(|q| q * s > 0.0).map_or(s.abs(), |q| q.abs());
+            Some(-s.signum() * m.min(1.5))
+        }
         // A walkable slope under you grips, even at its very tip; only flat-ish
         // corners (or no readable ground) can tip you off.
         Some(s) if on_terrain && s.abs() > 0.3 => None,
