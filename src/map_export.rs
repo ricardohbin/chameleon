@@ -22,7 +22,7 @@ struct Export { requested: bool, annotated: bool, frame: u8, image: Option<Handl
 pub fn register(app: &mut App) {
     app.init_resource::<Export>().init_resource::<RendererReady>().add_systems(Startup, feedback)
         .add_systems(Update, export.after(crate::debug_overlay::toggle))
-        .add_systems(Update, hide_empty_feedback)
+        .add_systems(Update, (wake_world, hide_empty_feedback))
         .add_systems(PostUpdate, export_layers.before(bevy::camera::visibility::VisibilitySystems::CheckVisibility));
     app.sub_app_mut(bevy::render::RenderApp).add_systems(bevy::render::ExtractSchedule,
         |mut world: ResMut<bevy::render::MainWorld>, pipelines: Res<bevy::render::render_resource::PipelineCache>| {
@@ -53,6 +53,13 @@ fn export_layers(mut commands: Commands, state: Res<Export>,
     }
 }
 
+/// The painted export shows everything, so the culling (`cull`, `cull_mobs`) wakes the whole world from the
+/// request until the render capture is over; afterwards it puts the far part back to sleep by itself.
+fn wake_world(state: Res<Export>, mut view: ResMut<crate::terrain_props::ViewReach>) {
+    let all = !state.annotated && (state.requested || state.image.is_some());
+    if view.all != all { view.all = all; }
+}
+
 /// No text, no dark box: the label only shows while an export reports something.
 fn hide_empty_feedback(mut label: Single<(&Text, &mut Visibility), With<Feedback>>) {
     let (text, vis) = &mut *label;
@@ -67,7 +74,7 @@ fn feedback(mut commands: Commands) {
 
 fn export(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>, debug: Res<DebugInfo>, terrain: Res<Terrain>, ready: Res<RendererReady>,
     mut state: ResMut<Export>, mut images: ResMut<Assets<Image>>,
-    pending: Query<(), Or<(With<CanvasTask>, With<TileTask>, With<crate::terrain_props::PropJob>)>>, parts: Query<Entity, With<ExportPart>>,
+    pending: Query<(), Or<(With<CanvasTask>, With<TileTask>, With<crate::terrain_props::PropJob>, With<crate::terrain_props::Asleep>)>>, parts: Query<Entity, With<ExportPart>>,
     grading: Single<&ColorGrading, With<crate::camera::MainCamera>>,
     mobs: Query<(&Mob, &GlobalTransform)>, mut feedback: Single<&mut Text, With<Feedback>>,
     mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<ColorMaterial>>,

@@ -2302,7 +2302,7 @@ pub fn cull_mobs(
         let p = tf.translation.truncate();
         match asleep {
             Some(Asleep(v)) => {
-                if woke >= WAKES || !view.near(p, crate::terrain_props::WAKE_MARGIN) {
+                if (woke >= WAKES && !view.all) || !view.near(p, crate::terrain_props::WAKE_MARGIN) {
                     continue;
                 }
                 woke += 1;

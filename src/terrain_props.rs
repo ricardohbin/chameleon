@@ -490,6 +490,8 @@ pub struct ViewReach {
     pub ahead: Vec2,
     /// Half the diagonal of the view.
     pub half: f32,
+    /// Everything counts as near, with no cap on wakes: the full-map export (F10) needs the whole world awake.
+    pub all: bool,
     last: Option<Vec2>,
     vel: Vec2,
 }
@@ -504,7 +506,7 @@ impl ViewReach {
 
     /// Is `p` within `margin` of the edge of the view (or of where it is heading)?
     pub fn near(&self, p: Vec2, margin: f32) -> bool {
-        self.dist2(p) <= (self.half + margin).powi(2)
+        self.all || self.dist2(p) <= (self.half + margin).powi(2)
     }
 }
 
@@ -558,7 +560,7 @@ pub fn cull<R: Component>(
             continue;
         }
         if asleep.is_some() {
-            if woke >= WAKES {
+            if woke >= WAKES && !view.all {
                 continue;
             }
             woke += 1;
